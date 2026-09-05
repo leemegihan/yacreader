@@ -74,6 +74,8 @@ set(LIBRARY_EXTRA_WIDGETS
     yacreader_table_view.cpp
     yacreader_sidebar.h
     yacreader_sidebar.cpp
+    yacreader_metadata_browser.h
+    yacreader_metadata_browser.cpp
     yacreader_library_list_widget.h
     yacreader_library_list_widget.cpp
     yacreader_library_item_widget.h
@@ -104,6 +106,7 @@ target_link_libraries(custom_widgets_library PUBLIC
     Qt6::Core
     Qt6::Widgets
     Qt6::Network
+    Qt6::Sql
     common_gui
     rhi_flow_library
     QsLog
