@@ -21,9 +21,11 @@
 #include <QSqlQuery>
 #include <QUuid>
 #include <QVariant>
+#include <QVector>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <utility>
 
 YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent)
     : QDialog(parent)
