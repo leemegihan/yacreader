@@ -9,6 +9,7 @@ class QListWidgetItem;
 class QPushButton;
 class QTabWidget;
 class QToolButton;
+class YACReaderArchiveInspectorDialog;
 class YACReaderMetadataLookupDialog;
 
 class YACReaderMetadataBrowser : public QWidget
@@ -46,8 +47,9 @@ private:
     void populateUnidentified();
     void applyFilter(const QString &text);
     void activateItem(QListWidgetItem *item, const QString &field);
-    void updateLookupButton();
+    void updateLookupButtons();
     void openMetadataLookup();
+    void openArchiveInspector();
 
     QString currentLibraryPath;
     QLineEdit *filterEdit;
@@ -57,7 +59,9 @@ private:
     QListWidget *unidentifiedList;
     QToolButton *refreshButton;
     QPushButton *lookupButton;
+    QPushButton *inspectButton;
     YACReaderMetadataLookupDialog *lookupDialog;
+    YACReaderArchiveInspectorDialog *archiveInspectorDialog;
 };
 
 #endif // YACREADER_METADATA_BROWSER_H
