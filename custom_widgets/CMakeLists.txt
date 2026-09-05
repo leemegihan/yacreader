@@ -78,6 +78,8 @@ set(LIBRARY_EXTRA_WIDGETS
     yacreader_metadata_browser.cpp
     yacreader_metadata_lookup_dialog.h
     yacreader_metadata_lookup_dialog.cpp
+    yacreader_filename_normalizer.h
+    yacreader_filename_normalizer.cpp
     yacreader_library_list_widget.h
     yacreader_library_list_widget.cpp
     yacreader_library_item_widget.h
