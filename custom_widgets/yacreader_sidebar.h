@@ -13,8 +13,8 @@
 
 class YACReaderFoldersView;
 class YACReaderLibraryListWidget;
+class YACReaderMetadataBrowser;
 class YACReaderSearchLineEdit;
-class YACReaderTitledToolBar;
 class YACReaderTitledToolBar;
 class YACReaderReadingListsView;
 
@@ -41,7 +41,9 @@ public:
     YACReaderFoldersView *foldersView;
     YACReaderReadingListsView *readingListsView;
     YACReaderLibraryListWidget *selectedLibrary;
+    YACReaderMetadataBrowser *metadataBrowser;
     YACReaderTitledToolBar *librariesTitle;
+    YACReaderTitledToolBar *metadataTitle;
     YACReaderTitledToolBar *foldersTitle;
     YACReaderTitledToolBar *readingListsTitle;
 
