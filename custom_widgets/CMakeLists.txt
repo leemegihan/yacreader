@@ -80,6 +80,8 @@ set(LIBRARY_EXTRA_WIDGETS
     yacreader_metadata_lookup_dialog.cpp
     yacreader_filename_normalizer.h
     yacreader_filename_normalizer.cpp
+    yacreader_archive_inspector_dialog.h
+    yacreader_archive_inspector_dialog.cpp
     yacreader_library_list_widget.h
     yacreader_library_list_widget.cpp
     yacreader_library_item_widget.h
@@ -111,6 +113,7 @@ target_link_libraries(custom_widgets_library PUBLIC
     Qt6::Widgets
     Qt6::Network
     Qt6::Sql
+    comic_backend
     common_gui
     rhi_flow_library
     QsLog
