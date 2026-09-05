@@ -6,8 +6,10 @@
 class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
+class QPushButton;
 class QTabWidget;
 class QToolButton;
+class YACReaderMetadataLookupDialog;
 
 class YACReaderMetadataBrowser : public QWidget
 {
@@ -30,17 +32,32 @@ private:
         int count = 0;
     };
 
+    enum ComicDataRole {
+        ComicInfoIdRole = Qt::UserRole + 10,
+        FileNameRole,
+        TitleRole,
+        WriterRole,
+        TagsRole,
+        FilterTextRole
+    };
+
     void clear();
     void populateList(QListWidget *list, QList<FacetEntry> entries);
+    void populateUnidentified();
     void applyFilter(const QString &text);
     void activateItem(QListWidgetItem *item, const QString &field);
+    void updateLookupButton();
+    void openMetadataLookup();
 
     QString currentLibraryPath;
     QLineEdit *filterEdit;
     QTabWidget *tabs;
     QListWidget *writersList;
     QListWidget *tagsList;
+    QListWidget *unidentifiedList;
     QToolButton *refreshButton;
+    QPushButton *lookupButton;
+    YACReaderMetadataLookupDialog *lookupDialog;
 };
 
 #endif // YACREADER_METADATA_BROWSER_H
