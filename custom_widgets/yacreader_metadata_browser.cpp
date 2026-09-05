@@ -1,5 +1,6 @@
 #include "yacreader_metadata_browser.h"
 
+#include "yacreader_filename_normalizer.h"
 #include "yacreader_global.h"
 #include "yacreader_metadata_lookup_dialog.h"
 
@@ -11,6 +12,7 @@
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSet>
@@ -20,6 +22,7 @@
 #include <QTabWidget>
 #include <QToolButton>
 #include <QUuid>
+#include <QVariant>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -83,8 +86,21 @@ YACReaderMetadataBrowser::YACReaderMetadataBrowser(QWidget *parent)
     });
     connect(tabs, &QTabWidget::currentChanged, this, [this](int) { updateLookupButton(); });
     connect(lookupButton, &QPushButton::clicked, this, &YACReaderMetadataBrowser::openMetadataLookup);
-    connect(lookupDialog, &YACReaderMetadataLookupDialog::metadataSaved, this, [this](qulonglong) {
+    connect(lookupDialog, &YACReaderMetadataLookupDialog::metadataSaved, this, [this](qulonglong comicInfoId) {
+        QString renameError;
+        const auto renameResult = YACReaderFilenameNormalizer::offerRename(
+                this, currentLibraryPath, comicInfoId, &renameError);
+        if (renameResult == YACReaderFilenameNormalizer::Result::Failed && !renameError.isEmpty()) {
+            QMessageBox::warning(this, tr("Rename failed"), renameError);
+        }
+
         refresh();
+
+        // The metadata browser lives in a shared widget library, so keep it
+        // decoupled from LibraryWindow's header while still refreshing the
+        // current YACReaderLibrary model after metadata or a file path changes.
+        if (auto *topLevelWindow = window())
+            QMetaObject::invokeMethod(topLevelWindow, "reloadCurrentLibrary", Qt::QueuedConnection);
     });
 
     updateLookupButton();
@@ -110,6 +126,7 @@ void YACReaderMetadataBrowser::clear()
     writersList->clear();
     tagsList->clear();
     unidentifiedList->clear();
+    tabs->setTabText(tabs->indexOf(unidentifiedList), tr("Unidentified"));
     updateLookupButton();
 }
 
@@ -180,6 +197,7 @@ void YACReaderMetadataBrowser::refresh()
     populateList(writersList, writerEntries.values());
     populateList(tagsList, tagEntries.values());
     populateUnidentified();
+    tabs->setTabText(tabs->indexOf(unidentifiedList), tr("Unidentified (%1)").arg(unidentifiedList->count()));
     applyFilter(filterEdit->text());
     updateLookupButton();
 }
