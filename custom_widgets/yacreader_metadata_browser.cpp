@@ -1,5 +1,6 @@
 #include "yacreader_metadata_browser.h"
 
+#include "yacreader_archive_inspector_dialog.h"
 #include "yacreader_filename_normalizer.h"
 #include "yacreader_global.h"
 #include "yacreader_metadata_lookup_dialog.h"
@@ -36,7 +37,9 @@ YACReaderMetadataBrowser::YACReaderMetadataBrowser(QWidget *parent)
     , unidentifiedList(new QListWidget(this))
     , refreshButton(new QToolButton(this))
     , lookupButton(new QPushButton(tr("Find metadata…"), this))
+    , inspectButton(new QPushButton(tr("Inspect first / last pages…"), this))
     , lookupDialog(new YACReaderMetadataLookupDialog(this))
+    , archiveInspectorDialog(new YACReaderArchiveInspectorDialog(this))
 {
     filterEdit->setPlaceholderText(tr("Filter authors, tags or unidentified comics"));
     filterEdit->setClearButtonEnabled(true);
@@ -62,15 +65,21 @@ YACReaderMetadataBrowser::YACReaderMetadataBrowser(QWidget *parent)
     filterLayout->addWidget(filterEdit, 1);
     filterLayout->addWidget(refreshButton);
 
+    auto *unidentifiedActions = new QHBoxLayout;
+    unidentifiedActions->setContentsMargins(5, 4, 5, 5);
+    unidentifiedActions->setSpacing(4);
+    unidentifiedActions->addWidget(lookupButton, 1);
+    unidentifiedActions->addWidget(inspectButton, 1);
+
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
     layout->addLayout(filterLayout);
     layout->addWidget(tabs, 1);
-    layout->addWidget(lookupButton);
+    layout->addLayout(unidentifiedActions);
 
     setMinimumHeight(220);
-    setMaximumHeight(360);
+    setMaximumHeight(380);
 
     connect(filterEdit, &QLineEdit::textChanged, this, &YACReaderMetadataBrowser::applyFilter);
     connect(refreshButton, &QToolButton::clicked, this, &YACReaderMetadataBrowser::refresh);
@@ -80,19 +89,19 @@ YACReaderMetadataBrowser::YACReaderMetadataBrowser(QWidget *parent)
     connect(tagsList, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
         activateItem(item, QStringLiteral("tags"));
     });
-    connect(unidentifiedList, &QListWidget::itemSelectionChanged, this, &YACReaderMetadataBrowser::updateLookupButton);
+    connect(unidentifiedList, &QListWidget::itemSelectionChanged, this, &YACReaderMetadataBrowser::updateLookupButtons);
     connect(unidentifiedList, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *, int) {
         openMetadataLookup();
     });
-    connect(tabs, &QTabWidget::currentChanged, this, [this](int) { updateLookupButton(); });
+    connect(tabs, &QTabWidget::currentChanged, this, [this](int) { updateLookupButtons(); });
     connect(lookupButton, &QPushButton::clicked, this, &YACReaderMetadataBrowser::openMetadataLookup);
+    connect(inspectButton, &QPushButton::clicked, this, &YACReaderMetadataBrowser::openArchiveInspector);
     connect(lookupDialog, &YACReaderMetadataLookupDialog::metadataSaved, this, [this](qulonglong comicInfoId) {
         QString renameError;
         const auto renameResult = YACReaderFilenameNormalizer::offerRename(
                 this, currentLibraryPath, comicInfoId, &renameError);
-        if (renameResult == YACReaderFilenameNormalizer::Result::Failed && !renameError.isEmpty()) {
+        if (renameResult == YACReaderFilenameNormalizer::Result::Failed && !renameError.isEmpty())
             QMessageBox::warning(this, tr("Rename failed"), renameError);
-        }
 
         refresh();
 
@@ -103,7 +112,7 @@ YACReaderMetadataBrowser::YACReaderMetadataBrowser(QWidget *parent)
             QMetaObject::invokeMethod(topLevelWindow, "reloadCurrentLibrary", Qt::QueuedConnection);
     });
 
-    updateLookupButton();
+    updateLookupButtons();
 }
 
 void YACReaderMetadataBrowser::setLibraryPath(const QString &libraryPath)
@@ -127,7 +136,7 @@ void YACReaderMetadataBrowser::clear()
     tagsList->clear();
     unidentifiedList->clear();
     tabs->setTabText(tabs->indexOf(unidentifiedList), tr("Unidentified"));
-    updateLookupButton();
+    updateLookupButtons();
 }
 
 void YACReaderMetadataBrowser::refresh()
@@ -199,7 +208,7 @@ void YACReaderMetadataBrowser::refresh()
     populateUnidentified();
     tabs->setTabText(tabs->indexOf(unidentifiedList), tr("Unidentified (%1)").arg(unidentifiedList->count()));
     applyFilter(filterEdit->text());
-    updateLookupButton();
+    updateLookupButtons();
 }
 
 void YACReaderMetadataBrowser::populateList(QListWidget *list, QList<FacetEntry> entries)
@@ -292,7 +301,7 @@ void YACReaderMetadataBrowser::applyFilter(const QString &text)
             item->setHidden(!needle.isEmpty() && !value.contains(needle, Qt::CaseInsensitive));
         }
     }
-    updateLookupButton();
+    updateLookupButtons();
 }
 
 void YACReaderMetadataBrowser::activateItem(QListWidgetItem *item, const QString &field)
@@ -309,12 +318,16 @@ void YACReaderMetadataBrowser::activateItem(QListWidgetItem *item, const QString
     emit searchRequested(QStringLiteral("%1:\"%2\"").arg(field, value));
 }
 
-void YACReaderMetadataBrowser::updateLookupButton()
+void YACReaderMetadataBrowser::updateLookupButtons()
 {
     const bool onUnidentifiedTab = tabs->currentWidget() == unidentifiedList;
+    const bool hasVisibleSelection = onUnidentifiedTab && unidentifiedList->currentItem() != nullptr
+            && !unidentifiedList->currentItem()->isHidden();
+
     lookupButton->setVisible(onUnidentifiedTab);
-    lookupButton->setEnabled(onUnidentifiedTab && unidentifiedList->currentItem() != nullptr
-                             && !unidentifiedList->currentItem()->isHidden());
+    inspectButton->setVisible(onUnidentifiedTab);
+    lookupButton->setEnabled(hasVisibleSelection);
+    inspectButton->setEnabled(hasVisibleSelection);
 }
 
 void YACReaderMetadataBrowser::openMetadataLookup()
@@ -333,4 +346,18 @@ void YACReaderMetadataBrowser::openMetadataLookup()
     lookupDialog->open();
     lookupDialog->raise();
     lookupDialog->activateWindow();
+}
+
+void YACReaderMetadataBrowser::openArchiveInspector()
+{
+    auto *item = unidentifiedList->currentItem();
+    if (item == nullptr || currentLibraryPath.isEmpty())
+        return;
+
+    archiveInspectorDialog->inspectComic(
+            currentLibraryPath,
+            item->data(ComicInfoIdRole).toULongLong());
+    archiveInspectorDialog->open();
+    archiveInspectorDialog->raise();
+    archiveInspectorDialog->activateWindow();
 }
