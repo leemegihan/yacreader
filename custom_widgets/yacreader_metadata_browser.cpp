@@ -38,7 +38,6 @@ YACReaderMetadataBrowser::YACReaderMetadataBrowser(QWidget *parent)
     refreshButton->setToolTip(tr("Refresh authors and tags"));
 
     for (auto *list : { writersList, tagsList }) {
-        list->setHeaderHidden(true);
         list->setSelectionMode(QAbstractItemView::SingleSelection);
         list->setUniformItemSizes(true);
         list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
