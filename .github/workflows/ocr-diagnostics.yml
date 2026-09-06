@@ -27,12 +27,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
-      - uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.9.3'
-          arch: macos
-          modules: 'qt5compat qtmultimedia qtimageformats qtshadertools qtspeech'
-          cache: true
+      - run: |
+          pip3 install --break-system-packages aqtinstall
+          python3 -m aqt install-qt mac desktop 6.9.3 -m qt5compat qtmultimedia qtimageformats qtshadertools qtspeech
+          echo "$GITHUB_WORKSPACE/6.9.3/macos/bin" >> "$GITHUB_PATH"
       - run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DPDF_BACKEND=pdfkit -DDECOMPRESSION_BACKEND=7zip
           cmake --build build --target local_metadata_test --parallel "$(sysctl -n hw.ncpu)"
