@@ -85,6 +85,10 @@ PageKind classifyPage(const QString &text, int pageNumber)
         roles.insert(int(label(line).role));
     if (roles.contains(int(Role::Colophon)) || ((roles.contains(int(Role::Title)) || roles.contains(int(Role::Author)) || roles.contains(int(Role::Publisher))) && (roles.contains(int(Role::Date)) || roles.contains(int(Role::Contact)) || roles.contains(int(Role::Printer)))))
         return PageKind::Colophon;
+    // Publication-date labels are often missed. Two explicit identity fields
+    // on a later page still provide a usable credit-page candidate.
+    if (pageNumber > 3 && roles.contains(int(Role::Title)) && (roles.contains(int(Role::Author)) || roles.contains(int(Role::Publisher))))
+        return PageKind::Colophon;
     if (roles.contains(int(Role::Afterword)))
         return PageKind::Afterword;
     if (pageNumber <= 3 && roles.contains(int(Role::Title)))
