@@ -191,9 +191,9 @@ QString YACReaderFilenameNormalizer::normalizedFileName(const QString &writer,
 }
 
 YACReaderFilenameNormalizer::Result YACReaderFilenameNormalizer::offerRename(QWidget *parent,
-                                                                              const QString &libraryPath,
-                                                                              qulonglong comicInfoId,
-                                                                              QString *errorMessage)
+                                                                             const QString &libraryPath,
+                                                                             qulonglong comicInfoId,
+                                                                             QString *errorMessage)
 {
     RenameData data;
     QString error;

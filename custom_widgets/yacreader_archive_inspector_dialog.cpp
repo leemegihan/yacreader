@@ -20,20 +20,15 @@
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QUuid>
+#include <QVBoxLayout>
 #include <QVariant>
 #include <QVector>
-#include <QVBoxLayout>
 
 #include <algorithm>
 #include <utility>
 
 YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent)
-    : QDialog(parent)
-    , fileLabel(new QLabel(this))
-    , statusLabel(new QLabel(this))
-    , scrollArea(new QScrollArea(this))
-    , pagesWidget(new QWidget(scrollArea))
-    , pagesLayout(new QGridLayout(pagesWidget))
+    : QDialog(parent), fileLabel(new QLabel(this)), statusLabel(new QLabel(this)), scrollArea(new QScrollArea(this)), pagesWidget(new QWidget(scrollArea)), pagesLayout(new QGridLayout(pagesWidget))
 {
     setWindowTitle(tr("Inspect comic pages"));
     resize(860, 720);

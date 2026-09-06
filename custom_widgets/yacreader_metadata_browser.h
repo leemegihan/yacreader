@@ -18,11 +18,12 @@ class YACReaderMetadataBrowser : public QWidget
 public:
     explicit YACReaderMetadataBrowser(QWidget *parent = nullptr);
 
-    void setLibraryPath(const QString &libraryPath);
+    void setLibraryPath(const QString &libraryPath, bool readOnly = false);
     QString libraryPath() const;
 
 signals:
     void searchRequested(const QString &query);
+    void libraryContentChanged(const QString &libraryPath);
 
 public slots:
     void refresh();
@@ -52,6 +53,7 @@ private:
     void openArchiveInspector();
 
     QString currentLibraryPath;
+    bool libraryReadOnly = false;
     QLineEdit *filterEdit;
     QTabWidget *tabs;
     QListWidget *writersList;

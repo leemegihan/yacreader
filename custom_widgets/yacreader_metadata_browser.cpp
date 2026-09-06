@@ -9,8 +9,8 @@
 #include <QCollator>
 #include <QDir>
 #include <QFileInfo>
-#include <QHash>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
@@ -23,23 +23,13 @@
 #include <QTabWidget>
 #include <QToolButton>
 #include <QUuid>
-#include <QVariant>
 #include <QVBoxLayout>
+#include <QVariant>
 
 #include <algorithm>
 
 YACReaderMetadataBrowser::YACReaderMetadataBrowser(QWidget *parent)
-    : QWidget(parent)
-    , filterEdit(new QLineEdit(this))
-    , tabs(new QTabWidget(this))
-    , writersList(new QListWidget(this))
-    , tagsList(new QListWidget(this))
-    , unidentifiedList(new QListWidget(this))
-    , refreshButton(new QToolButton(this))
-    , lookupButton(new QPushButton(tr("Find metadata…"), this))
-    , inspectButton(new QPushButton(tr("Inspect first / last pages…"), this))
-    , lookupDialog(new YACReaderMetadataLookupDialog(this))
-    , archiveInspectorDialog(new YACReaderArchiveInspectorDialog(this))
+    : QWidget(parent), filterEdit(new QLineEdit(this)), tabs(new QTabWidget(this)), writersList(new QListWidget(this)), tagsList(new QListWidget(this)), unidentifiedList(new QListWidget(this)), refreshButton(new QToolButton(this)), lookupButton(new QPushButton(tr("Find metadata…"), this)), inspectButton(new QPushButton(tr("Inspect first / last pages…"), this)), lookupDialog(new YACReaderMetadataLookupDialog(this)), archiveInspectorDialog(new YACReaderArchiveInspectorDialog(this))
 {
     filterEdit->setPlaceholderText(tr("Filter authors, tags or unidentified comics"));
     filterEdit->setClearButtonEnabled(true);
@@ -90,38 +80,38 @@ YACReaderMetadataBrowser::YACReaderMetadataBrowser(QWidget *parent)
         activateItem(item, QStringLiteral("tags"));
     });
     connect(unidentifiedList, &QListWidget::itemSelectionChanged, this, &YACReaderMetadataBrowser::updateLookupButtons);
-    connect(unidentifiedList, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *, int) {
+    connect(unidentifiedList, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *) {
         openMetadataLookup();
     });
     connect(tabs, &QTabWidget::currentChanged, this, [this](int) { updateLookupButtons(); });
     connect(lookupButton, &QPushButton::clicked, this, &YACReaderMetadataBrowser::openMetadataLookup);
     connect(inspectButton, &QPushButton::clicked, this, &YACReaderMetadataBrowser::openArchiveInspector);
-    connect(lookupDialog, &YACReaderMetadataLookupDialog::metadataSaved, this, [this](qulonglong comicInfoId) {
+    connect(lookupDialog, &YACReaderMetadataLookupDialog::metadataSaved, this, [this](const QString &savedLibraryPath, qulonglong comicInfoId) {
+        if (savedLibraryPath != currentLibraryPath || libraryReadOnly)
+            return;
+
         QString renameError;
         const auto renameResult = YACReaderFilenameNormalizer::offerRename(
-                this, currentLibraryPath, comicInfoId, &renameError);
+                this, savedLibraryPath, comicInfoId, &renameError);
         if (renameResult == YACReaderFilenameNormalizer::Result::Failed && !renameError.isEmpty())
             QMessageBox::warning(this, tr("Rename failed"), renameError);
 
-        refresh();
-
-        // The metadata browser lives in a shared widget library, so keep it
-        // decoupled from LibraryWindow's header while still refreshing the
-        // current YACReaderLibrary model after metadata or a file path changes.
-        if (auto *topLevelWindow = window())
-            QMetaObject::invokeMethod(topLevelWindow, "reloadCurrentLibrary", Qt::QueuedConnection);
+        emit libraryContentChanged(savedLibraryPath);
     });
 
     updateLookupButtons();
 }
 
-void YACReaderMetadataBrowser::setLibraryPath(const QString &libraryPath)
+void YACReaderMetadataBrowser::setLibraryPath(const QString &libraryPath, bool readOnly)
 {
-    if (currentLibraryPath == libraryPath)
-        return;
+    if (currentLibraryPath != libraryPath || libraryReadOnly != readOnly) {
+        lookupDialog->reject();
+        archiveInspectorDialog->reject();
+        currentLibraryPath = libraryPath;
+        libraryReadOnly = readOnly;
+        filterEdit->clear();
+    }
 
-    currentLibraryPath = libraryPath;
-    filterEdit->clear();
     refresh();
 }
 
@@ -321,19 +311,18 @@ void YACReaderMetadataBrowser::activateItem(QListWidgetItem *item, const QString
 void YACReaderMetadataBrowser::updateLookupButtons()
 {
     const bool onUnidentifiedTab = tabs->currentWidget() == unidentifiedList;
-    const bool hasVisibleSelection = onUnidentifiedTab && unidentifiedList->currentItem() != nullptr
-            && !unidentifiedList->currentItem()->isHidden();
+    const bool hasVisibleSelection = onUnidentifiedTab && unidentifiedList->currentItem() != nullptr && !unidentifiedList->currentItem()->isHidden();
 
     lookupButton->setVisible(onUnidentifiedTab);
     inspectButton->setVisible(onUnidentifiedTab);
-    lookupButton->setEnabled(hasVisibleSelection);
-    inspectButton->setEnabled(hasVisibleSelection);
+    lookupButton->setEnabled(hasVisibleSelection && !libraryReadOnly);
+    inspectButton->setEnabled(hasVisibleSelection && !libraryReadOnly);
 }
 
 void YACReaderMetadataBrowser::openMetadataLookup()
 {
     auto *item = unidentifiedList->currentItem();
-    if (item == nullptr || currentLibraryPath.isEmpty())
+    if (item == nullptr || item->isHidden() || currentLibraryPath.isEmpty() || libraryReadOnly)
         return;
 
     lookupDialog->setComic(
@@ -351,7 +340,7 @@ void YACReaderMetadataBrowser::openMetadataLookup()
 void YACReaderMetadataBrowser::openArchiveInspector()
 {
     auto *item = unidentifiedList->currentItem();
-    if (item == nullptr || currentLibraryPath.isEmpty())
+    if (item == nullptr || item->isHidden() || currentLibraryPath.isEmpty() || libraryReadOnly)
         return;
 
     archiveInspectorDialog->inspectComic(

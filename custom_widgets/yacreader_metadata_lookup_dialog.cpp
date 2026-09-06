@@ -28,8 +28,8 @@
 #include <QTextBrowser>
 #include <QTextDocumentFragment>
 #include <QTimer>
-#include <QUuid>
 #include <QUrl>
+#include <QUuid>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -58,24 +58,7 @@ void appendUnique(QStringList &target, QSet<QString> &seen, const QString &value
 }
 
 YACReaderMetadataLookupDialog::YACReaderMetadataLookupDialog(QWidget *parent)
-    : QDialog(parent)
-    , networkManager(new QNetworkAccessManager(this))
-    , fileNameLabel(new QLabel(this))
-    , existingInfoLabel(new QLabel(this))
-    , searchEdit(new QLineEdit(this))
-    , searchButton(new QPushButton(tr("Search"), this))
-    , statusLabel(new QLabel(this))
-    , resultsList(new QListWidget(this))
-    , titleChoice(new QComboBox(this))
-    , authorsLabel(new QLabel(this))
-    , genresLabel(new QLabel(this))
-    , formatLabel(new QLabel(this))
-    , yearLabel(new QLabel(this))
-    , matchLabel(new QLabel(this))
-    , tagsEdit(new QPlainTextEdit(this))
-    , descriptionView(new QTextBrowser(this))
-    , overwriteExisting(new QCheckBox(tr("Overwrite existing title, author and tags"), this))
-    , buttonBox(new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Cancel, this))
+    : QDialog(parent), networkManager(new QNetworkAccessManager(this)), fileNameLabel(new QLabel(this)), existingInfoLabel(new QLabel(this)), searchEdit(new QLineEdit(this)), searchButton(new QPushButton(tr("Search"), this)), statusLabel(new QLabel(this)), resultsList(new QListWidget(this)), titleChoice(new QComboBox(this)), authorsLabel(new QLabel(this)), genresLabel(new QLabel(this)), formatLabel(new QLabel(this)), yearLabel(new QLabel(this)), matchLabel(new QLabel(this)), tagsEdit(new QPlainTextEdit(this)), descriptionView(new QTextBrowser(this)), overwriteExisting(new QCheckBox(tr("Overwrite existing title, author and tags"), this)), buttonBox(new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Cancel, this))
 {
     setWindowTitle(tr("Find manga metadata"));
     resize(840, 620);
@@ -142,15 +125,17 @@ YACReaderMetadataLookupDialog::YACReaderMetadataLookupDialog(QWidget *parent)
     connect(resultsList, &QListWidget::currentRowChanged, this, &YACReaderMetadataLookupDialog::showCandidate);
     connect(buttonBox->button(QDialogButtonBox::Apply), &QPushButton::clicked, this, &YACReaderMetadataLookupDialog::applySelectedCandidate);
     connect(buttonBox, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    connect(this, &QDialog::finished, this, &YACReaderMetadataLookupDialog::cancelSearch);
 }
 
 void YACReaderMetadataLookupDialog::setComic(const QString &libraryPath,
-                                              qulonglong comicInfoId,
-                                              const QString &fileName,
-                                              const QString &currentTitle,
-                                              const QString &currentWriter,
-                                              const QString &currentTags)
+                                             qulonglong comicInfoId,
+                                             const QString &fileName,
+                                             const QString &currentTitle,
+                                             const QString &currentWriter,
+                                             const QString &currentTags)
 {
+    cancelSearch();
     currentLibraryPath = libraryPath;
     currentComicInfoId = comicInfoId;
     currentFileName = fileName;
@@ -288,6 +273,20 @@ void YACReaderMetadataLookupDialog::setBusy(bool busy, const QString &status)
         statusLabel->setText(status);
 }
 
+void YACReaderMetadataLookupDialog::cancelSearch()
+{
+    if (activeReply != nullptr) {
+        // abort() can emit finished synchronously. Detach the old request before
+        // aborting so it cannot populate a newly selected comic's results.
+        QNetworkReply *reply = activeReply;
+        activeReply = nullptr;
+        disconnect(reply, nullptr, this, nullptr);
+        reply->abort();
+        reply->deleteLater();
+    }
+    setBusy(false);
+}
+
 void YACReaderMetadataLookupDialog::startSearch()
 {
     const QString search = searchEdit->text().trimmed();
@@ -339,7 +338,7 @@ query ($search: String) {
 
 void YACReaderMetadataLookupDialog::processSearchReply()
 {
-    if (activeReply == nullptr)
+    if (activeReply == nullptr || sender() != activeReply)
         return;
 
     QNetworkReply *reply = activeReply;
@@ -427,15 +426,13 @@ void YACReaderMetadataLookupDialog::processSearchReply()
         for (const auto &edgeValue : staffEdges) {
             const QJsonObject edge = edgeValue.toObject();
             const QString role = edge.value(QStringLiteral("role")).toString();
-            if (!role.contains(QStringLiteral("Story"), Qt::CaseInsensitive)
-                && !role.contains(QStringLiteral("Art"), Qt::CaseInsensitive)
-                && !role.contains(QStringLiteral("Creator"), Qt::CaseInsensitive))
+            if (!role.contains(QStringLiteral("Story"), Qt::CaseInsensitive) && !role.contains(QStringLiteral("Art"), Qt::CaseInsensitive) && !role.contains(QStringLiteral("Creator"), Qt::CaseInsensitive))
                 continue;
 
             const QJsonObject names = edge.value(QStringLiteral("node"))
-                                            .toObject()
-                                            .value(QStringLiteral("name"))
-                                            .toObject();
+                                              .toObject()
+                                              .value(QStringLiteral("name"))
+                                              .toObject();
             const QString name = firstNonEmpty({ names.value(QStringLiteral("native")).toString(),
                                                  names.value(QStringLiteral("full")).toString() });
             appendUnique(candidate.authors, seenAuthors, name);
@@ -618,6 +615,8 @@ void YACReaderMetadataLookupDialog::applySelectedCandidate()
         return;
     }
 
-    emit metadataSaved(currentComicInfoId);
+    const QString savedLibraryPath = currentLibraryPath;
+    const qulonglong savedComicInfoId = currentComicInfoId;
     accept();
+    emit metadataSaved(savedLibraryPath, savedComicInfoId);
 }

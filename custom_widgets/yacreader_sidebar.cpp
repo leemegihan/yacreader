@@ -6,7 +6,6 @@
 #include "yacreader_library_list_widget.h"
 #include "yacreader_metadata_browser.h"
 #include "yacreader_reading_lists_view.h"
-#include "yacreader_search_line_edit.h"
 #include "yacreader_titled_toolbar.h"
 
 #include <QLayout>
@@ -40,21 +39,6 @@ YACReaderSideBar::YACReaderSideBar(QWidget *parent)
     selectedLibrary->setContextMenuPolicy(Qt::ActionsContextMenu);
     selectedLibrary->setAttribute(Qt::WA_MacShowFocusRect, false);
     selectedLibrary->setFocusPolicy(Qt::NoFocus);
-
-    connect(selectedLibrary, &YACReaderLibraryListWidget::currentIndexChanged, this, [this](const QString &) {
-        metadataBrowser->setLibraryPath(selectedLibrary->currentPath());
-    });
-
-    // Reuse YACReaderLibrary's existing search language (writer:"...", tags:"...").
-    // On Windows/Linux the normal search field is a YACReaderSearchLineEdit child of
-    // the main window, so metadata browsing remains a thin UI layer over the existing
-    // search engine instead of introducing a second filtering path.
-    connect(metadataBrowser, &YACReaderMetadataBrowser::searchRequested, this, [this](const QString &query) {
-        if (auto *search = window()->findChild<YACReaderSearchLineEdit *>()) {
-            search->setText(query);
-            search->setFocus(Qt::ShortcutFocusReason);
-        }
-    });
 
     // layout
     QVBoxLayout *l = new QVBoxLayout;

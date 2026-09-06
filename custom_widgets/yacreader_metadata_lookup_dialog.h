@@ -31,7 +31,7 @@ public:
                   const QString &currentTags);
 
 signals:
-    void metadataSaved(qulonglong comicInfoId);
+    void metadataSaved(const QString &libraryPath, qulonglong comicInfoId);
 
 private slots:
     void startSearch();
@@ -40,6 +40,8 @@ private slots:
     void applySelectedCandidate();
 
 private:
+    friend class MetadataWorkflowTest;
+
     struct Candidate {
         qint64 sourceId = 0;
         QString romajiTitle;
@@ -62,6 +64,7 @@ private:
     static QString strippedDescription(const QString &description);
 
     void setBusy(bool busy, const QString &status = QString());
+    void cancelSearch();
     void clearResults();
     QString chosenTitle() const;
     bool saveCandidate(const Candidate &candidate, QString *errorMessage);
