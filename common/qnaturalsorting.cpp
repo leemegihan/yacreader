@@ -1,9 +1,13 @@
 #include "qnaturalsorting.h"
 
 #include <QCollator>
+#include <QLocale>
 
 static QCollator collatorCI = [] {
     QCollator c;
+    // Qt's C/POSIX collation ignores numeric mode ("10" sorts before "2").
+    if (c.locale().language() == QLocale::C)
+        c.setLocale(QLocale(QLocale::English, QLocale::UnitedStates));
     c.setNumericMode(true);
     c.setIgnorePunctuation(false);
     c.setCaseSensitivity(Qt::CaseInsensitive);
@@ -12,6 +16,8 @@ static QCollator collatorCI = [] {
 
 static QCollator collatorCS = [] {
     QCollator c;
+    if (c.locale().language() == QLocale::C)
+        c.setLocale(QLocale(QLocale::English, QLocale::UnitedStates));
     c.setNumericMode(true);
     c.setIgnorePunctuation(false);
     c.setCaseSensitivity(Qt::CaseSensitive);

@@ -55,7 +55,8 @@ jobs:
           path: ocr-build/vcpkg
 
       - name: Cache compiled OCR dependencies
-        uses: actions/cache@v4
+        id: ocr-cache
+        uses: actions/cache/restore@v4
         with:
           path: ocr-build/vcpkg/installed
           key: manga-tesseract-5.5.1-vcpkg-2025.06.13-x64-v1
@@ -76,6 +77,13 @@ jobs:
               Copy-Item "$($_.FullName)/copyright" "$ocr/licenses/$($_.Name).txt"
             }
           }
+
+      - name: Preserve successfully built OCR dependencies
+        if: steps.ocr-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ocr-build/vcpkg/installed
+          key: manga-tesseract-5.5.1-vcpkg-2025.06.13-x64-v1
 
       - name: Check out pinned OCR language data
         uses: actions/checkout@v6
@@ -151,6 +159,11 @@ jobs:
           foreach ($file in @('YACReader.exe', 'YACReaderLibrary.exe', 'YACReaderLibraryServer.exe', 'Qt6Core.dll', 'Qt6Widgets.dll', 'platforms/qwindows.dll', 'sqldrivers/qsqlite.dll', 'pdfium.dll', 'utils/7z.dll')) {
             if (!(Test-Path (Join-Path $package $file))) { throw "Missing runtime file: $file" }
           }
+          # Exercise the application's QProcess OCR wrapper against this Unicode
+          # install path too, not just a command-line invocation with relative paths.
+          $qtBin = Split-Path (Get-Command qmake.exe -ErrorAction Stop).Source
+          Copy-Item 'build/bin/local_metadata_test.exe' $package
+          Copy-Item "$qtBin/Qt6Test.dll" $package
           # Use only installed DLLs; no runner Qt fallback.
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
           Remove-Item Env:QT_PLUGIN_PATH -ErrorAction SilentlyContinue
@@ -176,6 +189,12 @@ jobs:
               if ($required -notin $languages) { throw "Missing OCR language: $required" }
             }
           } finally { Pop-Location }
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          & "$package/local_metadata_test.exe" realOcr -o "$env:GITHUB_WORKSPACE/build/installed-ocr.txt,txt"
+          $ocrTestExit = $LASTEXITCODE
+          Get-Content "$env:GITHUB_WORKSPACE/build/installed-ocr.txt"
+          if ($ocrTestExit -ne 0) { throw 'Application OCR wrapper failed in the installed Unicode path' }
+          Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
           foreach ($name in @('YACReader.exe', 'YACReaderLibrary.exe')) {
             $process = Start-Process (Join-Path $package $name) -WorkingDirectory $package -PassThru
             try {
@@ -209,6 +228,8 @@ jobs:
           name: manga-windows-diagnostics-${{ github.sha }}
           path: |
             build/installer.log
+            build/installed-ocr.txt
+            build/bin/ocr-fixture.png
             build/test-results.xml
             build/Testing/Temporary/LastTest.log
             build/CMakeFiles/CMakeConfigureLog.yaml

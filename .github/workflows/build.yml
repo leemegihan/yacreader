@@ -101,7 +101,9 @@ jobs:
             -DPDF_BACKEND=poppler \
             -DBUILD_NUMBER="${{ needs.initialization.outputs.build_number }}" \
             -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --parallel 2
+          cmake --build build --target local_metadata_test --parallel "$(nproc)"
+          ctest --test-dir build -R '^local_metadata_test$' --output-on-failure
+          cmake --build build --parallel "$(nproc)"
 
       - name: Run tests
         run: ctest --test-dir build --output-on-failure
@@ -136,7 +138,9 @@ jobs:
             -DPDF_BACKEND=poppler \
             -DBUILD_NUMBER="${{ needs.initialization.outputs.build_number }}" \
             -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --parallel 2
+          cmake --build build --target local_metadata_test --parallel "$(nproc)"
+          ctest --test-dir build -R '^local_metadata_test$' --output-on-failure
+          cmake --build build --parallel "$(nproc)"
 
       - name: Run tests
         run: ctest --test-dir build --output-on-failure
