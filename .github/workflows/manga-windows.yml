@@ -37,9 +37,10 @@ jobs:
           if errorlevel 1 exit /b 1
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON -DDECOMPRESSION_BACKEND=7zip -DPDF_BACKEND=pdfium -DBUILD_NUMBER=${{ github.run_number }}
           if errorlevel 1 exit /b 1
-          cmake --build build --target metadata_search_test --parallel %NUMBER_OF_PROCESSORS%
+          cmake --build build --target metadata_search_test metadata_workflow_test --parallel %NUMBER_OF_PROCESSORS%
           if errorlevel 1 exit /b 1
-          ctest --test-dir build -R "^metadata_search_test$" --output-on-failure
+          set PATH=%GITHUB_WORKSPACE%\dependencies\pdfium\win\x64;%PATH%
+          ctest --test-dir build -R "^metadata_(search|workflow)_test$" --output-on-failure
           if errorlevel 1 exit /b 1
           cmake --build build --parallel %NUMBER_OF_PROCESSORS% -- -k 0
           if errorlevel 1 exit /b 1
@@ -65,16 +66,32 @@ jobs:
           call create_installer.cmd x64 7z ${{ github.run_number }}
           if errorlevel 1 exit /b 1
 
-      - name: Verify deployed files and GUI startup
+      - name: Install package and verify GUI startup
         run: |
-          $package = Join-Path $env:GITHUB_WORKSPACE 'ci/win/installer_contents'
-          foreach ($file in @('YACReader.exe', 'YACReaderLibrary.exe', 'YACReaderLibraryServer.exe', 'Qt6Core.dll', 'Qt6Widgets.dll', 'platforms/qwindows.dll', 'sqldrivers/qsqlite.dll', 'pdfium.dll', 'utils/7z.dll')) {
-            if (!(Test-Path (Join-Path $package $file))) { throw "Missing runtime file: $file" }
-          }
-          # Use an isolated profile and only packaged DLLs; no runner Qt fallback.
+          $staging = Join-Path $env:GITHUB_WORKSPACE 'ci/win/installer_contents'
+          $package = Join-Path $env:RUNNER_TEMP 'manga-installed'
+          $installers = @(Get-ChildItem 'ci/win/Output/YACReader*.exe')
+          if ($installers.Count -ne 1) { throw 'Expected exactly one installer' }
           $env:APPDATA = Join-Path $env:RUNNER_TEMP 'manga-smoke/roaming'
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'manga-smoke/local'
           New-Item -ItemType Directory -Force $env:APPDATA, $env:LOCALAPPDATA | Out-Null
+          $installLog = Join-Path $env:GITHUB_WORKSPACE 'build/installer.log'
+          $setup = Start-Process $installers[0].FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOICONS', '/TASKS=""', "/DIR=`"$package`"", "/LOG=`"$installLog`"") -PassThru
+          if (!$setup.WaitForExit(180000)) {
+            Stop-Process -Id $setup.Id -Force
+            throw 'Installer timed out'
+          }
+          if ($setup.ExitCode -notin @(0, 3010)) { throw "Installer failed: $($setup.ExitCode)" }
+          # Compare the installed DLL set and bytes against what Qt actually deployed.
+          foreach ($dll in Get-ChildItem $staging -Filter '*.dll') {
+            $installedDll = Join-Path $package $dll.Name
+            if (!(Test-Path $installedDll)) { throw "Installer omitted: $($dll.Name)" }
+            if ((Get-FileHash $dll.FullName).Hash -ne (Get-FileHash $installedDll).Hash) { throw "Installer altered: $($dll.Name)" }
+          }
+          foreach ($file in @('YACReader.exe', 'YACReaderLibrary.exe', 'YACReaderLibraryServer.exe', 'Qt6Core.dll', 'Qt6Widgets.dll', 'platforms/qwindows.dll', 'sqldrivers/qsqlite.dll', 'pdfium.dll', 'utils/7z.dll')) {
+            if (!(Test-Path (Join-Path $package $file))) { throw "Missing runtime file: $file" }
+          }
+          # Use only installed DLLs; no runner Qt fallback.
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
           Remove-Item Env:QT_PLUGIN_PATH -ErrorAction SilentlyContinue
           Remove-Item Env:QML2_IMPORT_PATH -ErrorAction SilentlyContinue
@@ -111,6 +128,7 @@ jobs:
         with:
           name: manga-windows-diagnostics-${{ github.sha }}
           path: |
+            build/installer.log
             build/test-results.xml
             build/Testing/Temporary/LastTest.log
             build/CMakeFiles/CMakeConfigureLog.yaml

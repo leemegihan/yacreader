@@ -64,6 +64,30 @@ if(APPLE)
     )
 endif()
 
+# Isolate metadata widgets so tests do not pull the full application's combined
+# MOC object (and unrelated theme/sidebar symbols) into the MSVC link.
+add_library(metadata_widgets STATIC
+    yacreader_metadata_browser.h
+    yacreader_metadata_browser.cpp
+    yacreader_metadata_lookup_dialog.h
+    yacreader_metadata_lookup_dialog.cpp
+    yacreader_filename_normalizer.h
+    yacreader_filename_normalizer.cpp
+    yacreader_archive_inspector_dialog.h
+    yacreader_archive_inspector_dialog.cpp
+)
+target_include_directories(metadata_widgets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(metadata_widgets PRIVATE ${PROJECT_SOURCE_DIR}/YACReaderLibrary/db)
+target_compile_definitions(metadata_widgets PRIVATE YACREADER_LIBRARY)
+yacreader_apply_build_options(metadata_widgets)
+target_link_libraries(metadata_widgets PUBLIC
+    Qt6::Core
+    Qt6::Widgets
+    Qt6::Network
+    Qt6::Sql
+    comic_backend
+)
+
 # --- custom_widgets_library (YACReaderLibrary-specific) ---
 set(LIBRARY_EXTRA_WIDGETS
     yacreader_search_line_edit.h
@@ -74,14 +98,6 @@ set(LIBRARY_EXTRA_WIDGETS
     yacreader_table_view.cpp
     yacreader_sidebar.h
     yacreader_sidebar.cpp
-    yacreader_metadata_browser.h
-    yacreader_metadata_browser.cpp
-    yacreader_metadata_lookup_dialog.h
-    yacreader_metadata_lookup_dialog.cpp
-    yacreader_filename_normalizer.h
-    yacreader_filename_normalizer.cpp
-    yacreader_archive_inspector_dialog.h
-    yacreader_archive_inspector_dialog.cpp
     yacreader_library_list_widget.h
     yacreader_library_list_widget.cpp
     yacreader_library_item_widget.h
@@ -109,6 +125,7 @@ if(BUILD_NUMBER)
     target_compile_definitions(custom_widgets_library PRIVATE "BUILD_NUMBER=\"${BUILD_NUMBER}\"")
 endif()
 target_link_libraries(custom_widgets_library PUBLIC
+    metadata_widgets
     Qt6::Core
     Qt6::Widgets
     Qt6::Network

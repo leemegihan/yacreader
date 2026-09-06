@@ -34,36 +34,9 @@ Root: HKCR; SubKey: YACReader Data Base (ydb); ValueType: string; ValueData: YAC
 Root: HKCR; Subkey: YACReader Data Base (ydb)\DefaultIcon; ValueType: string; ValueData: {app}\YACReaderLibrary.exe,1; Flags: uninsdeletevalue
 
 [Files]
-;Qt Frameworks
-Source: Qt6Widgets.dll; DestDir: {app}
-Source: Qt6Core.dll; DestDir: {app}
-Source: Qt6Core5Compat.dll; DestDir: {app}
-Source: Qt6Gui.dll; DestDir: {app}
-Source: Qt6Multimedia.dll; DestDir: {app}
-Source: Qt6Network.dll; DestDir: {app}
-Source: Qt6OpenGL.dll; DestDir: {app}
-Source: Qt6Qml.dll; DestDir: {app}
-Source: Qt6QmlModels.dll; DestDir: {app}
-Source: Qt6QmlMeta.dll; DestDir: {app}
-Source: Qt6QmlWorkerScript.dll; DestDir: {app}
-Source: Qt6Quick.dll; DestDir: {app}
-Source: Qt6QuickEffects.dll; DestDir: {app}
-Source: Qt6QuickControls2.dll; DestDir: {app}
-Source: Qt6QuickControls2Impl.dll; DestDir: {app}
-Source: Qt6QuickControls2Basic.dll; DestDir: {app}
-Source: Qt6QuickControls2BasicStyleImpl.dll; DestDir: {app}
-Source: Qt6QuickControls2Fusion.dll; DestDir: {app}
-Source: Qt6QuickControls2FusionStyleImpl.dll; DestDir: {app}
-Source: Qt6QuickLayouts.dll; DestDir: {app}
-Source: Qt6QuickShapes.dll; DestDir: {app}
-Source: Qt6QuickTemplates2.dll; DestDir: {app}
-Source: Qt6QuickWidgets.dll; DestDir: {app}
-Source: Qt6Sql.dll; DestDir: {app}
-Source: Qt6Svg.dll; DestDir: {app}
-Source: Qt6TextToSpeech.dll; DestDir: {app}
-
-Source: opengl32sw.dll; DestDir: {app}; Flags: skipifsourcedoesntexist
-Source: D3Dcompiler_47.dll; DestDir: {app}; Flags: skipifsourcedoesntexist
+;Include every root DLL deployed by windeployqt (Qt modules, multimedia and graphics runtimes).
+;The dependency set changes between Qt releases, so do not maintain a partial DLL allowlist.
+Source: *.dll; DestDir: {app}
 
 ;Qt PlugIns
 Source:generic\*;  DestDir: {app}\generic\
@@ -81,7 +54,6 @@ Source:translations\*;  DestDir: {app}\translations\
 
 
 ;Libs
-Source: pdfium.dll; DestDir: {app}
 Source: openssl\*; DestDir: {app}
 
 ;vcredist
