@@ -25,12 +25,13 @@ public:
 
 signals:
     void metadataSaved(const QString &libraryPath, qulonglong comicInfoId);
-    void titleSearchRequested(const QString &libraryPath, qulonglong comicInfoId, const QString &title, const QString &author, int pageCount);
+    void titleSearchRequested(const QString &libraryPath, qulonglong comicInfoId, const QString &title, const QString &author, int pageCount, const QStringList &nameHints, const QStringList &publishers, bool runSearch);
 
 private:
     friend class LocalMetadataTest;
     void start(bool ocr);
     void recognizeRegion();
+    void requestSearch(bool automatic);
     LocalMetadata::OcrOptions ocrOptions() const;
     void cancel();
     void showPage(int row);
@@ -43,6 +44,7 @@ private:
     qulonglong comicInfoId = 0;
     LocalMetadata::Cancellation cancellation;
     LocalMetadata::Result result;
+    bool automaticSearchDone = false;
 
     QLabel *fileLabel;
     QLabel *statusLabel;
@@ -52,6 +54,9 @@ private:
     QPlainTextEdit *pageText;
     QLineEdit *titleEdit;
     QLineEdit *authorEdit;
+    QLineEdit *publisherEdit;
+    QCheckBox *autoSearch;
+    QLabel *pageInfo;
     QCheckBox *overwrite;
     QComboBox *language;
     QComboBox *quality;

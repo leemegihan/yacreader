@@ -148,57 +148,6 @@ Result readPages(const QString &path, int perEnd, const Cancellation &cancel)
     return result;
 }
 
-QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePath)
-{
-    QVector<Suggestion> result;
-    auto append = [&](Suggestion::Field field, QString value, const QString &reason, int page, bool labelled = false) {
-        value = value.simplified();
-        if (value.size() < 2 || value.size() > 180 || value.contains(QStringLiteral("http"), Qt::CaseInsensitive) || value.contains(QLatin1Char('@')))
-            return;
-        for (const auto &existing : result) {
-            if (existing.field == field && existing.value.compare(value, Qt::CaseInsensitive) == 0 && existing.page == page)
-                return;
-        }
-        result.append({ field, value, reason, page, labelled });
-    };
-    // Role labels are evidence, not proof of identity. Translators/publishers and
-    // circles are deliberately not treated as individual authors.
-    const QRegularExpression author(QStringLiteral(R"(^\s*(?:著者|作者|著作|原作|作画|漫画|작가|저자|글[・·/]그림|글|그림|author|writer|artist|story\s*(?:&|and)\s*art(?:\s*by)?)\s*(?:[:：]\s*|\s+)(.+)$)"), QRegularExpression::CaseInsensitiveOption);
-    const QRegularExpression title(QStringLiteral(R"(^\s*(?:作品名|書名|タイトル|제목|작품명|title)\s*(?:[:：]\s*|\s+)(.+)$)"), QRegularExpression::CaseInsensitiveOption);
-    for (const auto &page : pages) {
-        const auto lines = page.text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-        for (int index = 0; index < lines.size(); ++index) {
-            QString line = lines.at(index).trimmed();
-            const QRegularExpression labelOnly(QStringLiteral(R"(^(?:著者|作者|原作|作画|漫画|작가|저자|author|writer|artist|作品名|書名|タイトル|제목|작품명|title)\s*[:：]?$)"), QRegularExpression::CaseInsensitiveOption);
-            if (labelOnly.match(line).hasMatch() && index + 1 < lines.size()) {
-                line.remove(QRegularExpression(QStringLiteral("[:：]$")));
-                line += QStringLiteral(": ") + lines.at(++index).trimmed();
-            }
-            const auto authorMatch = author.match(line);
-            const auto titleMatch = title.match(line);
-            if (authorMatch.hasMatch())
-                append(Suggestion::Author, authorMatch.captured(1), tr("Author role label in page text — verify the credit."), page.number, true);
-            if (titleMatch.hasMatch())
-                append(Suggestion::Title, titleMatch.captured(1), tr("Title label in page text — verify against the page."), page.number, true);
-            if (!authorMatch.hasMatch() && !titleMatch.hasMatch() && page.number <= 2 && index < 6 && line.size() >= 3 && line.size() <= 60 && !line.contains(QLatin1Char(':')) && !line.contains(QChar(0xff1a)) && !line.contains(QRegularExpression(QStringLiteral("(?:copyright|reserved|https|www\\.|R.?18|無断|転載|번역|역자|translator|scanlation)"), QRegularExpression::CaseInsensitiveOption)))
-                append(Suggestion::Title, line, tr("Unlabelled opening-page text; may be dialogue or an advertisement, not the title."), page.number);
-        }
-    }
-    const QFileInfo info(sourcePath);
-    QString base = info.isDir() ? info.fileName() : info.completeBaseName();
-    const auto bracket = QRegularExpression(QStringLiteral(R"(^\[([^\]]+)\]\s*(.+)$)")).match(base);
-    if (bracket.hasMatch()) {
-        append(Suggestion::Author, bracket.captured(1), tr("Bracketed filename text only; may be a group or website."), 0);
-        base = bracket.captured(2);
-    }
-    append(Suggestion::Title, base, tr("Filename/folder name only; not confirmed by OCR."), 0);
-    const QString parent = info.dir().dirName();
-    const QStringList generic { "downloads", "download", "comics", "manga", "images", "pictures", "만화", "다운로드", "미분류", "unidentified", "temp" };
-    if (!generic.contains(parent.toCaseFolded()))
-        append(Suggestion::Author, parent, tr("Parent folder name only; may not be an author."), 0);
-    return result;
-}
-
 OcrOptions defaultOcrOptions()
 {
     OcrOptions options;
@@ -248,7 +197,7 @@ QImage prepareOcrImage(const QImage &image, const OcrOptions &options)
     return bordered.convertToFormat(QImage::Format_Grayscale8);
 }
 
-QString recognize(const QImage &image, const OcrOptions &options, const Cancellation &cancel, QString *error)
+static QByteArray runOcrTsv(const QImage &image, const OcrOptions &options, const Cancellation &cancel, QString *error)
 {
     error->clear();
     if (image.isNull()) {
@@ -276,7 +225,9 @@ QString recognize(const QImage &image, const OcrOptions &options, const Cancella
         *error = tr("Unsupported OCR text layout.");
         return { };
     }
-    QStringList arguments { "page.png", "stdout", "-l", options.language, "--oem", "1", "--psm", QString::number(segmentation), "--dpi", "300" };
+    // Use parameters rather than a 'tsv' config file: offline packages contain
+    // traineddata only, and must not depend on system Tesseract config files.
+    QStringList arguments { "page.png", "stdout", "-l", options.language, "--oem", "1", "--psm", QString::number(segmentation), "--dpi", "300", "-c", "tessedit_create_tsv=1", "-c", "tessedit_create_txt=0" };
     if (options.adaptiveThreshold)
         arguments << "-c" << "thresholding_method=2";
     QString dataPath = options.dataPath;
@@ -312,7 +263,35 @@ QString recognize(const QImage &image, const OcrOptions &options, const Cancella
         *error = tr("An OCR language is missing: %1").arg(warnings.left(1500));
         return { };
     }
-    return QString::fromUtf8(process.readAllStandardOutput()).left(50000).trimmed();
+    return process.readAllStandardOutput().left(4 * 1024 * 1024 + 1);
+}
+
+Reading recognizePage(const QImage &image, const OcrOptions &options, const Cancellation &cancel)
+{
+    const QStringList languages = options.language == "auto"
+            ? QStringList { options.vertical || options.segmentation == 5 ? "jpn_vert+eng" : "jpn+eng", "kor+eng" }
+            : QStringList { options.language };
+    QVector<Reading> readings;
+    for (const auto &language : languages) {
+        if (cancelled(cancel))
+            return { };
+        auto selected = options;
+        selected.language = language;
+        QString error;
+        const auto tsv = runOcrTsv(image, selected, cancel, &error);
+        auto reading = parseTsv(tsv, language);
+        if (!error.isEmpty())
+            reading.error = error;
+        readings.append(reading);
+    }
+    return options.language == "auto" ? chooseReading(readings) : readings.first();
+}
+
+QString recognize(const QImage &image, const OcrOptions &options, const Cancellation &cancel, QString *error)
+{
+    const auto reading = recognizePage(image, options, cancel);
+    *error = reading.error;
+    return reading.text;
 }
 
 Result analyze(const QString &path, int perEnd, const OcrOptions &options, const Cancellation &cancel)
@@ -321,8 +300,12 @@ Result analyze(const QString &path, int perEnd, const OcrOptions &options, const
     for (auto &page : result.pages) {
         if (cancelled(cancel))
             return result;
-        if (!page.image.isNull())
-            page.text = recognize(page.image, options, cancel, &page.error);
+        if (!page.image.isNull()) {
+            page.reading = recognizePage(page.image, options, cancel);
+            page.text = page.reading.text;
+            page.error = page.reading.error;
+            page.kind = classifyPage(page.text, page.number);
+        }
     }
     result.suggestions = suggest(result.pages, path);
     return result;
@@ -408,7 +391,12 @@ bool save(const QString &libraryPath, qulonglong comicInfoId, const QString &sou
             if (success) {
                 QJsonArray items;
                 for (const auto &item : evidence)
-                    items.append(QJsonObject { { "field", item.field == Suggestion::Title ? "title" : "author" }, { "value", item.value }, { "page", item.page }, { "reason", item.reason } });
+                    items.append(QJsonObject { { "field", item.field == Suggestion::Title ? "title" : item.field == Suggestion::Author ? "author"
+                                                                                                                                       : "publisher" },
+                                               { "value", item.value },
+                                               { "page", item.page },
+                                               { "reason", item.reason },
+                                               { "ocrConfidence", item.confidence } });
                 query.prepare(QStringLiteral("INSERT INTO local_metadata_evidence (comicInfoId,sourcePath,reviewedTitle,reviewedAuthor,evidence,created) VALUES (?,?,?,?,?,?)"));
                 query.addBindValue(QVariant::fromValue(comicInfoId));
                 query.addBindValue(sourcePath);

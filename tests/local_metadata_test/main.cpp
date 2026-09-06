@@ -10,6 +10,7 @@
 
 #include <QApplication>
 #include <QBuffer>
+#include <QCheckBox>
 #include <QDataStream>
 #include <QElapsedTimer>
 #include <QFile>
@@ -29,6 +30,14 @@
 #include <QUuid>
 
 namespace {
+QByteArray tsvFor(const QStringList &lines, int confidence = 90)
+{
+    QByteArray result = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
+    int number = 0;
+    for (const auto &line : lines)
+        result += QString("5\t1\t1\t1\t%1\t1\t0\t0\t100\t20\t%2\t%3\n").arg(++number).arg(confidence).arg(line).toUtf8();
+    return result;
+}
 QImage sampleImage()
 {
     QImage image(1400, 700, QImage::Format_RGB32);
@@ -100,6 +109,11 @@ private slots:
     void croppedCreditOcr();
     void preprocessingPreservesSource();
     void regionCoordinatesAndCandidatePrefill();
+    void spacedColophonAndPublisher();
+    void dialogueAndLabelBoundaries();
+    void tsvConfidenceAndLanguageSelection();
+    void automaticQueryUsesOnlyStrongCredits();
+    void realMultilingualColophon();
     void folderScanAndMetadataPreservation();
     void rootImageFolderSurvivesRescan();
     void closingAndSwitchingCancelWorkers();
@@ -186,9 +200,10 @@ void LocalMetadataTest::labelledCandidatesAreNotTranslators()
         }
         QVERIFY(!item.value.contains("Wrong Person"));
         QVERIFY(!item.value.contains("번역자"));
-        QVERIFY(!item.value.contains("Publisher"));
+        if (item.field == LocalMetadata::Suggestion::Author)
+            QVERIFY(!item.value.contains("Publisher"));
     }
-    QCOMPARE(imageEvidence, 5);
+    QCOMPARE(imageEvidence, 7); // Five author/title credits and two publisher/circle hints.
     QVERIFY(suggestions.last().page == 0);
 }
 
@@ -345,6 +360,152 @@ void LocalMetadataTest::croppedCreditOcr()
     }
 }
 
+void LocalMetadataTest::spacedColophonAndPublisher()
+{
+    LocalMetadata::Page page;
+    page.number = 87;
+    page.reading = LocalMetadata::parseTsv(tsvFor({ "あ と が き", "奥 付", "タ イ ト ル", "青 い 空 の 旅 3", "発 行 日", "2025 年 12 月 31 日", "発 行 者", "見 本 太 郎", "Special Thanks: Wrong Person", "連 絡 先", "example@example.test", "印 刷 所", "Example Press" }), "jpn+eng");
+    page.text = page.reading.text;
+    page.kind = LocalMetadata::classifyPage(page.text, page.number);
+    QCOMPARE(page.kind, LocalMetadata::PageKind::Colophon);
+    const auto suggestions = LocalMetadata::suggest({ page }, "/downloads/(edition) [example artist] Translated title.zip");
+    int titles = 0, publishers = 0, authors = 0;
+    bool nameHint = false;
+    for (const auto &item : suggestions) {
+        if (item.page == 0) {
+            nameHint = nameHint || item.value == "example artist";
+            continue;
+        }
+        QVERIFY(item.labelled);
+        QCOMPARE(item.confidence, 90.0);
+        if (item.field == LocalMetadata::Suggestion::Title) {
+            ++titles;
+            QCOMPARE(item.value, QString("青い空の旅 3"));
+        }
+        if (item.field == LocalMetadata::Suggestion::Publisher) {
+            ++publishers;
+            QCOMPARE(item.value, QString("見本太郎"));
+        }
+        if (item.field == LocalMetadata::Suggestion::Author)
+            ++authors;
+        QVERIFY(!item.value.contains("Wrong Person"));
+        QVERIFY(!item.value.contains("Example Press"));
+    }
+    QCOMPARE(titles, 1);
+    QCOMPARE(publishers, 1);
+    QCOMPARE(authors, 0);
+    QVERIFY(nameHint);
+    YACReaderArchiveInspectorDialog dialog;
+    LocalMetadata::Result result;
+    result.pages = { page };
+    result.pageCount = 88;
+    result.suggestions = suggestions;
+    dialog.showResult(result);
+    QCOMPARE(dialog.titleEdit->text(), QString("青い空の旅 3"));
+    QCOMPARE(dialog.publisherEdit->text(), QString("見本太郎"));
+    QVERIFY(dialog.authorEdit->text().isEmpty());
+}
+
+void LocalMetadataTest::dialogueAndLabelBoundaries()
+{
+    LocalMetadata::Page page;
+    page.number = 1;
+    page.text = "여기 놔둘게.\n꿈에 그리던 집\n44 A\nこんにちは\nタイトル\n発行者\n印刷所\nWrong Press";
+    for (const auto &suggestion : LocalMetadata::suggest({ page }, "/downloads/Book.zip"))
+        QCOMPARE(suggestion.page, 0);
+    QCOMPARE(LocalMetadata::classifyPage("hello there\n안녕하세요", 1), LocalMetadata::PageKind::Unknown);
+    QCOMPARE(LocalMetadata::classifyPage("あ と が き\nThanks for reading", 20), LocalMetadata::PageKind::Afterword);
+    QCOMPARE(LocalMetadata::classifyPage("Title: Test Book\nAuthor: Alice", 2), LocalMetadata::PageKind::TitlePage);
+    QCOMPARE(LocalMetadata::normalizeOcrText("タ イ ト ル\n한국어 제목\nTest Book"), QString("タイトル\n한국어 제목\nTest Book"));
+}
+
+void LocalMetadataTest::tsvConfidenceAndLanguageSelection()
+{
+    auto japanese = LocalMetadata::parseTsv(tsvFor({ "奥 付", "タ イ ト ル", "青 い 空", "発 行 者", "見 本 太 郎" }, 91), "jpn+eng");
+    auto wrongKorean = LocalMetadata::parseTsv(tsvFor({ "zx", "a 4" }, 35), "kor+eng");
+    auto selected = LocalMetadata::chooseReading({ wrongKorean, japanese });
+    QCOMPARE(selected.language, QString("jpn+eng"));
+    QVERIFY(!selected.uncertainLanguage);
+    auto korean = LocalMetadata::parseTsv(tsvFor({ "제목: 푸른 하늘", "작가: 홍길동" }, 92), "kor+eng");
+    auto wrongJapanese = LocalMetadata::parseTsv(tsvFor({ "あ", "xx" }, 30), "jpn+eng");
+    QCOMPARE(LocalMetadata::chooseReading({ wrongJapanese, korean }).language, QString("kor+eng"));
+    QCOMPARE(korean.confidence, 92.0);
+    QVERIFY(!LocalMetadata::parseTsv("bad response", "eng").error.isEmpty());
+    auto unknown = LocalMetadata::parseTsv(tsvFor({ "abc" }, -1), "eng");
+    QCOMPARE(unknown.confidence, -1.0);
+    QVERIFY(LocalMetadata::chooseReading({ unknown }).uncertainLanguage);
+    LocalMetadata::Reading missing;
+    missing.language = "kor+eng";
+    missing.error = "missing model";
+    selected = LocalMetadata::chooseReading({ missing, japanese });
+    QVERIFY(!selected.text.isEmpty());
+    QVERIFY(!selected.error.isEmpty());
+    QVERIFY(selected.uncertainLanguage);
+}
+
+void LocalMetadataTest::automaticQueryUsesOnlyStrongCredits()
+{
+    YACReaderArchiveInspectorDialog dialog;
+    QSignalSpy requested(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    LocalMetadata::Page page;
+    page.number = 20;
+    page.reading = LocalMetadata::parseTsv(tsvFor({ "奥付", "タイトル", "青い空", "発行者", "見本太郎" }), "jpn+eng");
+    page.text = page.reading.text;
+    page.kind = LocalMetadata::PageKind::Colophon;
+    LocalMetadata::Result result;
+    result.pages = { page };
+    result.pageCount = 22;
+    result.suggestions = LocalMetadata::suggest(result.pages, "/downloads/(edition) [example artist] Book.zip");
+    dialog.showResult(result);
+    dialog.autoSearch->setChecked(false);
+    dialog.requestSearch(true);
+    QCOMPARE(requested.count(), 0);
+    dialog.autoSearch->setChecked(true);
+    dialog.requestSearch(true);
+    QCOMPARE(requested.count(), 1);
+    QCOMPARE(requested.first().at(2).toString(), QString("青い空"));
+    QVERIFY(requested.first().at(3).toString().isEmpty());
+    QVERIFY(requested.first().at(5).toStringList().contains("example artist"));
+    QCOMPARE(requested.first().at(6).toStringList(), QStringList { "見本太郎" });
+    dialog.requestSearch(true);
+    QCOMPARE(requested.count(), 1);
+    dialog.automaticSearchDone = false;
+    dialog.result.pages[0].reading.uncertainLanguage = true;
+    dialog.requestSearch(true);
+    QCOMPARE(requested.count(), 1);
+}
+
+void LocalMetadataTest::realMultilingualColophon()
+{
+    auto options = LocalMetadata::defaultOcrOptions();
+    if (qEnvironmentVariableIsEmpty("YACREADER_REQUIRE_OCR"))
+        QSKIP("The packaged Windows job requires both language models and CJK fonts.");
+    options.language = "auto";
+    for (const bool korean : { false, true }) {
+        QImage image(1600, 900, QImage::Format_RGB32);
+        image.fill(Qt::white);
+        QPainter painter(&image);
+        QFont font(korean ? "Malgun Gothic" : "Yu Gothic");
+        font.setPixelSize(56);
+        painter.setFont(font);
+        painter.setPen(Qt::black);
+        const QStringList lines = korean ? QStringList { "제목", "푸른 하늘", "작가", "홍길동", "발행일", "2025" }
+                                         : QStringList { "奥付", "タイトル", "青い空", "発行者", "見本太郎", "発行日" };
+        int y = 100;
+        for (const auto &line : lines) {
+            painter.drawText(100, y, line);
+            y += 120;
+        }
+        painter.end();
+        const auto reading = LocalMetadata::recognizePage(image, options, std::make_shared<std::atomic_bool>(false));
+        QVERIFY2(reading.error.isEmpty(), qPrintable(reading.error));
+        QCOMPARE(reading.language, korean ? QString("kor+eng") : QString("jpn+eng"));
+        const auto normalized = LocalMetadata::normalizeOcrText(reading.text);
+        QVERIFY2(normalized.contains(korean ? QString("하늘") : QString("青い空")), qPrintable(normalized));
+        QVERIFY(reading.confidence > 0);
+    }
+}
+
 void LocalMetadataTest::folderScanAndMetadataPreservation()
 {
     QTemporaryDir temporary;
@@ -459,7 +620,7 @@ int main(int argc, char **argv)
     if (argc > 2 && QByteArray(argv[1]) == "page.png") {
         if (qEnvironmentVariable("YACREADER_FAKE_OCR_MODE") == "timeout")
             QThread::sleep(10);
-        QTextStream(stdout) << "Title: Test Book\nAuthor: Alice Example\n";
+        QTextStream(stdout) << QString::fromUtf8(tsvFor({ "Title: Test Book", "Author: Alice Example" }));
         return 0;
     }
 #ifdef Q_OS_WIN

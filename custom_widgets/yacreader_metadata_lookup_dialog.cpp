@@ -64,6 +64,9 @@ YACReaderMetadataLookupDialog::YACReaderMetadataLookupDialog(QWidget *parent)
 {
     setWindowTitle(tr("Find manga metadata"));
     resize(840, 620);
+    retryTimer = new QTimer(this);
+    retryTimer->setSingleShot(true);
+    connect(retryTimer, &QTimer::timeout, this, &YACReaderMetadataLookupDialog::sendGalleryQuery);
     for (auto *label : { fileNameLabel, existingInfoLabel, authorsLabel, genresLabel, formatLabel, yearLabel, matchLabel, statusLabel })
         label->setTextFormat(Qt::PlainText);
 
@@ -166,6 +169,8 @@ void YACReaderMetadataLookupDialog::setComic(const QString &libraryPath,
     existingTags = currentTags.trimmed();
     authorEdit->setText(existingWriter);
     sourcePageCount = 0;
+    nameHints.clear();
+    publisherHints.clear();
 
     fileNameLabel->setText(fileName);
 
@@ -301,6 +306,8 @@ void YACReaderMetadataLookupDialog::setBusy(bool busy, const QString &status)
 
 void YACReaderMetadataLookupDialog::cancelSearch()
 {
+    retryTimer->stop();
+    pendingQueries.clear();
     if (activeReply != nullptr) {
         // abort() can emit finished synchronously. Detach the old request before
         // aborting so it cannot populate a newly selected comic's results.
@@ -320,7 +327,7 @@ void YACReaderMetadataLookupDialog::searchTitle(const QString &title)
     startSearch();
 }
 
-void YACReaderMetadataLookupDialog::prepareOcrSearch(const QString &title, const QString &author, int pageCount)
+void YACReaderMetadataLookupDialog::prepareOcrSearch(const QString &title, const QString &author, int pageCount, const QStringList &hints, const QStringList &publishers, bool runSearch)
 {
     cancelSearch();
     clearResults();
@@ -328,7 +335,68 @@ void YACReaderMetadataLookupDialog::prepareOcrSearch(const QString &title, const
     searchEdit->setText(title);
     authorEdit->setText(author);
     sourcePageCount = qMax(0, pageCount);
+    nameHints = hints.mid(0, 3);
+    publisherHints = publishers.mid(0, 3);
     statusLabel->setText(tr("OCR 후보를 가져왔습니다. 제목·작가를 확인하고 조회를 눌러 주세요."));
+    if (runSearch)
+        startSearch();
+}
+
+QStringList YACReaderMetadataLookupDialog::galleryQueries(const QString &title, const QString &author, const QStringList &hints)
+{
+    auto safe = [](QString value) {
+        value = value.left(180).simplified();
+        value.remove(QRegularExpression(QStringLiteral("[\"*$%]")));
+        if (value.contains(QLatin1Char('@')) || value.contains(QStringLiteral("://")))
+            return QString();
+        return value;
+    };
+    QStringList queries;
+    const auto term = safe(title);
+    if (!term.isEmpty())
+        queries.append(QStringLiteral("title:\"%1\"").arg(term));
+    QStringList names = hints;
+    if (!author.trimmed().isEmpty())
+        names.prepend(author);
+    // A romanized filename hint is useful even when the colophon uses Japanese.
+    // It is a search lead only; equivalent identity must come from the catalog.
+    for (const auto &name : names) {
+        const auto value = safe(name);
+        if (value.size() < 2)
+            continue;
+        const auto query = QStringLiteral("artist:\"%1$\"").arg(value);
+        if (!queries.contains(query))
+            queries.append(query);
+        if (queries.size() >= 3)
+            break;
+    }
+    return queries;
+}
+
+bool YACReaderMetadataLookupDialog::scheduleNextQuery()
+{
+    if (pendingQueries.isEmpty())
+        return false;
+    setBusy(true, tr("결과가 없어 이름 힌트로 재조회합니다. 요청 간격을 기다리는 중…"));
+    retryTimer->start(5000);
+    return true;
+}
+
+void YACReaderMetadataLookupDialog::sendGalleryQuery()
+{
+    if (pendingQueries.isEmpty() || activeReply != nullptr)
+        return;
+    requestKind = RequestKind::GallerySearch;
+    QUrl url(QStringLiteral("https://e-hentai.org/"));
+    QUrlQuery parameters;
+    parameters.addQueryItem("f_search", pendingQueries.takeFirst());
+    url.setQuery(parameters);
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
+    setBusy(true, tr("제목·이름 힌트로 작품 목록을 조회하는 중…"));
+    lastGalleryLookup.start();
+    activeReply = networkManager->get(request);
+    watchReply();
 }
 
 void YACReaderMetadataLookupDialog::watchReply()
@@ -360,16 +428,11 @@ void YACReaderMetadataLookupDialog::requestGalleryMetadata(const QJsonArray &ref
 void YACReaderMetadataLookupDialog::startSearch()
 {
     const QString search = searchEdit->text().trimmed();
-    if ((search.isEmpty() && (providerChoice->currentIndex() == 0 || authorEdit->text().trimmed().isEmpty())) || activeReply != nullptr)
+    if ((search.isEmpty() && (providerChoice->currentIndex() == 0 || (authorEdit->text().trimmed().isEmpty() && nameHints.isEmpty()))) || activeReply != nullptr || retryTimer->isActive())
         return;
 
     clearResults();
     if (providerChoice->currentIndex() == 1) {
-        if (lastGalleryLookup.isValid() && lastGalleryLookup.elapsed() < 5000) {
-            statusLabel->setText(tr("서비스 요청 간격을 위해 잠시 후 다시 조회해 주세요."));
-            return;
-        }
-        lastGalleryLookup.start();
         const auto reference = CatalogMetadata::galleryReference(QUrl(search));
         if (!reference.isEmpty()) {
             requestGalleryMetadata(QJsonArray { reference });
@@ -379,25 +442,11 @@ void YACReaderMetadataLookupDialog::startSearch()
             statusLabel->setText(tr("지원하는 작품 링크 형식이 아닙니다."));
             return;
         }
-        // Only retrieve the bounded text index and metadata. Never follow image
-        // URLs or import browser credentials. Access challenges stop the lookup.
-        requestKind = RequestKind::GallerySearch;
-        QString term = search;
-        term.remove(QLatin1Char('"'));
-        QString author = authorEdit->text().trimmed();
-        author.remove(QLatin1Char('"'));
-        QString query = term.isEmpty() ? QString() : QStringLiteral("title:\"%1\"").arg(term);
-        if (!author.isEmpty())
-            query += QStringLiteral(" artist:\"%1$\"").arg(author);
-        QUrl url(QStringLiteral("https://e-hentai.org/"));
-        QUrlQuery parameters;
-        parameters.addQueryItem("f_search", query.trimmed());
-        url.setQuery(parameters);
-        QNetworkRequest request(url);
-        request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
-        setBusy(true, tr("작품 목록을 조회하는 중…"));
-        activeReply = networkManager->get(request);
-        watchReply();
+        pendingQueries = galleryQueries(search, authorEdit->text(), nameHints);
+        if (lastGalleryLookup.isValid() && lastGalleryLookup.elapsed() < 5000)
+            scheduleNextQuery();
+        else
+            sendGalleryQuery();
         return;
     }
     requestKind = RequestKind::AniList;
@@ -461,6 +510,10 @@ void YACReaderMetadataLookupDialog::processSearchReply()
     if (requestKind == RequestKind::GallerySearch) {
         const auto references = CatalogMetadata::galleryReferences(QString::fromUtf8(payload));
         if (references.isEmpty()) {
+            // Do not retry authentication/challenge pages as if they were an
+            // empty catalog. Only a recognizable empty search can advance.
+            if (payload.contains("No hits found") && scheduleNextQuery())
+                return;
             statusLabel->setText(tr("조회 가능한 작품을 찾지 못했습니다. 제목·작가 철자, 서비스 접근 상태를 확인하거나 작품 링크를 입력해 주세요."));
             return;
         }
@@ -576,7 +629,9 @@ void YACReaderMetadataLookupDialog::processSearchReply()
 
 void YACReaderMetadataLookupDialog::displayResults()
 {
-    std::stable_sort(candidates.begin(), candidates.end(), [](const Candidate &a, const Candidate &b) { return a.titleSimilarity > b.titleSimilarity; });
+    resultsList->clear();
+    showCandidate(-1);
+    std::stable_sort(candidates.begin(), candidates.end(), [this](const Candidate &a, const Candidate &b) { return candidateRank(a) > candidateRank(b); });
     for (const auto &candidate : candidates) {
         const QString title = firstNonEmpty({ candidate.romajiTitle, candidate.nativeTitle, candidate.englishTitle });
         const QString author = candidate.authors.isEmpty() ? tr("author unknown") : candidate.authors.join(QStringLiteral(", "));
@@ -594,7 +649,55 @@ void YACReaderMetadataLookupDialog::displayResults()
     }
 
     statusLabel->setText(tr("Found %1 candidate(s). Check the title and author before applying.").arg(candidates.size()));
-    resultsList->setCurrentRow(0);
+    const auto &best = candidates.first();
+    const bool multiple = candidates.size() > 1 && candidateRank(best) - candidateRank(candidates.at(1)) < 8;
+    const bool pageConflict = sourcePageCount > 0 && best.pageCount > 0 && sourcePageCount != best.pageCount;
+    // A near-identical title may be another volume. Compare numeric tokens
+    // against the closest title spelling before prefilling the review form.
+    auto numbers = [](const QString &title) {
+        QStringList values;
+        auto matches = QRegularExpression(QStringLiteral("[0-9]+")).globalMatch(title.normalized(QString::NormalizationForm_KC));
+        while (matches.hasNext())
+            values.append(matches.next().captured());
+        return values;
+    };
+    QString closest;
+    int closestScore = -1;
+    for (const auto &title : { best.romajiTitle, best.nativeTitle, best.englishTitle }) {
+        if (title.isEmpty())
+            continue;
+        Candidate one;
+        one.romajiTitle = best.provider == "E-Hentai" ? CatalogMetadata::plainTitle(title) : title;
+        const int score = titleSimilarity(searchEdit->text(), one);
+        if (score > closestScore) {
+            closestScore = score;
+            closest = one.romajiTitle;
+        }
+    }
+    const bool numberConflict = numbers(searchEdit->text()) != numbers(closest);
+    if (best.titleSimilarity >= 90 && candidateRank(best) >= best.titleSimilarity + 10 && !multiple && !pageConflict && !numberConflict)
+        resultsList->setCurrentRow(0);
+    else
+        statusLabel->setText(tr("후보 %1개. 제목·작가·페이지 수를 확인하고 목록에서 직접 선택해 주세요.").arg(candidates.size()));
+}
+
+int YACReaderMetadataLookupDialog::candidateRank(const Candidate &candidate) const
+{
+    int score = candidate.titleSimilarity;
+    const auto explicitAuthor = normalizeTitle(authorEdit->text());
+    bool match = false, explicitMatch = false;
+    for (const auto &author : candidate.authors) {
+        explicitMatch = explicitMatch || (!explicitAuthor.isEmpty() && normalizeTitle(author) == explicitAuthor);
+        for (const auto &hint : nameHints)
+            match = match || normalizeTitle(author) == normalizeTitle(hint);
+    }
+    if (!explicitAuthor.isEmpty() && !explicitMatch)
+        score -= 20;
+    else if (explicitMatch || match)
+        score += 15;
+    if (sourcePageCount > 0 && candidate.pageCount > 0)
+        score += sourcePageCount == candidate.pageCount ? 5 : -15;
+    return score;
 }
 
 void YACReaderMetadataLookupDialog::showCandidate(int row)
@@ -650,6 +753,14 @@ void YACReaderMetadataLookupDialog::showCandidate(int row)
     }
     if (sourcePageCount > 0 && candidate.pageCount > 0)
         evidence.append(tr("페이지 수: 내 파일 %1 / 후보 %2").arg(sourcePageCount).arg(candidate.pageCount));
+    for (const auto &hint : nameHints) {
+        bool matched = false;
+        for (const auto &author : candidate.authors)
+            matched = matched || normalizeTitle(author) == normalizeTitle(hint);
+        evidence.append(tr("이름 힌트 '%1': %2").arg(hint, matched ? tr("외부 작가 표기 일치") : tr("미확인")));
+    }
+    if (!publisherHints.isEmpty())
+        evidence.append(tr("판권 발행자·서클: %1 (작가 동일성은 별도 확인)").arg(publisherHints.join(", ")));
     matchLabel->setText(evidence.join(QStringLiteral("\n")));
     matchLabel->setWordWrap(true);
     tagsEdit->setPlainText(candidate.tags.join(QStringLiteral(", ")));

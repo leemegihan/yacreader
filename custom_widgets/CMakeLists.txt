@@ -72,6 +72,7 @@ add_library(metadata_widgets STATIC
     ocr_page_view.h
     local_metadata.h
     local_metadata.cpp
+    local_metadata_text.cpp
     yacreader_metadata_browser.h
     yacreader_metadata_browser.cpp
     yacreader_metadata_lookup_dialog.h

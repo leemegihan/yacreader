@@ -36,6 +36,7 @@ YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent
     pageLimit->setValue(3);
     pageLimit->setSuffix(tr("장씩 (앞 / 뒤)"));
     language = new QComboBox(this);
+    language->addItem(tr("자동 · 페이지마다 일본어/한국어 비교"), "auto");
     language->addItem(tr("일본어 + 영어"), "jpn+eng");
     language->addItem(tr("일본어 세로쓰기"), "jpn_vert+eng");
     language->addItem(tr("한국어 + 영어"), "kor+eng");
@@ -79,6 +80,9 @@ YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent
     regionControls->addWidget(regionButton);
     pageText = new QPlainTextEdit(this);
     pageText->setReadOnly(true);
+    pageInfo = new QLabel(this);
+    pageInfo->setTextFormat(Qt::PlainText);
+    pageInfo->setWordWrap(true);
     pageText->setPlaceholderText(tr("OCR 결과는 여기에 표시됩니다. 필요한 글자를 선택해 제목·작가 칸에 복사할 수 있습니다."));
     candidateList = new QListWidget(this);
     candidateList->setWordWrap(true);
@@ -86,6 +90,7 @@ YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent
     auto *textPanel = new QWidget(this);
     auto *textPanelLayout = new QVBoxLayout(textPanel);
     textPanelLayout->addWidget(new QLabel(tr("선택한 페이지의 글자 (오인식 가능)"), this));
+    textPanelLayout->addWidget(pageInfo);
     textPanelLayout->addWidget(pageText, 1);
     textPanelLayout->addWidget(new QLabel(tr("후보를 두 번 클릭하면 아래 입력칸에 복사됩니다."), this));
     textPanelLayout->addWidget(candidateList);
@@ -97,13 +102,17 @@ YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent
     splitter->setStretchFactor(2, 2);
     titleEdit = new QLineEdit(this);
     authorEdit = new QLineEdit(this);
+    publisherEdit = new QLineEdit(this);
     auto *form = new QFormLayout;
     form->addRow(tr("확인한 제목"), titleEdit);
     form->addRow(tr("확인한 작가"), authorEdit);
+    form->addRow(tr("발행자·서클 후보 (작가와 구분)"), publisherEdit);
+    autoSearch = new QCheckBox(tr("명확한 판권 후보를 찾으면 E-Hentai 자동 조회 (제목·이름 힌트 전송)"), this);
+    autoSearch->setChecked(true);
     overwrite = new QCheckBox(tr("기존 제목·작가를 입력한 값으로 덮어쓰기 (기본: 빈 항목만 채움)"), this);
     saveButton = new QPushButton(tr("확인한 정보 저장"), this);
     searchButton = new QPushButton(tr("메타데이터 대조…"), this);
-    searchButton->setToolTip(tr("제목·작가를 대조 화면에 전달합니다. 외부 조회를 누르기 전에는 전송하지 않습니다."));
+    searchButton->setToolTip(tr("제목·작가·이름 힌트로 외부 메타데이터를 조회합니다. 이미지는 전송하지 않습니다."));
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     buttons->addButton(saveButton, QDialogButtonBox::ActionRole);
     buttons->addButton(searchButton, QDialogButtonBox::ActionRole);
@@ -119,6 +128,7 @@ YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent
     layout->addLayout(regionControls);
     layout->addLayout(form);
     layout->addWidget(overwrite);
+    layout->addWidget(autoSearch);
     layout->addWidget(buttons);
 
     connect(ocrButton, &QPushButton::clicked, this, [this] { start(true); });
@@ -134,26 +144,16 @@ YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent
         if (row < 0 || row >= result.suggestions.size())
             return;
         const auto &suggestion = result.suggestions.at(row);
-        (suggestion.field == LocalMetadata::Suggestion::Title ? titleEdit : authorEdit)->setText(suggestion.value);
+        (suggestion.field == LocalMetadata::Suggestion::Title ? titleEdit : suggestion.field == LocalMetadata::Suggestion::Author ? authorEdit
+                                                                                                                                  : publisherEdit)
+                ->setText(suggestion.value);
         for (int i = 0; i < result.pages.size(); ++i) {
             if (result.pages.at(i).number == suggestion.page)
                 pageList->setCurrentRow(i);
         }
     });
     connect(saveButton, &QPushButton::clicked, this, &YACReaderArchiveInspectorDialog::save);
-    connect(searchButton, &QPushButton::clicked, this, [this] {
-        if (titleEdit->text().trimmed().isEmpty() && authorEdit->text().trimmed().isEmpty()) {
-            statusLabel->setText(tr("대조할 제목이나 작가를 먼저 입력해 주세요."));
-            return;
-        }
-        const auto path = libraryPath;
-        const auto id = comicInfoId;
-        const auto title = titleEdit->text().trimmed();
-        const auto author = authorEdit->text().trimmed();
-        const int pages = result.pageCount;
-        reject();
-        emit titleSearchRequested(path, id, title, author, pages);
-    });
+    connect(searchButton, &QPushButton::clicked, this, [this] { requestSearch(false); });
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     connect(this, &QDialog::finished, this, &YACReaderArchiveInspectorDialog::cancel);
     setBusy(false);
@@ -194,6 +194,9 @@ void YACReaderArchiveInspectorDialog::inspectComic(const QString &path, qulonglo
     comicInfoId = id;
     titleEdit->clear();
     authorEdit->clear();
+    publisherEdit->clear();
+    pageInfo->clear();
+    automaticSearchDone = false;
     overwrite->setChecked(false);
     result = { };
     pageList->clear();
@@ -230,11 +233,13 @@ void YACReaderArchiveInspectorDialog::start(bool ocr)
         if (!ocr)
             output->suggestions = LocalMetadata::suggest(output->pages, source);
     });
-    connect(thread, &QThread::finished, this, [this, flag, output] {
+    connect(thread, &QThread::finished, this, [this, flag, output, ocr] {
         if (flag->load() || flag != cancellation)
             return;
         showResult(*output);
         setBusy(false);
+        if (ocr)
+            requestSearch(true);
     });
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
     thread->start();
@@ -247,41 +252,55 @@ void YACReaderArchiveInspectorDialog::showResult(const LocalMetadata::Result &va
     candidateList->clear();
     int failures = 0;
     for (const auto &page : result.pages) {
-        pageList->addItem(tr("%1 / %2 페이지%3").arg(page.number).arg(result.pageCount).arg(page.error.isEmpty() ? QString() : tr(" (오류)")));
+        pageList->addItem(tr("%1 / %2 · %3%4").arg(page.number).arg(result.pageCount).arg(LocalMetadata::pageKindName(page.kind), page.error.isEmpty() ? QString() : tr(" (오류)")));
         if (!page.error.isEmpty())
             ++failures;
     }
     for (const auto &candidate : result.suggestions) {
-        const auto field = candidate.field == LocalMetadata::Suggestion::Title ? tr("제목") : tr("작가");
+        const auto field = candidate.field == LocalMetadata::Suggestion::Title ? tr("제목") : candidate.field == LocalMetadata::Suggestion::Author ? tr("작가")
+                                                                                                                                                   : tr("발행자·서클");
         const auto source = candidate.page > 0 ? tr("%1페이지").arg(candidate.page) : tr("이름 힌트 · 낮은 신뢰");
         auto *item = new QListWidgetItem(QStringLiteral("[%1 · %2] %3").arg(field, source, candidate.value), candidateList);
         item->setToolTip(candidate.reason);
     }
     // Only an unambiguous labelled credit can prefill a blank review field.
     // Never promote a filename, dialogue line, or conflicting OCR reading.
-    for (const auto field : { LocalMetadata::Suggestion::Title, LocalMetadata::Suggestion::Author }) {
+    for (const auto field : { LocalMetadata::Suggestion::Title, LocalMetadata::Suggestion::Author, LocalMetadata::Suggestion::Publisher }) {
         QStringList values;
         for (const auto &candidate : result.suggestions) {
-            if (candidate.field == field && candidate.labelled && candidate.page > 0 && !values.contains(candidate.value, Qt::CaseInsensitive))
+            if (candidate.field == field && candidate.labelled && candidate.page > 0 && (candidate.confidence < 0 || candidate.confidence >= 45) && !values.contains(candidate.value, Qt::CaseInsensitive))
                 values.append(candidate.value);
         }
-        auto *edit = field == LocalMetadata::Suggestion::Title ? titleEdit : authorEdit;
+        auto *edit = field == LocalMetadata::Suggestion::Title ? titleEdit : field == LocalMetadata::Suggestion::Author ? authorEdit
+                                                                                                                        : publisherEdit;
         if (edit->text().isEmpty() && values.size() == 1)
             edit->setText(values.first());
     }
     statusLabel->setText(!result.error.isEmpty() ? result.error : tr("%1장 확인, %2장 오류. 후보가 없거나 부정확하면 페이지 글자를 확인해 직접 입력해 주세요.").arg(result.pages.size()).arg(failures));
+    int preferred = 0;
+    for (int i = 0; i < result.pages.size(); ++i) {
+        if (result.pages.at(i).kind == LocalMetadata::PageKind::Colophon) {
+            preferred = i;
+            break;
+        }
+    }
     if (!result.pages.isEmpty())
-        pageList->setCurrentRow(0);
+        pageList->setCurrentRow(preferred);
 }
 
 void YACReaderArchiveInspectorDialog::showPage(int row)
 {
     imageLabel->clear();
     pageText->clear();
+    pageInfo->clear();
     if (row < 0 || row >= result.pages.size())
         return;
     const auto &page = result.pages.at(row);
     imageLabel->setPage(page.image);
+    pageInfo->setText(tr("%1 · %2 · OCR 신뢰도 %3 (정답 확률 아님)%4")
+                              .arg(LocalMetadata::pageKindName(page.kind), page.reading.language,
+                                   page.reading.confidence < 0 ? tr("없음") : QString::number(page.reading.confidence, 'f', 0),
+                                   page.reading.uncertainLanguage ? tr(" · 언어 판정 불확실") : QString()));
     pageText->setPlainText(page.error.isEmpty() ? page.text : page.error + QStringLiteral("\n\n") + page.text);
 }
 
@@ -289,7 +308,7 @@ LocalMetadata::OcrOptions YACReaderArchiveInspectorDialog::ocrOptions() const
 {
     auto options = LocalMetadata::defaultOcrOptions();
     options.language = language->currentData().toString();
-    options.vertical = language->currentIndex() == 1;
+    options.vertical = options.language.startsWith("jpn_vert");
     options.segmentation = textLayout->currentData().toInt();
     options.rotation = rotation->currentData().toInt();
     options.invert = invert->isChecked();
@@ -318,7 +337,9 @@ void YACReaderArchiveInspectorDialog::recognizeRegion()
     setBusy(true);
     statusLabel->setText(tr("선택한 글자를 다시 읽는 중… 기존 페이지 인식 결과에 추가합니다."));
     auto *thread = QThread::create([image, options, flag, output] {
-        output->text = LocalMetadata::recognize(image, options, flag, &output->error);
+        output->reading = LocalMetadata::recognizePage(image, options, flag);
+        output->text = output->reading.text;
+        output->error = output->reading.error;
     });
     connect(thread, &QThread::finished, this, [this, row, flag, output] {
         if (flag->load() || flag != cancellation)
@@ -328,13 +349,66 @@ void YACReaderArchiveInspectorDialog::recognizeRegion()
         if (!output->text.isEmpty())
             page.text = (page.text + QStringLiteral("\n") + output->text).trimmed();
         page.error = output->error;
+        const auto oldLines = page.reading.lines;
+        page.reading = output->reading;
+        page.reading.lines = oldLines + output->reading.lines;
+        page.kind = LocalMetadata::classifyPage(page.text, page.number);
         updated.suggestions = LocalMetadata::suggest(updated.pages, sourcePath);
         showResult(updated);
         pageList->setCurrentRow(row);
         setBusy(false);
+        requestSearch(true);
     });
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
     thread->start();
+}
+
+void YACReaderArchiveInspectorDialog::requestSearch(bool automatic)
+{
+    if (automatic && (!autoSearch->isChecked() || automaticSearchDone))
+        return;
+    if (automatic) {
+        QStringList titles;
+        for (const auto &candidate : result.suggestions) {
+            if (candidate.field != LocalMetadata::Suggestion::Title || !candidate.labelled || candidate.page <= 0)
+                continue;
+            if (!titles.contains(candidate.value))
+                titles.append(candidate.value);
+        }
+        if (titles.size() != 1)
+            return;
+        bool supported = false;
+        for (const auto &page : result.pages) {
+            if (page.kind == LocalMetadata::PageKind::Unknown || page.reading.uncertainLanguage || !page.error.isEmpty())
+                continue;
+            for (const auto &candidate : result.suggestions)
+                supported = supported || (candidate.field == LocalMetadata::Suggestion::Title && candidate.page == page.number && candidate.confidence >= 50);
+        }
+        if (!supported)
+            return;
+    }
+    QStringList hints, publishers;
+    for (const auto &candidate : result.suggestions) {
+        if (candidate.field == LocalMetadata::Suggestion::Author && candidate.page == 0 && !hints.contains(candidate.value))
+            hints.append(candidate.value);
+        if (candidate.field == LocalMetadata::Suggestion::Publisher && !publishers.contains(candidate.value))
+            publishers.append(candidate.value);
+    }
+    if (!publisherEdit->text().trimmed().isEmpty() && !publishers.contains(publisherEdit->text().trimmed()))
+        publishers.prepend(publisherEdit->text().trimmed());
+    if (titleEdit->text().trimmed().isEmpty() && authorEdit->text().trimmed().isEmpty() && hints.isEmpty()) {
+        if (!automatic)
+            statusLabel->setText(tr("대조할 제목이나 작가 후보를 선택해 주세요."));
+        return;
+    }
+    automaticSearchDone = true;
+    const auto path = libraryPath;
+    const auto id = comicInfoId;
+    const auto title = titleEdit->text().trimmed();
+    const auto author = authorEdit->text().trimmed();
+    const int pages = result.pageCount;
+    reject();
+    emit titleSearchRequested(path, id, title, author, pages, hints, publishers, true);
 }
 
 void YACReaderArchiveInspectorDialog::save()

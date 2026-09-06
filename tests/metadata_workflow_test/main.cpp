@@ -18,6 +18,7 @@
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
 #include <QUuid>
 
 // No HTTP requests: exercise synchronous finished delivery during abort(),
@@ -66,6 +67,8 @@ private slots:
     void galleryReferencesRejectUntrustedLinks();
     void ocrEvidenceDoesNotSendOrSaveAutomatically();
     void provenanceFailureRollsBackMetadata();
+    void hintQueriesAndRetryCancellation();
+    void automaticSelectionRequiresAgreement();
 
 private:
     PendingReply *attachReply(YACReaderMetadataLookupDialog &dialog);
@@ -122,6 +125,9 @@ void MetadataWorkflowTest::ocrEvidenceDoesNotSendOrSaveAutomatically()
     candidate.titleSimilarity = 100;
     dialog.candidates = { candidate };
     dialog.displayResults();
+    QVERIFY(dialog.chosenTitle().isEmpty());
+    QVERIFY(!dialog.buttonBox->button(QDialogButtonBox::Apply)->isEnabled());
+    dialog.resultsList->setCurrentRow(0);
     QCOMPARE(dialog.chosenTitle(), QString("Test Book"));
     QVERIFY(dialog.matchLabel->text().contains("불일치"));
     QVERIFY(dialog.matchLabel->text().contains("24 /"));
@@ -129,6 +135,59 @@ void MetadataWorkflowTest::ocrEvidenceDoesNotSendOrSaveAutomatically()
     QVERIFY(query.exec("SELECT title FROM comic_info WHERE id=1"));
     QVERIFY(query.next());
     QCOMPARE(query.value(0).toString(), QString("My title"));
+}
+
+void MetadataWorkflowTest::hintQueriesAndRetryCancellation()
+{
+    using Dialog = YACReaderMetadataLookupDialog;
+    const auto queries = Dialog::galleryQueries("青い空", "", { "example artist", "example artist", "other artist", "extra" });
+    QCOMPARE(queries, QStringList({ "title:\"青い空\"", "artist:\"example artist$\"", "artist:\"other artist$\"" }));
+    QVERIFY(Dialog::galleryQueries("https://example.test", "example@example.test", { }).isEmpty());
+    Dialog dialog;
+    dialog.prepareOcrSearch("青い空", "", 24, { "example artist" }, { "Example Publisher" });
+    QVERIFY(dialog.authorEdit->text().isEmpty());
+    dialog.pendingQueries = queries;
+    QVERIFY(dialog.scheduleNextQuery());
+    QVERIFY(dialog.retryTimer->isActive());
+    QVERIFY(dialog.activeReply == nullptr);
+    dialog.setComic(directory.path(), 1, "another.cbz", "", "", "");
+    QVERIFY(!dialog.retryTimer->isActive());
+    QVERIFY(dialog.pendingQueries.isEmpty());
+    QVERIFY(dialog.nameHints.isEmpty());
+    dialog.pendingQueries = queries;
+    QVERIFY(dialog.scheduleNextQuery());
+    dialog.reject();
+    QVERIFY(!dialog.retryTimer->isActive());
+    QVERIFY(dialog.pendingQueries.isEmpty());
+}
+
+void MetadataWorkflowTest::automaticSelectionRequiresAgreement()
+{
+    YACReaderMetadataLookupDialog dialog;
+    dialog.prepareOcrSearch("Test Book 3", "", 24, { "example artist" }, { "Example Publisher" });
+    YACReaderMetadataLookupDialog::Candidate candidate;
+    candidate.provider = "E-Hentai";
+    candidate.romajiTitle = "[Group] Test Book 3";
+    candidate.authors = { "example artist" };
+    candidate.pageCount = 24;
+    candidate.titleSimilarity = 100;
+    dialog.candidates = { candidate };
+    dialog.displayResults();
+    QCOMPARE(dialog.chosenTitle(), QString("Test Book 3"));
+    QVERIFY(dialog.authorsLabel->text().contains("example artist"));
+    QVERIFY(!dialog.authorsLabel->text().contains("Publisher"));
+    dialog.authorEdit->setText("Different Author");
+    dialog.displayResults();
+    QVERIFY(dialog.chosenTitle().isEmpty()); // Filename hint cannot override an explicit author conflict.
+    dialog.authorEdit->clear();
+    dialog.candidates.append(candidate);
+    dialog.displayResults();
+    QVERIFY(dialog.chosenTitle().isEmpty()); // Two equally good editions need review.
+    candidate.romajiTitle = "[Group] Test Book 4";
+    candidate.titleSimilarity = 95;
+    dialog.candidates = { candidate };
+    dialog.displayResults();
+    QVERIFY(dialog.chosenTitle().isEmpty()); // A near-identical volume is not the same work.
 }
 
 void MetadataWorkflowTest::provenanceFailureRollsBackMetadata()

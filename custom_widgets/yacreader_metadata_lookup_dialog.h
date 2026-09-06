@@ -19,6 +19,7 @@ class QNetworkReply;
 class QPlainTextEdit;
 class QPushButton;
 class QTextBrowser;
+class QTimer;
 
 class YACReaderMetadataLookupDialog : public QDialog
 {
@@ -26,7 +27,7 @@ class YACReaderMetadataLookupDialog : public QDialog
 public:
     explicit YACReaderMetadataLookupDialog(QWidget *parent = nullptr);
     void searchTitle(const QString &title);
-    void prepareOcrSearch(const QString &title, const QString &author, int pageCount);
+    void prepareOcrSearch(const QString &title, const QString &author, int pageCount, const QStringList &nameHints = { }, const QStringList &publishers = { }, bool runSearch = false);
 
     void setComic(const QString &libraryPath,
                   qulonglong comicInfoId,
@@ -53,6 +54,14 @@ private:
                              GalleryMetadata };
     RequestKind requestKind = RequestKind::AniList;
     QElapsedTimer lastGalleryLookup;
+    QTimer *retryTimer;
+    QStringList pendingQueries;
+    QStringList nameHints;
+    QStringList publisherHints;
+    void sendGalleryQuery();
+    bool scheduleNextQuery();
+    static QStringList galleryQueries(const QString &title, const QString &author, const QStringList &hints);
+    int candidateRank(const Candidate &candidate) const;
     void watchReply();
     void requestGalleryMetadata(const QJsonArray &references);
     void displayResults();
