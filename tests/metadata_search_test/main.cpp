@@ -146,9 +146,9 @@ void MetadataSearchTest::quotedValuesRoundTrip()
 void MetadataSearchTest::invalidQueriesFail()
 {
     QueryParser parser;
-    QVERIFY_EXCEPTION_THROWN(parser.parse("tag:Action AND author:\"unfinished"), std::invalid_argument);
-    QVERIFY_EXCEPTION_THROWN(parser.parse("tag>Action"), std::invalid_argument);
-    QVERIFY_EXCEPTION_THROWN(parser.parse("(tag:Action"), std::invalid_argument);
+    QVERIFY_THROWS_EXCEPTION(std::invalid_argument, parser.parse("tag:Action AND author:\"unfinished"));
+    QVERIFY_THROWS_EXCEPTION(std::invalid_argument, parser.parse("tag>Action"));
+    QVERIFY_THROWS_EXCEPTION(std::invalid_argument, parser.parse("(tag:Action"));
 }
 
 void MetadataSearchTest::facetsAreNotTruncated()
