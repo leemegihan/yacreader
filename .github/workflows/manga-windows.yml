@@ -212,6 +212,7 @@ jobs:
               if ($required -notin $languages) { throw "Missing OCR language: $required" }
             }
           } finally { Pop-Location }
+          $env:YACREADER_REQUIRE_OCR = '1'
           & "$package/local_metadata_test.exe" realOcr croppedCreditOcr realMultilingualColophon -o "$env:GITHUB_WORKSPACE/build/installed-ocr.txt,txt"
           $ocrTestExit = $LASTEXITCODE
           Get-Content "$env:GITHUB_WORKSPACE/build/installed-ocr.txt"
