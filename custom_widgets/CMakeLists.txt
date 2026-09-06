@@ -83,7 +83,6 @@ target_include_directories(metadata_widgets PRIVATE ${PROJECT_SOURCE_DIR}/YACRea
 target_compile_definitions(metadata_widgets PRIVATE YACREADER_LIBRARY)
 yacreader_apply_build_options(metadata_widgets)
 target_link_libraries(metadata_widgets PUBLIC
-    db_helper
     Qt6::Core
     Qt6::Widgets
     Qt6::Network

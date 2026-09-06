@@ -1,5 +1,6 @@
 #ifndef __DATA_BASE_MANAGEMENT_H
 #define __DATA_BASE_MANAGEMENT_H
+#include "library_maintenance_lock.h"
 
 #include <QSqlDatabase>
 #include <QtCore>
@@ -55,28 +56,6 @@ enum class DatabaseBackupReason {
     BeforeRepair,
     BeforeRestore,
     Manual
-};
-
-class LibraryMaintenanceLock
-{
-public:
-    explicit LibraryMaintenanceLock(const QString &libraryPath);
-    ~LibraryMaintenanceLock();
-
-    bool tryLock(bool removeStaleLock = false);
-    QString errorString() const;
-    QString holderInfo() const;
-    bool holderIsRunningLocally() const;
-
-private:
-    bool tryLockFile(QLockFile &lock, bool removeStaleLock);
-    void captureLockInfo(QLockFile &lock);
-
-    std::unique_ptr<QLockFile> maintenanceLock;
-    std::unique_ptr<QLockFile> legacyRepairLock;
-    QString failedLockPath;
-    QString currentHolderInfo;
-    bool currentHolderIsRunningLocally { false };
 };
 
 enum class DatabaseRestoreStatus {

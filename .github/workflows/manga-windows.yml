@@ -37,14 +37,14 @@ jobs:
           if errorlevel 1 exit /b 1
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON -DDECOMPRESSION_BACKEND=7zip -DPDF_BACKEND=pdfium -DBUILD_NUMBER=${{ github.run_number }}
           if errorlevel 1 exit /b 1
-          cmake --build build --target metadata_search_test metadata_workflow_test local_metadata_test --parallel %NUMBER_OF_PROCESSORS%
+          cmake --build build --target metadata_search_test metadata_workflow_test local_metadata_test --parallel %NUMBER_OF_PROCESSORS% || exit /b 1
           if errorlevel 1 exit /b 1
           set PATH=%GITHUB_WORKSPACE%\dependencies\pdfium\win\x64;%PATH%
           ctest --test-dir build -R "^(metadata_(search|workflow)|local_metadata)_test$" --output-on-failure
           set TEST_EXIT=%ERRORLEVEL%
           if exist build\tests\local_metadata_test\local-metadata.txt type build\tests\local_metadata_test\local-metadata.txt
           if not "%TEST_EXIT%"=="0" exit /b %TEST_EXIT%
-          cmake --build build --parallel %NUMBER_OF_PROCESSORS% -- -k 0
+          cmake --build build --parallel %NUMBER_OF_PROCESSORS% -- -k 0 || exit /b 1
           if errorlevel 1 exit /b 1
 
       - name: Check out pinned OCR build tools

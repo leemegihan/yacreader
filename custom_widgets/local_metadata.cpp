@@ -3,7 +3,7 @@
 #include "comic.h"
 #include "comic_image_folder.h"
 #include "compressed_archive.h"
-#include "data_base_management.h"
+#include "library_maintenance_lock.h"
 #include "qnaturalsorting.h"
 #include "yacreader_global.h"
 

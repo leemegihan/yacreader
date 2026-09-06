@@ -62,6 +62,8 @@ target_sources(worker INTERFACE
 
 # --- common_all (shared non-GUI code used by all 3 apps) ---
 add_library(common_all STATIC
+    library_maintenance_lock.h
+    library_maintenance_lock.cpp
     comic_db.h
     comic_db.cpp
     folder.h

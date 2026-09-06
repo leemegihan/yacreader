@@ -1,8 +1,8 @@
 #include "comic_db.h"
 #include "comic_image_folder.h"
-#include "data_base_management.h"
 #include "initial_comic_info_extractor.h"
 #include "library_creator.h"
+#include "library_maintenance_lock.h"
 #include "local_metadata.h"
 #include "yacreader_archive_inspector_dialog.h"
 #include "yacreader_global.h"
@@ -262,6 +262,7 @@ void LocalMetadataTest::folderScanAndMetadataPreservation()
         QCOMPARE(query.value(1).toString(), QString("Alice"));
         QCOMPARE(query.value(2).toInt(), 1);
         QCOMPARE(query.value(3).toInt(), 2);
+        query.finish();
         QVERIFY(!LocalMetadata::save(root, id, root + "/Wrong", "Wrong", "Wrong", true, { }, &error));
         QVERIFY(LocalMetadata::save(root, id, root + "/Author/Work", "New", "", true, { }, &error));
         {
