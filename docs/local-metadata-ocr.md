@@ -2,6 +2,10 @@
 
 ## 사용 흐름
 
+처음 교체할 때는 라이브러리 이름을 우클릭해 `Back up library database`로
+DB를 백업하고, YACReader와 YACReaderLibrary를 모두 종료한 뒤 새 설치 파일을
+실행한다. 기존 프로그램이나 만화 원본을 먼저 삭제할 필요는 없다.
+
 1. 이미지 폴더가 있다면 라이브러리를 업데이트(재스캔)한다.
 2. 왼쪽 `Unidentified`에서 작품을 선택하고 `앞·뒤 페이지 / OCR…`를 누른다.
 3. 기본 앞 3장·뒤 3장의 미리보기를 확인한다. 필요하면 각 1~6장으로 바꾼다.
@@ -50,7 +54,7 @@ PDF/EPUB 고유 페이지 순서, 복잡한 중첩 이미지 폴더, 별명/번�
 Windows 워크플로가 vcpkg `2025.06.13`의 Tesseract 5.5.1을 소스 빌드하고,
 `tessdata_fast` 4.1.0의 eng/jpn/jpn_vert/kor를 설치 파일에 포함한다.
 엔진 DLL은 앱의 `ocr` 하위 폴더에 격리하고 의존 라이선스도 함께 배포한다.
-로컬 Windows에 별도 OCR 설치나 언어 다운로드를 요구하지 않는 구성이 목표다.
+검증된 Windows 설치본은 별도 OCR 설치나 언어 다운로드를 요구하지 않는다.
 
 - Tesseract: https://github.com/tesseract-ocr/tesseract
 - 언어 데이터: https://github.com/tesseract-ocr/tessdata_fast/tree/4.1.0
@@ -60,3 +64,13 @@ Windows 워크플로가 vcpkg `2025.06.13`의 Tesseract 5.5.1을 소스 빌드�
 오류/시간제한/취소, DB 보존, 폴더 등록·재스캔·페이지 추가를 검사한다.
 Windows 설치 후 한글·공백 경로에서도 OCR 인식과 앱 시작을 추가 검사한다.
 실제 작품에 대한 인식률이나 사용자 PC의 실행 결과로 오해하면 안 된다.
+
+2026-09-06 Windows 검증 실행 `34029267025`에서 전체 12개 CTest 묶음,
+설치, 설치된 엔진의 글자 인식, 앱의 OCR 호출 함수(한글 설치 경로),
+YACReader/YACReaderLibrary 창 시작이 모두 통과했다.
+설치 파일은 `YACReader-v10.3.0.13-winx64-7z-qt6.exe`이며, 소스 커밋은
+`d85ec8e139096944143ab8e1bd91e5ca7355bc73`이다.
+
+사용자 PC에서는 재스캔 뒤 압축작품 한 권과 이미지 폴더 한 권으로 먼저
+확인한다. OCR 후보의 작가·제목을 원본 페이지와 대조해 수정한 뒤 저장하고,
+작가 필터와 읽던 위치가 유지되는지 확인한다. 서명 없는 개인 개발 빌드다.
