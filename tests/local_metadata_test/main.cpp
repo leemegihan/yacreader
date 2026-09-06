@@ -488,6 +488,19 @@ void LocalMetadataTest::realMultilingualColophon()
     if (qEnvironmentVariableIsEmpty("YACREADER_REQUIRE_OCR"))
         QSKIP("The packaged Windows job requires both language models and CJK fonts.");
     options.language = "auto";
+#ifdef Q_OS_WIN
+    // Exercise Unicode model staging before the expensive full app build too.
+    // jpn's embedded configuration also loads the jpn_vert sublanguage.
+    QTemporaryDir modelDirectory;
+    QVERIFY(modelDirectory.isValid());
+    const auto unicodeModels = modelDirectory.filePath("언어 모델");
+    QVERIFY(QDir().mkpath(unicodeModels));
+    for (const auto &name : { "eng", "jpn", "jpn_vert", "kor" }) {
+        const auto file = QString::fromLatin1(name) + ".traineddata";
+        QVERIFY(QFile::copy(QDir(options.dataPath).filePath(file), QDir(unicodeModels).filePath(file)));
+    }
+    options.dataPath = unicodeModels;
+#endif
     QString fixtureFamily;
     const auto fixtureFont = qEnvironmentVariable("YACREADER_TEST_CJK_FONT");
     if (!fixtureFont.isEmpty()) {

@@ -243,7 +243,12 @@ static QByteArray runOcrTsv(const QImage &image, const OcrOptions &options, cons
             return { };
         }
         const QRegularExpression languageName(QStringLiteral("^[A-Za-z0-9_]+$"));
-        for (const auto &language : options.language.split(QLatin1Char('+'), Qt::SkipEmptyParts)) {
+        auto languages = options.language.split(QLatin1Char('+'), Qt::SkipEmptyParts);
+        // The pinned Japanese model loads jpn_vert as a sublanguage even for
+        // horizontal text. Stage that dependency beside jpn in Unicode paths.
+        if (languages.contains(QStringLiteral("jpn")) && !languages.contains(QStringLiteral("jpn_vert")))
+            languages.append(QStringLiteral("jpn_vert"));
+        for (const auto &language : languages) {
             if (cancelled(cancel))
                 return { };
             if (!languageName.match(language).hasMatch() || !QFile::copy(QDir(dataPath).filePath(language + QStringLiteral(".traineddata")), QDir(staged).filePath(language + QStringLiteral(".traineddata")))) {
