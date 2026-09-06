@@ -93,18 +93,18 @@ void MetadataSearchTest::exactTokens_data()
 {
     QTest::addColumn<QString>("filter");
     QTest::addColumn<QList<int>>("expected");
-    QTest::newRow("author-boundary") << "author:Ann" << QList<int> { 1, 3 };
-    QTest::newRow("tag-boundary") << "tag:Action" << QList<int> { 1, 3 };
-    QTest::newRow("unicode-case") << "author:élodie" << QList<int> { 4 };
-    QTest::newRow("japanese-separator") << "author:山田太郎" << QList<int> { 4 };
-    QTest::newRow("fullwidth-separators") << "tag:ＳＦ" << QList<int> { 4 };
-    QTest::newRow("literal-percent") << "tag:\"100% Pure\"" << QList<int> { 4 };
-    QTest::newRow("literal-underscore") << "tag:A_B" << QList<int> { 4 };
-    QTest::newRow("unknown") << "tag:Missing" << QList<int> { };
-    QTest::newRow("empty") << "tag:\"\"" << QList<int> { };
-    QTest::newRow("separator-is-not-a-token") << "tag:\"Action, Fantasy\"" << QList<int> { };
-    QTest::newRow("negation-includes-null") << "NOT tag:Action" << QList<int> { 2, 4, 5, 6 };
-    QTest::newRow("case-insensitive-field") << "AuThOr==ann" << QList<int> { 1, 3 };
+    QTest::newRow("author-boundary") << QStringLiteral("author:Ann") << QList<int> { 1, 3 };
+    QTest::newRow("tag-boundary") << QStringLiteral("tag:Action") << QList<int> { 1, 3 };
+    QTest::newRow("unicode-case") << QStringLiteral("author:élodie") << QList<int> { 4 };
+    QTest::newRow("japanese-separator") << QStringLiteral("author:山田太郎") << QList<int> { 4 };
+    QTest::newRow("fullwidth-separators") << QStringLiteral("tag:ＳＦ") << QList<int> { 4 };
+    QTest::newRow("literal-percent") << QStringLiteral("tag:\"100% Pure\"") << QList<int> { 4 };
+    QTest::newRow("literal-underscore") << QStringLiteral("tag:A_B") << QList<int> { 4 };
+    QTest::newRow("unknown") << QStringLiteral("tag:Missing") << QList<int> { };
+    QTest::newRow("empty") << QStringLiteral("tag:\"\"") << QList<int> { };
+    QTest::newRow("separator-is-not-a-token") << QStringLiteral("tag:\"Action, Fantasy\"") << QList<int> { };
+    QTest::newRow("negation-includes-null") << QStringLiteral("NOT tag:Action") << QList<int> { 2, 4, 5, 6 };
+    QTest::newRow("case-insensitive-field") << QStringLiteral("AuThOr==ann") << QList<int> { 1, 3 };
 }
 
 void MetadataSearchTest::exactTokens()

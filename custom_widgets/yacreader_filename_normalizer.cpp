@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QRegularExpression>
 #include <QSqlDatabase>
 #include <QSqlError>
