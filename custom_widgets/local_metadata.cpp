@@ -3,6 +3,7 @@
 #include "comic.h"
 #include "comic_image_folder.h"
 #include "compressed_archive.h"
+#include "data_base_management.h"
 #include "qnaturalsorting.h"
 #include "yacreader_global.h"
 
@@ -303,7 +304,13 @@ bool save(const QString &libraryPath, qulonglong comicInfoId, const QString &sou
         *error = tr("Enter a title or author before saving.");
         return false;
     }
-    if (comicPath(libraryPath, comicInfoId, error) != sourcePath) {
+    LibraryMaintenanceLock maintenance(libraryPath);
+    if (!maintenance.tryLock()) {
+        *error = maintenance.errorString();
+        return false;
+    }
+    const auto resolvedSource = comicPath(libraryPath, comicInfoId, error);
+    if (resolvedSource.isEmpty() || resolvedSource != sourcePath) {
         if (error->isEmpty())
             *error = tr("The comic path changed. Reopen the inspector before saving.");
         return false;

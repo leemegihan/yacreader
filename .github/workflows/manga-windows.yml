@@ -41,7 +41,9 @@ jobs:
           if errorlevel 1 exit /b 1
           set PATH=%GITHUB_WORKSPACE%\dependencies\pdfium\win\x64;%PATH%
           ctest --test-dir build -R "^(metadata_(search|workflow)|local_metadata)_test$" --output-on-failure
-          if errorlevel 1 exit /b 1
+          set TEST_EXIT=%ERRORLEVEL%
+          if exist build\tests\local_metadata_test\local-metadata.txt type build\tests\local_metadata_test\local-metadata.txt
+          if not "%TEST_EXIT%"=="0" exit /b %TEST_EXIT%
           cmake --build build --parallel %NUMBER_OF_PROCESSORS% -- -k 0
           if errorlevel 1 exit /b 1
 
@@ -106,7 +108,9 @@ jobs:
           $env:QT_QPA_PLATFORM = 'offscreen'
           $env:YACREADER_REQUIRE_OCR = '1'
           ctest --test-dir build --output-on-failure --timeout 120 --output-junit test-results.xml
-          if ($LASTEXITCODE -ne 0) { throw 'Regression tests failed' }
+          $testExit = $LASTEXITCODE
+          Get-Content build/tests/local_metadata_test/local-metadata.txt
+          if ($testExit -ne 0) { throw 'Regression tests failed' }
 
       - name: Download Visual C++ runtime
         run: |
@@ -208,4 +212,5 @@ jobs:
             build/test-results.xml
             build/Testing/Temporary/LastTest.log
             build/CMakeFiles/CMakeConfigureLog.yaml
+            build/tests/local_metadata_test/local-metadata.txt
           retention-days: 14

@@ -119,7 +119,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgl-dev libgles2-mesa-dev \
             libfontconfig1-dev libfreetype-dev libxkbcommon-dev libpoppler-qt6-dev \
-            libspeechd-dev
+            libspeechd-dev 7zip
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
@@ -132,6 +132,7 @@ jobs:
         run: |
           cmake -B build \
             -DDECOMPRESSION_BACKEND=7zip \
+            -DCMAKE_INSTALL_LIBDIR=/usr/lib \
             -DPDF_BACKEND=poppler \
             -DBUILD_NUMBER="${{ needs.initialization.outputs.build_number }}" \
             -DCMAKE_BUILD_TYPE=Release

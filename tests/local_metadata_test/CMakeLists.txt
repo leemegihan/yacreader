@@ -1,7 +1,8 @@
 qt_add_executable(local_metadata_test main.cpp)
+set_target_properties(local_metadata_test PROPERTIES WIN32_EXECUTABLE FALSE)
 yacreader_apply_build_options(local_metadata_test)
 target_link_libraries(local_metadata_test PRIVATE Qt6::Test metadata_widgets library_common db_helper)
-add_test(NAME local_metadata_test COMMAND local_metadata_test)
+add_test(NAME local_metadata_test COMMAND local_metadata_test -o "${CMAKE_CURRENT_BINARY_DIR}/local-metadata.txt,txt")
 set_tests_properties(local_metadata_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 180)
 if(WIN32 AND DECOMPRESSION_BACKEND STREQUAL "7zip")
     add_custom_command(TARGET local_metadata_test POST_BUILD

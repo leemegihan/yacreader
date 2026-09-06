@@ -1,5 +1,6 @@
 #include "comic_db.h"
 #include "comic_image_folder.h"
+#include "data_base_management.h"
 #include "initial_comic_info_extractor.h"
 #include "library_creator.h"
 #include "local_metadata.h"
@@ -96,6 +97,7 @@ private slots:
     void folderScanAndMetadataPreservation();
     void rootImageFolderSurvivesRescan();
     void closingAndSwitchingCancelWorkers();
+    void missingSourceDoesNotCreateDatabase();
 };
 
 void LocalMetadataTest::sampling()
@@ -262,6 +264,11 @@ void LocalMetadataTest::folderScanAndMetadataPreservation()
         QCOMPARE(query.value(3).toInt(), 2);
         QVERIFY(!LocalMetadata::save(root, id, root + "/Wrong", "Wrong", "Wrong", true, { }, &error));
         QVERIFY(LocalMetadata::save(root, id, root + "/Author/Work", "New", "", true, { }, &error));
+        {
+            LibraryMaintenanceLock maintenance(root);
+            QVERIFY(maintenance.tryLock());
+            QVERIFY(!LocalMetadata::save(root, id, root + "/Author/Work", "Wrong", "Wrong", true, { }, &error));
+        }
         // Re-scan unchanged, then add a page: metadata and reading state survive.
         query.finish();
         creator.updateLibrary(root, YACReader::LibraryPaths::libraryDataPath(root));
@@ -321,6 +328,14 @@ void LocalMetadataTest::closingAndSwitchingCancelWorkers()
     QVERIFY(second->load());
     QVERIFY(dialog.sourcePath.isEmpty());
     QVERIFY(dialog.titleEdit->text().isEmpty());
+}
+
+void LocalMetadataTest::missingSourceDoesNotCreateDatabase()
+{
+    QTemporaryDir directory;
+    QString error;
+    QVERIFY(!LocalMetadata::save(directory.path(), 999, QString(), "Title", "Author", false, { }, &error));
+    QVERIFY(!QFileInfo::exists(YACReader::LibraryPaths::libraryDatabasePath(directory.path())));
 }
 
 int main(int argc, char **argv)
