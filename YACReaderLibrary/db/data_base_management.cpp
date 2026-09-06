@@ -416,6 +416,7 @@ QSqlDatabase DataBaseManagement::createDatabase(QString dest)
 {
     QString threadId = QString::number((long long)QThread::currentThreadId(), 16);
     QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", dest + threadId);
+    db.setConnectOptions("QSQLITE_BUSY_TIMEOUT=2000;QSQLITE_ENABLE_REGEXP");
     db.setDatabaseName(dest);
     if (!db.open())
         qDebug() << db.lastError();
@@ -449,7 +450,7 @@ QSqlDatabase DataBaseManagement::loadDatabase(QString libraryDataPath)
     QString connectionName = dbPath + threadId;
 
     QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", connectionName);
-    db.setConnectOptions("QSQLITE_BUSY_TIMEOUT=2000");
+    db.setConnectOptions("QSQLITE_BUSY_TIMEOUT=2000;QSQLITE_ENABLE_REGEXP");
     db.setDatabaseName(dbPath);
     if (!db.open()) {
         const QString error = db.lastError().text();
@@ -476,7 +477,7 @@ QSqlDatabase DataBaseManagement::loadDatabaseFromFile(QString filePath)
     QString threadId = QString::number((quintptr)QThread::currentThreadId(), 16);
     QString connectionName = dbPath + threadId;
     QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", connectionName);
-    db.setConnectOptions("QSQLITE_BUSY_TIMEOUT=2000");
+    db.setConnectOptions("QSQLITE_BUSY_TIMEOUT=2000;QSQLITE_ENABLE_REGEXP");
     db.setDatabaseName(dbPath);
     if (!db.open()) {
         // se devuelve una base de datos vacía e inválida

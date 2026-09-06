@@ -231,7 +231,7 @@ void MetadataWorkflowTest::sameLibraryRefreshesFacets()
     QSignalSpy requested(&browser, &YACReaderMetadataBrowser::searchRequested);
     authors->itemClicked(authors->item(0));
     QCOMPARE(requested.count(), 1);
-    QCOMPARE(requested.first().at(0).toString(), QStringLiteral("writer:\"New author\""));
+    QCOMPARE(requested.first().at(0).toString(), QStringLiteral("author:\"New author\""));
 }
 
 void MetadataWorkflowTest::readOnlyLibraryCannotOpenLookup()

@@ -60,6 +60,7 @@ public:
 
         int buildSqlString(std::string &sqlString, int bindPosition = 0) const;
         int bindValues(QSqlQuery &selectQuery, int bindPosition = 0) const;
+        bool hasMetadataTokens() const;
     };
 
     explicit QueryParser();

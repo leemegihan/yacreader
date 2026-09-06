@@ -1,5 +1,6 @@
 #include "yacreader_metadata_browser.h"
 
+#include "metadata_tokens.h"
 #include "yacreader_archive_inspector_dialog.h"
 #include "yacreader_filename_normalizer.h"
 #include "yacreader_global.h"
@@ -74,10 +75,10 @@ YACReaderMetadataBrowser::YACReaderMetadataBrowser(QWidget *parent)
     connect(filterEdit, &QLineEdit::textChanged, this, &YACReaderMetadataBrowser::applyFilter);
     connect(refreshButton, &QToolButton::clicked, this, &YACReaderMetadataBrowser::refresh);
     connect(writersList, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
-        activateItem(item, QStringLiteral("writer"));
+        activateItem(item, QStringLiteral("author"));
     });
     connect(tagsList, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
-        activateItem(item, QStringLiteral("tags"));
+        activateItem(item, QStringLiteral("tag"));
     });
     connect(unidentifiedList, &QListWidget::itemSelectionChanged, this, &YACReaderMetadataBrowser::updateLookupButtons);
     connect(unidentifiedList, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *) {
@@ -156,11 +157,9 @@ void YACReaderMetadataBrowser::refresh()
             if (query.exec(QStringLiteral(
                         "SELECT ci.writer, ci.tags "
                         "FROM comic c INNER JOIN comic_info ci ON c.comicInfoId = ci.id"))) {
-                const QRegularExpression separator(QStringLiteral("[,;\\n\\r]+"));
-
-                auto addValues = [&separator](const QString &rawValue, QHash<QString, FacetEntry> &entries) {
+                auto addValues = [](const QString &rawValue, QHash<QString, FacetEntry> &entries) {
                     QSet<QString> seenForComic;
-                    const auto values = rawValue.split(separator, Qt::SkipEmptyParts);
+                    const auto values = MetadataTokens::split(rawValue);
                     for (const auto &raw : values) {
                         const QString value = raw.trimmed();
                         if (value.isEmpty())

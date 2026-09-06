@@ -56,6 +56,7 @@ add_library(db_helper STATIC
     db/reading_list.cpp
     db/query_lexer.h
     db/query_lexer.cpp
+    db/metadata_tokens.h
     db/search_field_registry.h
     db/search_field_registry.cpp
     db/query_parser.h

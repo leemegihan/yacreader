@@ -35,7 +35,8 @@ QSqlQuery comicsSearchQuery(QSqlDatabase &db, const QString &filter)
 
     QSqlQuery selectQuery(db);
     selectQuery.prepare(queryString.c_str());
-    selectQuery.bindValue(":limit", 500); // TODO, load this value from settings
+    // Facet counts must not promise more matches than the browser can display.
+    selectQuery.bindValue(":limit", result.hasMetadataTokens() ? -1 : 500);
     result.bindValues(selectQuery);
 
     selectQuery.exec();

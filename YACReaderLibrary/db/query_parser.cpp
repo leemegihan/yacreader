@@ -1,5 +1,7 @@
 #include "query_parser.h"
 
+#include "metadata_tokens.h"
+
 #include <QDateTime>
 #include <QVariant>
 
@@ -30,7 +32,10 @@ int QueryParser::TreeNode::buildSqlString(std::string &sqlString, int bindPositi
     // TODO: add some semantic checks, not all operators apply to all fields
     if (t == "expression") {
         ++bindPosition;
-        if (toLower(children[0].t) == "all") {
+        if (fieldType(children[0].t) == FieldType::MetadataToken) {
+            const std::string column = toLower(children[0].t) == "author" ? "writer" : "tags";
+            sqlString += "(COALESCE(ci." + column + ", '') REGEXP :bindPosition" + std::to_string(bindPosition) + ") ";
+        } else if (toLower(children[0].t) == "all") {
             sqlString += "(";
             for (const auto &field : searchFieldNames().at(FieldType::Text)) {
                 sqlString += "UPPER(ci." + field + ") LIKE UPPER(:bindPosition" + std::to_string(bindPosition) + ") OR ";
@@ -86,7 +91,9 @@ int QueryParser::TreeNode::bindValues(QSqlQuery &selectQuery, int bindPosition) 
 {
     if (t == "expression") {
         std::string bind_string(":bindPosition" + std::to_string(++bindPosition));
-        if (isIn(fieldType(children[0].t), { FieldType::Numeric })) {
+        if (fieldType(children[0].t) == FieldType::MetadataToken) {
+            selectQuery.bindValue(QString::fromStdString(bind_string), MetadataTokens::exactPattern(QString::fromStdString(children[1].t)));
+        } else if (isIn(fieldType(children[0].t), { FieldType::Numeric })) {
             selectQuery.bindValue(QString::fromStdString(bind_string), std::stoi(children[1].t));
         } else if (isIn(fieldType(children[0].t), { FieldType::Boolean, FieldType::BooleanFolder })) {
             auto value = toLower(children[1].t);
@@ -134,6 +141,13 @@ int QueryParser::TreeNode::bindValues(QSqlQuery &selectQuery, int bindPosition) 
     return bindPosition;
 }
 
+bool QueryParser::TreeNode::hasMetadataTokens() const
+{
+    if (t == "expression")
+        return fieldType(children[0].t) == FieldType::MetadataToken;
+    return std::any_of(children.begin(), children.end(), [](const TreeNode &child) { return child.hasMetadataTokens(); });
+}
+
 QueryParser::QueryParser()
 {
 }
@@ -155,7 +169,7 @@ QueryParser::TreeNode QueryParser::parse(const std::string &expr)
 std::string QueryParser::toLower(const std::string &string)
 {
     std::string res(string);
-    std::transform(res.begin(), res.end(), res.begin(), ::tolower);
+    std::transform(res.begin(), res.end(), res.begin(), [](unsigned char c) { return std::tolower(c); });
     return res;
 }
 
@@ -168,6 +182,15 @@ std::string QueryParser::token(bool advance)
     auto lexeme = currentToken.lexeme();
 
     auto res = (tokenType() == Token::Type::quotedWord) ? currentToken.lexeme().substr(1, lexeme.size() - 2) : lexeme; // TODO process quotedWordDiferently?
+    if (tokenType() == Token::Type::quotedWord) {
+        std::string decoded;
+        for (size_t i = 0; i < res.size(); ++i) {
+            if (res[i] == '\\' && i + 1 < res.size() && (res[i + 1] == '\\' || res[i + 1] == '"'))
+                ++i;
+            decoded += res[i];
+        }
+        res = decoded;
+    }
     if (advance) {
         this->advance();
     }
@@ -295,6 +318,8 @@ QueryParser::TreeNode QueryParser::expression()
                 throw std::invalid_argument("missing right operand");
             }
             auto right = token(true);
+            if (fieldType(left) == FieldType::MetadataToken && expOperator != ":" && expOperator != "=" && expOperator != "==")
+                throw std::invalid_argument("Author and tag searches only support :, = or ==");
 
             return TreeNode("expression", { TreeNode(toLower(left), { }), TreeNode(right, { }) }, expOperator);
         } else {
