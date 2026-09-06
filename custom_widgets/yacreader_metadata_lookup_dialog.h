@@ -1,7 +1,10 @@
 #ifndef YACREADER_METADATA_LOOKUP_DIALOG_H
 #define YACREADER_METADATA_LOOKUP_DIALOG_H
 
+#include "catalog_metadata.h"
+
 #include <QDialog>
+#include <QElapsedTimer>
 #include <QStringList>
 #include <QVector>
 
@@ -23,6 +26,7 @@ class YACReaderMetadataLookupDialog : public QDialog
 public:
     explicit YACReaderMetadataLookupDialog(QWidget *parent = nullptr);
     void searchTitle(const QString &title);
+    void prepareOcrSearch(const QString &title, const QString &author, int pageCount);
 
     void setComic(const QString &libraryPath,
                   qulonglong comicInfoId,
@@ -43,20 +47,15 @@ private slots:
 private:
     friend class MetadataWorkflowTest;
 
-    struct Candidate {
-        qint64 sourceId = 0;
-        QString romajiTitle;
-        QString englishTitle;
-        QString nativeTitle;
-        QStringList authors;
-        QStringList genres;
-        QStringList tags;
-        QString format;
-        int year = 0;
-        QString description;
-        QString siteUrl;
-        int titleSimilarity = 0;
-    };
+    using Candidate = CatalogMetadata::Candidate;
+    enum class RequestKind { AniList,
+                             GallerySearch,
+                             GalleryMetadata };
+    RequestKind requestKind = RequestKind::AniList;
+    QElapsedTimer lastGalleryLookup;
+    void watchReply();
+    void requestGalleryMetadata(const QJsonArray &references);
+    void displayResults();
 
     static QString cleanSearchText(const QString &fileName, const QString &existingTitle);
     static QString normalizeTitle(const QString &title);
@@ -85,6 +84,9 @@ private:
     QLabel *fileNameLabel;
     QLabel *existingInfoLabel;
     QLineEdit *searchEdit;
+    QLineEdit *authorEdit;
+    QComboBox *providerChoice;
+    int sourcePageCount = 0;
     QPushButton *searchButton;
     QLabel *statusLabel;
     QListWidget *resultsList;

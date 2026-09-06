@@ -13,6 +13,7 @@ class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
+class OcrPageView;
 
 class YACReaderArchiveInspectorDialog : public QDialog
 {
@@ -24,11 +25,13 @@ public:
 
 signals:
     void metadataSaved(const QString &libraryPath, qulonglong comicInfoId);
-    void titleSearchRequested(const QString &libraryPath, qulonglong comicInfoId, const QString &title);
+    void titleSearchRequested(const QString &libraryPath, qulonglong comicInfoId, const QString &title, const QString &author, int pageCount);
 
 private:
     friend class LocalMetadataTest;
     void start(bool ocr);
+    void recognizeRegion();
+    LocalMetadata::OcrOptions ocrOptions() const;
     void cancel();
     void showPage(int row);
     void showResult(const LocalMetadata::Result &result);
@@ -43,7 +46,7 @@ private:
 
     QLabel *fileLabel;
     QLabel *statusLabel;
-    QLabel *imageLabel;
+    OcrPageView *imageLabel;
     QListWidget *pageList;
     QListWidget *candidateList;
     QPlainTextEdit *pageText;
@@ -51,6 +54,12 @@ private:
     QLineEdit *authorEdit;
     QCheckBox *overwrite;
     QComboBox *language;
+    QComboBox *quality;
+    QComboBox *textLayout;
+    QComboBox *rotation;
+    QCheckBox *invert;
+    QCheckBox *threshold;
+    QPushButton *regionButton;
     QSpinBox *pageLimit;
     QPushButton *ocrButton;
     QPushButton *cancelButton;

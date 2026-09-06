@@ -5,6 +5,9 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QNetworkReply>
@@ -59,6 +62,10 @@ private slots:
     void sameLibraryRefreshesFacets();
     void readOnlyLibraryCannotOpenLookup();
     void switchingLibraryClosesLookup();
+    void galleryMetadataKeepsNamespaces();
+    void galleryReferencesRejectUntrustedLinks();
+    void ocrEvidenceDoesNotSendOrSaveAutomatically();
+    void provenanceFailureRollsBackMetadata();
 
 private:
     PendingReply *attachReply(YACReaderMetadataLookupDialog &dialog);
@@ -67,6 +74,77 @@ private:
     QString connectionName;
     QSqlDatabase database;
 };
+
+void MetadataWorkflowTest::galleryMetadataKeepsNamespaces()
+{
+    const QJsonObject work { { "gid", 123 }, { "token", "0123456789" }, { "title", "[Example Circle] Test Book [English]" }, { "title_jpn", "[見本] 青い空" }, { "filecount", "24" }, { "category", "Manga" }, { "tags", QJsonArray { "artist:Alice Example", "group:Example Circle", "language:english", "parody:original", "artist:alice example" } }, { "uploader", "Not An Author" }, { "posted", "1500000000" } };
+    QString error;
+    const auto candidates = CatalogMetadata::parseGalleryMetadata(QJsonDocument(QJsonObject { { "gmetadata", QJsonArray { work } } }).toJson(), &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(candidates.size(), 1);
+    QCOMPARE(candidates.first().authors, QStringList { "Alice Example" });
+    QVERIFY(candidates.first().tags.contains("group:Example Circle"));
+    QCOMPARE(candidates.first().pageCount, 24);
+    QCOMPARE(candidates.first().year, 0); // Upload date is not publication date.
+    QCOMPARE(CatalogMetadata::plainTitle(candidates.first().romajiTitle), QString("Test Book"));
+    QVERIFY(CatalogMetadata::parseGalleryMetadata("{\"gmetadata\":[{\"gid\":123,\"error\":\"unavailable\"}]}", &error).isEmpty());
+    QVERIFY(!error.isEmpty());
+    QVERIFY(CatalogMetadata::parseGalleryMetadata("<html>access challenge</html>", &error).isEmpty());
+}
+
+void MetadataWorkflowTest::galleryReferencesRejectUntrustedLinks()
+{
+    QVERIFY(!CatalogMetadata::galleryReference(QUrl("https://e-hentai.org/g/123/0123456789/")).isEmpty());
+    QVERIFY(!CatalogMetadata::galleryReference(QUrl("https://exhentai.org/g/123/0123456789/")).isEmpty());
+    for (const auto &url : QStringList { "http://e-hentai.org/g/123/0123456789/", "https://e-hentai.org.evil.test/g/123/0123456789/", "file:///g/123/0123456789/", "https://user@e-hentai.org/g/123/0123456789/", "https://e-hentai.org:8443/g/123/0123456789/" })
+        QVERIFY(CatalogMetadata::galleryReference(QUrl(url)).isEmpty());
+    const auto links = CatalogMetadata::galleryReferences("<a href='https://e-hentai.org/g/123/0123456789/'>Text</a><a href=\"https://e-hentai.org/g/123/0123456789/\">duplicate</a><img src='https://example.test/image.jpg'>");
+    QCOMPARE(links.size(), 1);
+}
+
+void MetadataWorkflowTest::ocrEvidenceDoesNotSendOrSaveAutomatically()
+{
+    YACReaderMetadataLookupDialog dialog;
+    selectCandidate(dialog);
+    dialog.prepareOcrSearch("Test Book", "Alice Example", 24);
+    QVERIFY(dialog.activeReply == nullptr);
+    QCOMPARE(dialog.resultsList->count(), 0);
+    QCOMPARE(dialog.searchEdit->text(), QString("Test Book"));
+    QCOMPARE(dialog.authorEdit->text(), QString("Alice Example"));
+    YACReaderMetadataLookupDialog::Candidate candidate;
+    candidate.provider = "E-Hentai";
+    candidate.romajiTitle = "[Group] Test Book";
+    candidate.authors = { "Bob Example" };
+    candidate.pageCount = 48;
+    candidate.titleSimilarity = 100;
+    dialog.candidates = { candidate };
+    dialog.displayResults();
+    QCOMPARE(dialog.chosenTitle(), QString("Test Book"));
+    QVERIFY(dialog.matchLabel->text().contains("불일치"));
+    QVERIFY(dialog.matchLabel->text().contains("24 /"));
+    QSqlQuery query(database);
+    QVERIFY(query.exec("SELECT title FROM comic_info WHERE id=1"));
+    QVERIFY(query.next());
+    QCOMPARE(query.value(0).toString(), QString("My title"));
+}
+
+void MetadataWorkflowTest::provenanceFailureRollsBackMetadata()
+{
+    QSqlQuery query(database);
+    QVERIFY(query.exec("DROP TABLE IF EXISTS catalog_metadata_evidence"));
+    QVERIFY(query.exec("CREATE TABLE catalog_metadata_evidence (id INTEGER PRIMARY KEY)"));
+    YACReaderMetadataLookupDialog dialog;
+    selectCandidate(dialog);
+    dialog.overwriteExisting->setChecked(true);
+    QString error;
+    QVERIFY(!dialog.saveCandidate(dialog.candidates.first(), &error));
+    QVERIFY(!error.isEmpty());
+    QVERIFY(query.exec("SELECT title FROM comic_info WHERE id=1"));
+    QVERIFY(query.next());
+    QCOMPARE(query.value(0).toString(), QString("My title"));
+    query.finish();
+    QVERIFY(query.exec("DROP TABLE catalog_metadata_evidence"));
+}
 
 void MetadataWorkflowTest::init()
 {

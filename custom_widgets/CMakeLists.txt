@@ -67,6 +67,9 @@ endif()
 # Isolate metadata widgets so tests do not pull the full application's combined
 # MOC object (and unrelated theme/sidebar symbols) into the MSVC link.
 add_library(metadata_widgets STATIC
+    catalog_metadata.h
+    catalog_metadata.cpp
+    ocr_page_view.h
     local_metadata.h
     local_metadata.cpp
     yacreader_metadata_browser.h

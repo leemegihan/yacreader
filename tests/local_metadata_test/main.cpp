@@ -4,6 +4,7 @@
 #include "library_creator.h"
 #include "library_maintenance_lock.h"
 #include "local_metadata.h"
+#include "ocr_page_view.h"
 #include "yacreader_archive_inspector_dialog.h"
 #include "yacreader_global.h"
 
@@ -96,6 +97,9 @@ private slots:
     void labelledCandidatesAreNotTranslators();
     void ocrProcessAndCancellation();
     void realOcr();
+    void croppedCreditOcr();
+    void preprocessingPreservesSource();
+    void regionCoordinatesAndCandidatePrefill();
     void folderScanAndMetadataPreservation();
     void rootImageFolderSurvivesRescan();
     void closingAndSwitchingCancelWorkers();
@@ -252,6 +256,93 @@ void LocalMetadataTest::realOcr()
     QVERIFY2(error.isEmpty(), qPrintable(error));
     QVERIFY2(text.contains("Test Book", Qt::CaseInsensitive), qPrintable(text));
     QVERIFY2(text.contains("Alice Example", Qt::CaseInsensitive), qPrintable(text));
+}
+
+void LocalMetadataTest::preprocessingPreservesSource()
+{
+    QImage image(80, 40, QImage::Format_ARGB32);
+    image.fill(Qt::transparent);
+    image.setPixelColor(10, 10, Qt::black);
+    const auto original = image.copy();
+    LocalMetadata::OcrOptions options;
+    const auto prepared = LocalMetadata::prepareOcrImage(image, options);
+    QCOMPARE(image, original);
+    QCOMPARE(prepared.size(), QSize(200, 120));
+    QCOMPARE(prepared.pixelColor(0, 0), QColor(Qt::white));
+    QCOMPARE(prepared.pixelColor(30, 30), QColor(Qt::white));
+    options.rotation = 90;
+    QCOMPARE(LocalMetadata::prepareOcrImage(image, options).size(), QSize(120, 200));
+    options.invert = true;
+    const auto inverted = LocalMetadata::prepareOcrImage(image, options);
+    QCOMPARE(inverted.pixelColor(40, 40), QColor(Qt::black));
+}
+
+void LocalMetadataTest::regionCoordinatesAndCandidatePrefill()
+{
+    OcrPageView view;
+    QImage page(2600, 3800, QImage::Format_RGB32);
+    page.fill(Qt::white);
+    view.setPage(page);
+    view.show();
+    QTest::mousePress(&view, Qt::LeftButton, Qt::NoModifier, QPoint(50, 100));
+    QTest::mouseRelease(&view, Qt::LeftButton, Qt::NoModifier, QPoint(249, 199));
+    QCOMPARE(view.selectedRegion(), QRect(200, 400, 800, 400));
+    view.setPage(page);
+    QVERIFY(view.selectedRegion().isEmpty());
+
+    YACReaderArchiveInspectorDialog dialog;
+    LocalMetadata::Result result;
+    LocalMetadata::Page credit;
+    credit.number = 20;
+    credit.text = "Author: Alice Example\nTitle: Test Book";
+    result.pages = { credit };
+    result.suggestions = LocalMetadata::suggest(result.pages, "/downloads/[Wrong Person] Wrong Title.cbz");
+    dialog.showResult(result);
+    QCOMPARE(dialog.titleEdit->text(), QString("Test Book"));
+    QCOMPARE(dialog.authorEdit->text(), QString("Alice Example"));
+    dialog.titleEdit->setText("My correction");
+    dialog.showResult(result);
+    QCOMPARE(dialog.titleEdit->text(), QString("My correction"));
+    dialog.authorEdit->clear();
+    credit.text += "\nAuthor: Bob Example";
+    result.pages = { credit };
+    result.suggestions = LocalMetadata::suggest(result.pages, "/downloads/Work.cbz");
+    dialog.showResult(result);
+    QVERIFY(dialog.authorEdit->text().isEmpty());
+}
+
+void LocalMetadataTest::croppedCreditOcr()
+{
+    auto options = LocalMetadata::defaultOcrOptions();
+    if (options.executable.isEmpty() && qEnvironmentVariableIsEmpty("YACREADER_REQUIRE_OCR"))
+        QSKIP("OCR runtime not installed.");
+    options.language = "eng";
+    options.segmentation = 6;
+    // A small credit on a large illustrated page. Only the chosen rectangle is
+    // sent to OCR, with automatic upscaling, white border and optional inversion.
+    QImage page(2800, 3800, QImage::Format_RGB32);
+    page.fill(QColor(65, 65, 65));
+    const QRect region(80, 3450, 1000, 140);
+    QPainter painter(&page);
+    painter.fillRect(region, Qt::black);
+    painter.setPen(Qt::white);
+    QFont font("Arial");
+    font.setPixelSize(40);
+    painter.setFont(font);
+    painter.drawText(region.adjusted(25, 0, -10, 0), Qt::AlignVCenter, "Author: Alice Example");
+    painter.end();
+    options.invert = true;
+    QString error;
+    const auto text = LocalMetadata::recognize(page.copy(region), options, std::make_shared<std::atomic_bool>(false), &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY2(text.contains("Alice Example", Qt::CaseInsensitive), qPrintable(text));
+    // The fast model remains independently usable alongside the precise model.
+    if (!options.dataPath.isEmpty()) {
+        options.dataPath = QDir(QFileInfo(options.executable).absolutePath()).filePath("tessdata");
+        const auto fastText = LocalMetadata::recognize(page.copy(region), options, std::make_shared<std::atomic_bool>(false), &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QVERIFY2(fastText.contains("Alice Example", Qt::CaseInsensitive), qPrintable(fastText));
+    }
 }
 
 void LocalMetadataTest::folderScanAndMetadataPreservation()

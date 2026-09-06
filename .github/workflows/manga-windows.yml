@@ -110,6 +110,29 @@ jobs:
           & "$ocr/tesseract.exe" --version
           if ($LASTEXITCODE -ne 0) { throw 'Bundled OCR failed to start' }
 
+      - name: Check out precise OCR language data
+        uses: actions/checkout@v6
+        with:
+          repository: tesseract-ocr/tessdata_best
+          ref: 'e2aad9b983032bb1beff9133104a67cdbb87ca4d' # 4.1.0
+          path: ocr-build/tessdata-best
+          sparse-checkout: |
+            eng.traineddata
+            jpn.traineddata
+            jpn_vert.traineddata
+            kor.traineddata
+            LICENSE
+          sparse-checkout-cone-mode: false
+
+      - name: Stage precise OCR languages
+        run: |
+          $ocr = Join-Path $env:GITHUB_WORKSPACE 'build/bin/ocr'
+          New-Item -ItemType Directory -Force "$ocr/tessdata_best" | Out-Null
+          foreach ($language in @('eng', 'jpn', 'jpn_vert', 'kor')) {
+            Copy-Item "ocr-build/tessdata-best/$language.traineddata" "$ocr/tessdata_best/"
+          }
+          Copy-Item 'ocr-build/tessdata-best/LICENSE' "$ocr/licenses/tessdata_best.txt"
+
       - name: Run all regression tests
         run: |
           $env:PATH = "$env:GITHUB_WORKSPACE\dependencies\pdfium\win\x64;$env:PATH"
@@ -189,7 +212,7 @@ jobs:
               if ($required -notin $languages) { throw "Missing OCR language: $required" }
             }
           } finally { Pop-Location }
-          & "$package/local_metadata_test.exe" realOcr -o "$env:GITHUB_WORKSPACE/build/installed-ocr.txt,txt"
+          & "$package/local_metadata_test.exe" realOcr croppedCreditOcr -o "$env:GITHUB_WORKSPACE/build/installed-ocr.txt,txt"
           $ocrTestExit = $LASTEXITCODE
           Get-Content "$env:GITHUB_WORKSPACE/build/installed-ocr.txt"
           if ($ocrTestExit -ne 0) { throw 'Application OCR wrapper failed in the installed Unicode path' }

@@ -17,6 +17,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPainter>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
@@ -50,8 +51,8 @@ QImage decode(const QByteArray &bytes)
     const QSize size = reader.size();
     if (!size.isValid() || qint64(size.width()) * size.height() > 100000000)
         return { };
-    if (size.width() > 2400 || size.height() > 2400)
-        reader.setScaledSize(size.scaled(2400, 2400, Qt::KeepAspectRatio));
+    if (size.width() > 4000 || size.height() > 4000)
+        reader.setScaledSize(size.scaled(4000, 4000, Qt::KeepAspectRatio));
     return reader.read();
 }
 
@@ -150,7 +151,7 @@ Result readPages(const QString &path, int perEnd, const Cancellation &cancel)
 QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePath)
 {
     QVector<Suggestion> result;
-    auto append = [&](Suggestion::Field field, QString value, const QString &reason, int page) {
+    auto append = [&](Suggestion::Field field, QString value, const QString &reason, int page, bool labelled = false) {
         value = value.simplified();
         if (value.size() < 2 || value.size() > 180 || value.contains(QStringLiteral("http"), Qt::CaseInsensitive) || value.contains(QLatin1Char('@')))
             return;
@@ -158,7 +159,7 @@ QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePat
             if (existing.field == field && existing.value.compare(value, Qt::CaseInsensitive) == 0 && existing.page == page)
                 return;
         }
-        result.append({ field, value, reason, page });
+        result.append({ field, value, reason, page, labelled });
     };
     // Role labels are evidence, not proof of identity. Translators/publishers and
     // circles are deliberately not treated as individual authors.
@@ -176,9 +177,9 @@ QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePat
             const auto authorMatch = author.match(line);
             const auto titleMatch = title.match(line);
             if (authorMatch.hasMatch())
-                append(Suggestion::Author, authorMatch.captured(1), tr("Author role label in page text — verify the credit."), page.number);
+                append(Suggestion::Author, authorMatch.captured(1), tr("Author role label in page text — verify the credit."), page.number, true);
             if (titleMatch.hasMatch())
-                append(Suggestion::Title, titleMatch.captured(1), tr("Title label in page text — verify against the page."), page.number);
+                append(Suggestion::Title, titleMatch.captured(1), tr("Title label in page text — verify against the page."), page.number, true);
             if (!authorMatch.hasMatch() && !titleMatch.hasMatch() && page.number <= 2 && index < 6 && line.size() >= 3 && line.size() <= 60 && !line.contains(QLatin1Char(':')) && !line.contains(QChar(0xff1a)) && !line.contains(QRegularExpression(QStringLiteral("(?:copyright|reserved|https|www\\.|R.?18|無断|転載|번역|역자|translator|scanlation)"), QRegularExpression::CaseInsensitiveOption)))
                 append(Suggestion::Title, line, tr("Unlabelled opening-page text; may be dialogue or an advertisement, not the title."), page.number);
         }
@@ -209,10 +210,42 @@ OcrOptions defaultOcrOptions()
 #endif
     options.executable = bundled.filePath(name);
     if (QFileInfo::exists(options.executable))
-        options.dataPath = bundled.filePath(QStringLiteral("tessdata"));
+        options.dataPath = bundled.filePath(QFileInfo::exists(bundled.filePath(QStringLiteral("tessdata_best/jpn.traineddata"))) ? QStringLiteral("tessdata_best") : QStringLiteral("tessdata"));
     else
         options.executable = QStandardPaths::findExecutable(name);
     return options;
+}
+
+QImage prepareOcrImage(const QImage &image, const OcrOptions &options)
+{
+    if (image.isNull())
+        return { };
+    // Composite transparent text onto white before grayscale conversion. Keep
+    // the original page intact; all preprocessing happens on this local copy.
+    QImage source = image;
+    if (source.width() > 4000 || source.height() > 4000)
+        source = source.scaled(4000, 4000, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    QImage flat(source.size(), QImage::Format_RGB32);
+    flat.fill(Qt::white);
+    {
+        QPainter painter(&flat);
+        painter.drawImage(0, 0, source);
+    }
+    if (options.rotation % 360 != 0)
+        flat = flat.transformed(QTransform().rotate(options.rotation), Qt::SmoothTransformation);
+    if (options.invert)
+        flat.invertPixels();
+    // Small credit regions benefit from rescaling. Bound both dimensions so a
+    // narrow, tall selection cannot allocate an unbounded bitmap.
+    if (qMax(flat.width(), flat.height()) < 2000)
+        flat = flat.scaled(flat.size() * 2, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    QImage bordered(flat.size() + QSize(40, 40), QImage::Format_RGB32);
+    bordered.fill(Qt::white);
+    {
+        QPainter painter(&bordered);
+        painter.drawImage(20, 20, flat);
+    }
+    return bordered.convertToFormat(QImage::Format_Grayscale8);
 }
 
 QString recognize(const QImage &image, const OcrOptions &options, const Cancellation &cancel, QString *error)
@@ -227,7 +260,7 @@ QString recognize(const QImage &image, const OcrOptions &options, const Cancella
         return { };
     }
     QTemporaryDir temporary;
-    if (!temporary.isValid() || !image.save(temporary.filePath(QStringLiteral("page.png")))) {
+    if (!temporary.isValid() || !prepareOcrImage(image, options).save(temporary.filePath(QStringLiteral("page.png")))) {
         *error = tr("Could not create the temporary OCR image.");
         return { };
     }
@@ -238,7 +271,14 @@ QString recognize(const QImage &image, const OcrOptions &options, const Cancella
     auto environment = QProcessEnvironment::systemEnvironment();
     environment.insert(QStringLiteral("OMP_THREAD_LIMIT"), QStringLiteral("2"));
     process.setProcessEnvironment(environment);
-    QStringList arguments { "page.png", "stdout", "-l", options.language, "--psm", options.vertical ? "5" : "11" };
+    const int segmentation = options.vertical ? 5 : options.segmentation;
+    if (segmentation != 5 && segmentation != 6 && segmentation != 7 && segmentation != 11 && segmentation != 13) {
+        *error = tr("Unsupported OCR text layout.");
+        return { };
+    }
+    QStringList arguments { "page.png", "stdout", "-l", options.language, "--oem", "1", "--psm", QString::number(segmentation), "--dpi", "300" };
+    if (options.adaptiveThreshold)
+        arguments << "-c" << "thresholding_method=2";
     QString dataPath = options.dataPath;
 #ifdef Q_OS_WIN
     // Tesseract still uses narrow fopen() for language files. A Unicode install
