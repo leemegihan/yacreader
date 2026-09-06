@@ -17,6 +17,8 @@ jobs:
     name: Windows x64 build, tests and installer
     runs-on: windows-2022
     timeout-minutes: 60
+    env:
+      YACREADER_TEST_CJK_FONT: ${{ github.workspace }}/ocr-test-font.otf
     defaults:
       run:
         shell: pwsh
@@ -44,8 +46,6 @@ jobs:
           set TEST_EXIT=%ERRORLEVEL%
           if exist build\tests\local_metadata_test\local-metadata.txt type build\tests\local_metadata_test\local-metadata.txt
           if not "%TEST_EXIT%"=="0" exit /b %TEST_EXIT%
-          cmake --build build --parallel %NUMBER_OF_PROCESSORS% -- -k 0 || exit /b 1
-          if errorlevel 1 exit /b 1
 
       - name: Check out pinned OCR build tools
         uses: actions/checkout@v6
@@ -132,6 +132,29 @@ jobs:
             Copy-Item "ocr-build/tessdata-best/$language.traineddata" "$ocr/tessdata_best/"
           }
           Copy-Item 'ocr-build/tessdata-best/LICENSE' "$ocr/licenses/tessdata_best.txt"
+
+      - name: Prepare deterministic CJK test font
+        run: |
+          curl.exe --fail --location --retry 3 https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/Japanese/NotoSansCJKjp-Regular.otf --output "$env:YACREADER_TEST_CJK_FONT"
+          if ($LASTEXITCODE -ne 0) { throw 'CJK test font download failed' }
+          if ((Get-Item "$env:YACREADER_TEST_CJK_FONT").Length -ne 16467736) { throw 'Incomplete CJK test font' }
+
+      - name: Verify actual OCR before full application build
+        run: |
+          $env:PATH = "$env:GITHUB_WORKSPACE\dependencies\pdfium\win\x64;$env:PATH"
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:YACREADER_REQUIRE_OCR = '1'
+          & build/bin/local_metadata_test.exe -o build/tests/local_metadata_test/local-metadata.txt,txt
+          $testExit = $LASTEXITCODE
+          Get-Content build/tests/local_metadata_test/local-metadata.txt
+          if ($testExit -ne 0) { throw 'Actual OCR regression tests failed' }
+
+      - name: Build all applications
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          if errorlevel 1 exit /b 1
+          cmake --build build --parallel %NUMBER_OF_PROCESSORS% -- -k 0 || exit /b 1
 
       - name: Run all regression tests
         run: |
@@ -252,6 +275,7 @@ jobs:
             build/installer.log
             build/installed-ocr.txt
             build/bin/ocr-fixture.png
+            build/bin/ocr-colophon-*
             build/test-results.xml
             build/Testing/Temporary/LastTest.log
             build/CMakeFiles/CMakeConfigureLog.yaml

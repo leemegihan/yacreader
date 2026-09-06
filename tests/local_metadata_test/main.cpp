@@ -14,6 +14,8 @@
 #include <QDataStream>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFontDatabase>
+#include <QFontMetrics>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -481,11 +483,20 @@ void LocalMetadataTest::realMultilingualColophon()
     if (qEnvironmentVariableIsEmpty("YACREADER_REQUIRE_OCR"))
         QSKIP("The packaged Windows job requires both language models and CJK fonts.");
     options.language = "auto";
+    QString fixtureFamily;
+    const auto fixtureFont = qEnvironmentVariable("YACREADER_TEST_CJK_FONT");
+    if (!fixtureFont.isEmpty()) {
+        const int fontId = QFontDatabase::addApplicationFont(fixtureFont);
+        QVERIFY2(fontId >= 0, "Could not load the pinned CJK fixture font.");
+        const auto families = QFontDatabase::applicationFontFamilies(fontId);
+        QVERIFY(!families.isEmpty());
+        fixtureFamily = families.first();
+    }
     for (const bool korean : { false, true }) {
         QImage image(1600, 900, QImage::Format_RGB32);
         image.fill(Qt::white);
         QPainter painter(&image);
-        QFont font(korean ? "Malgun Gothic" : "Yu Gothic");
+        QFont font(fixtureFamily.isEmpty() ? (korean ? "Malgun Gothic" : "Yu Gothic") : fixtureFamily);
         font.setPixelSize(56);
         painter.setFont(font);
         painter.setPen(Qt::black);
@@ -493,11 +504,18 @@ void LocalMetadataTest::realMultilingualColophon()
                                          : QStringList { "奥付", "タイトル", "青い空", "発行者", "見本太郎", "発行日" };
         int y = 100;
         for (const auto &line : lines) {
+            for (const auto ch : line)
+                QVERIFY2(QFontMetrics(font).inFontUcs4(ch.unicode()), "The fixture font lacks a required CJK glyph; do not OCR missing-glyph boxes.");
             painter.drawText(100, y, line);
             y += 120;
         }
         painter.end();
+        const auto fixturePath = QCoreApplication::applicationDirPath() + (korean ? "/ocr-colophon-kor" : "/ocr-colophon-jpn");
+        QVERIFY(image.save(fixturePath + ".png"));
         const auto reading = LocalMetadata::recognizePage(image, options, std::make_shared<std::atomic_bool>(false));
+        QFile recognized(fixturePath + ".txt");
+        QVERIFY(recognized.open(QIODevice::WriteOnly));
+        recognized.write(reading.text.toUtf8());
         QVERIFY2(reading.error.isEmpty(), qPrintable(reading.error));
         QCOMPARE(reading.language, korean ? QString("kor+eng") : QString("jpn+eng"));
         const auto normalized = LocalMetadata::normalizeOcrText(reading.text);
