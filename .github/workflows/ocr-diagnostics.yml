@@ -22,3 +22,18 @@ jobs:
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DPDF_BACKEND=poppler
           cmake --build build --target local_metadata_test --parallel "$(nproc)"
           ctest --test-dir build -R '^local_metadata_test$' --output-on-failure
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.9.3'
+          arch: macos
+          modules: 'qt5compat qtmultimedia qtimageformats qtshadertools qtspeech'
+          cache: true
+      - run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DPDF_BACKEND=pdfkit -DDECOMPRESSION_BACKEND=7zip
+          cmake --build build --target local_metadata_test --parallel "$(sysctl -n hw.ncpu)"
+          ctest --test-dir build -R '^local_metadata_test$' --output-on-failure

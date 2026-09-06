@@ -227,6 +227,14 @@ void LocalMetadataTest::realOcr()
     options.language = "eng";
     QString error;
     const auto fixture = sampleImage();
+    int inkPixels = 0;
+    for (int y = 0; y < fixture.height(); ++y) {
+        for (int x = 0; x < fixture.width(); ++x) {
+            if (qGray(fixture.pixel(x, y)) < 128)
+                ++inkPixels;
+        }
+    }
+    QVERIFY2(inkPixels > 1000, "The synthetic OCR fixture is blank; check the offscreen font directory.");
     const QString fixturePath = QCoreApplication::applicationDirPath() + "/ocr-fixture.png";
     QVERIFY(fixture.save(fixturePath));
     const auto text = LocalMetadata::recognize(fixture, options, std::make_shared<std::atomic_bool>(false), &error);
@@ -363,6 +371,11 @@ int main(int argc, char **argv)
         QTextStream(stdout) << "Title: Test Book\nAuthor: Alice Example\n";
         return 0;
     }
+#ifdef Q_OS_WIN
+    // The offscreen plugin does not discover Windows system fonts itself.
+    if (qEnvironmentVariableIsEmpty("QT_QPA_FONTDIR"))
+        qputenv("QT_QPA_FONTDIR", qEnvironmentVariable("SystemRoot").toUtf8() + "/Fonts");
+#endif
     QApplication app(argc, argv);
     LocalMetadataTest test;
     return QTest::qExec(&test, argc, argv);

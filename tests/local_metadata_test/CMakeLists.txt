@@ -13,4 +13,8 @@ if(WIN32 AND DECOMPRESSION_BACKEND STREQUAL "7zip")
     add_custom_command(TARGET local_metadata_test POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:local_metadata_test>/utils"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PROJECT_SOURCE_DIR}/dependencies/7zip/win/${test_archive_arch}/7z.dll" "$<TARGET_FILE_DIR:local_metadata_test>/utils/7z.dll")
+elseif(APPLE AND DECOMPRESSION_BACKEND STREQUAL "7zip")
+    add_custom_command(TARGET local_metadata_test POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:local_metadata_test>/utils"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PROJECT_SOURCE_DIR}/dependencies/7zip/macx/universal/7z.so" "$<TARGET_FILE_DIR:local_metadata_test>/utils/7z.so")
 endif()
