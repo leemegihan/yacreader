@@ -16,6 +16,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPainter>
+#include <QProcess>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QSqlDatabase>
@@ -38,6 +39,7 @@ QImage sampleImage()
     painter.setFont(font);
     painter.drawText(80, 160, "Title: Test Book");
     painter.drawText(80, 350, "Author: Alice Example");
+    painter.end();
     return image;
 }
 
@@ -224,7 +226,21 @@ void LocalMetadataTest::realOcr()
         QSKIP("OCR runtime not installed; packaged Windows job requires this test.");
     options.language = "eng";
     QString error;
-    const auto text = LocalMetadata::recognize(sampleImage(), options, std::make_shared<std::atomic_bool>(false), &error);
+    const auto fixture = sampleImage();
+    const QString fixturePath = QCoreApplication::applicationDirPath() + "/ocr-fixture.png";
+    QVERIFY(fixture.save(fixturePath));
+    const auto text = LocalMetadata::recognize(fixture, options, std::make_shared<std::atomic_bool>(false), &error);
+    if (text.isEmpty()) {
+        QProcess diagnostic;
+        QStringList arguments { fixturePath, "stdout", "-l", "eng", "--psm", "11" };
+        if (!options.dataPath.isEmpty())
+            arguments << "--tessdata-dir" << options.dataPath;
+        diagnostic.start(options.executable, arguments);
+        diagnostic.closeWriteChannel();
+        diagnostic.waitForFinished(15000);
+        qWarning() << "Direct OCR diagnostic:" << diagnostic.exitCode()
+                   << diagnostic.readAllStandardOutput() << diagnostic.readAllStandardError();
+    }
     QVERIFY2(error.isEmpty(), qPrintable(error));
     QVERIFY2(text.contains("Test Book", Qt::CaseInsensitive), qPrintable(text));
     QVERIFY2(text.contains("Alice Example", Qt::CaseInsensitive), qPrintable(text));
