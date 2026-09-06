@@ -1,0 +1,24 @@
+name: OCR portability diagnostics
+on:
+  push:
+    branches: [manga-ocr-diagnostics]
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y libarchive-dev libgl-dev libgles2-mesa-dev libfontconfig1-dev libfreetype-dev libxkbcommon-dev libpoppler-qt6-dev libspeechd-dev
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.9.3'
+          modules: 'qt5compat qtmultimedia qtimageformats qtshadertools qtspeech'
+          cache: true
+      - run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DPDF_BACKEND=poppler
+          cmake --build build --target local_metadata_test --parallel "$(nproc)"
+          ctest --test-dir build -R '^local_metadata_test$' --output-on-failure
