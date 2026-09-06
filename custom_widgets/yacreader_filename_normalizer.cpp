@@ -206,6 +206,10 @@ YACReaderFilenameNormalizer::Result YACReaderFilenameNormalizer::offerRename(QWi
 
     const QString sourceAbsolute = QDir::cleanPath(libraryPath + data.relativePath);
     const QFileInfo sourceInfo(sourceAbsolute);
+    // Image-folder comics need a directory-aware rename journal. Never run the
+    // archive-only rename path against their original page directories.
+    if (sourceInfo.isDir())
+        return Result::Skipped;
     if (!sourceInfo.exists()) {
         if (errorMessage != nullptr)
             *errorMessage = QObject::tr("The comic file does not exist: %1").arg(sourceAbsolute);

@@ -1,40 +1,60 @@
 #ifndef YACREADER_ARCHIVE_INSPECTOR_DIALOG_H
 #define YACREADER_ARCHIVE_INSPECTOR_DIALOG_H
 
-#include <QDialog>
-#include <QString>
+#include "local_metadata.h"
 
-class QGridLayout;
+#include <QDialog>
+
+class QCheckBox;
+class QComboBox;
 class QLabel;
-class QScrollArea;
+class QLineEdit;
+class QListWidget;
+class QPlainTextEdit;
+class QPushButton;
+class QSpinBox;
 
 class YACReaderArchiveInspectorDialog : public QDialog
 {
     Q_OBJECT
 public:
     explicit YACReaderArchiveInspectorDialog(QWidget *parent = nullptr);
-
+    ~YACReaderArchiveInspectorDialog() override;
     void inspectComic(const QString &libraryPath, qulonglong comicInfoId);
 
-private:
-    struct ComicFileData {
-        QString fileName;
-        QString relativePath;
-    };
+signals:
+    void metadataSaved(const QString &libraryPath, qulonglong comicInfoId);
+    void titleSearchRequested(const QString &libraryPath, qulonglong comicInfoId, const QString &title);
 
-    bool loadComicFileData(const QString &libraryPath,
-                           qulonglong comicInfoId,
-                           ComicFileData *data,
-                           QString *errorMessage) const;
-    void clearPages();
-    void addPagePreview(int pageNumber, int pageCount, const QByteArray &rawData);
-    void showError(const QString &message);
+private:
+    friend class LocalMetadataTest;
+    void start(bool ocr);
+    void cancel();
+    void showPage(int row);
+    void showResult(const LocalMetadata::Result &result);
+    void save();
+    void setBusy(bool busy);
+
+    QString libraryPath;
+    QString sourcePath;
+    qulonglong comicInfoId = 0;
+    LocalMetadata::Cancellation cancellation;
+    LocalMetadata::Result result;
 
     QLabel *fileLabel;
     QLabel *statusLabel;
-    QScrollArea *scrollArea;
-    QWidget *pagesWidget;
-    QGridLayout *pagesLayout;
+    QLabel *imageLabel;
+    QListWidget *pageList;
+    QListWidget *candidateList;
+    QPlainTextEdit *pageText;
+    QLineEdit *titleEdit;
+    QLineEdit *authorEdit;
+    QCheckBox *overwrite;
+    QComboBox *language;
+    QSpinBox *pageLimit;
+    QPushButton *ocrButton;
+    QPushButton *cancelButton;
+    QPushButton *saveButton;
+    QPushButton *searchButton;
 };
-
-#endif // YACREADER_ARCHIVE_INSPECTOR_DIALOG_H
+#endif

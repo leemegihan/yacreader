@@ -87,6 +87,24 @@ YACReaderMetadataBrowser::YACReaderMetadataBrowser(QWidget *parent)
     connect(tabs, &QTabWidget::currentChanged, this, [this](int) { updateLookupButtons(); });
     connect(lookupButton, &QPushButton::clicked, this, &YACReaderMetadataBrowser::openMetadataLookup);
     connect(inspectButton, &QPushButton::clicked, this, &YACReaderMetadataBrowser::openArchiveInspector);
+    inspectButton->setText(tr("앞·뒤 페이지 / OCR…"));
+    connect(archiveInspectorDialog, &YACReaderArchiveInspectorDialog::metadataSaved, this, [this](const QString &path, qulonglong) {
+        if (path == currentLibraryPath && !libraryReadOnly)
+            emit libraryContentChanged(path);
+    });
+    connect(archiveInspectorDialog, &YACReaderArchiveInspectorDialog::titleSearchRequested, this, [this](const QString &path, qulonglong id, const QString &title) {
+        if (path != currentLibraryPath || libraryReadOnly)
+            return;
+        for (int row = 0; row < unidentifiedList->count(); ++row) {
+            auto *item = unidentifiedList->item(row);
+            if (item->data(ComicInfoIdRole).toULongLong() != id)
+                continue;
+            lookupDialog->setComic(path, id, item->data(FileNameRole).toString(), item->data(TitleRole).toString(), item->data(WriterRole).toString(), item->data(TagsRole).toString());
+            lookupDialog->open();
+            lookupDialog->searchTitle(title);
+            break;
+        }
+    });
     connect(lookupDialog, &YACReaderMetadataLookupDialog::metadataSaved, this, [this](const QString &savedLibraryPath, qulonglong comicInfoId) {
         if (savedLibraryPath != currentLibraryPath || libraryReadOnly)
             return;

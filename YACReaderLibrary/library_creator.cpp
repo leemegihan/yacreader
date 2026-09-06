@@ -2,6 +2,7 @@
 
 #include "QsLog.h"
 #include "comic.h"
+#include "comic_image_folder.h"
 #include "data_base_management.h"
 #include "db_helper.h"
 #include "initial_comic_info_extractor.h"
@@ -357,6 +358,10 @@ qulonglong LibraryCreator::insertFolders()
 
 void LibraryCreator::create(QDir dir)
 {
+    if (dir.absolutePath() == QDir(_source).absolutePath() && ComicImageFolder::isComic(QFileInfo(dir.absolutePath()))) {
+        insertComic(QStringLiteral("/"), QFileInfo(dir.absolutePath()));
+        return;
+    }
     dir.setNameFilters(_nameFilter);
     dir.setFilter(QDir::AllDirs | QDir::Files | QDir::NoDotAndDotDot);
     QFileInfoList list = dir.entryInfoList();
@@ -375,7 +380,7 @@ void LibraryCreator::create(QDir dir)
 #else
         QString relativePath = QDir::cleanPath(fileInfo.absoluteFilePath()).remove(_source);
 #endif
-        if (fileInfo.isDir()) {
+        if (fileInfo.isDir() && !ComicImageFolder::isComic(fileInfo)) {
             QLOG_TRACE() << "Parsing folder" << fileInfo.canonicalPath();
             // se añade al path actual el folder, aún no se sabe si habrá que añadirlo a la base de datos
             _currentPathFolders.append(Folder(fileInfo.fileName(), relativePath));
@@ -397,6 +402,24 @@ bool LibraryCreator::checkCover(const QString &hash)
 QString pseudoHash(const QFileInfo &fileInfo)
 {
     QCryptographicHash crypto(QCryptographicHash::Sha1);
+    if (fileInfo.isDir()) {
+        qint64 size = 0;
+        const auto pages = ComicImageFolder::pages(fileInfo.absoluteFilePath());
+        crypto.addData(QByteArrayLiteral("YACReader image folder v1\n"));
+        for (const auto &name : pages) {
+            const QFileInfo page(QDir(fileInfo.absoluteFilePath()).filePath(name));
+            size += page.size();
+            crypto.addData(name.toUtf8());
+            crypto.addData(QByteArray::number(page.size()));
+            crypto.addData(QByteArray::number(page.lastModified().toMSecsSinceEpoch()));
+        }
+        if (!pages.isEmpty()) {
+            QFile cover(QDir(fileInfo.absoluteFilePath()).filePath(pages.first()));
+            if (cover.open(QIODevice::ReadOnly))
+                crypto.addData(cover.read(524288));
+        }
+        return QString::fromLatin1(crypto.result().toHex()) + QString::number(size);
+    }
     QFile file(fileInfo.absoluteFilePath());
     file.open(QFile::ReadOnly);
     crypto.addData(file.read(524288));
@@ -412,7 +435,7 @@ void LibraryCreator::insertComic(const QString &relativePath, const QFileInfo &f
     QString hash = pseudoHash(fileInfo);
 
     ComicDB comic = DBHelper::loadComic(fileInfo.fileName(), relativePath, hash, _database);
-    int numPages = 0;
+    int numPages = comic.info.numPages.toInt();
     QPair<int, int> originalCoverSize = { 0, 0 };
     bool exists = checkCover(hash);
 
@@ -500,6 +523,19 @@ void LibraryCreator::update(QDir dirS)
     }
 
     auto _database = QSqlDatabase::database(_databaseConnection);
+    if (dirS.absolutePath() == QDir(_source).absolutePath() && ComicImageFolder::isComic(QFileInfo(dirS.absolutePath()))) {
+        QSqlQuery query(_database);
+        query.prepare("SELECT id FROM comic WHERE path = '/'");
+        if (query.exec() && query.next()) {
+            bool found = false;
+            auto comic = DBHelper::loadComic(query.value(0).toULongLong(), _database, found);
+            if (found && comic.info.hash != pseudoHash(QFileInfo(dirS.absolutePath())))
+                replaceComic("/", QFileInfo(dirS.absolutePath()), &comic);
+        } else {
+            insertComic("/", QFileInfo(dirS.absolutePath()));
+        }
+        return;
+    }
     // QLOG_TRACE() << "Updating" << dirS.absolutePath();
     // QLOG_TRACE() << "Getting info from dir" << dirS.absolutePath();
     dirS.setNameFilters(_nameFilter);
@@ -509,6 +545,19 @@ void LibraryCreator::update(QDir dirS)
     dirS.setFilter(QDir::Files | QDir::NoDotAndDotDot);
     dirS.setSorting(QDir::Name | QDir::IgnoreCase | QDir::LocaleAware);
     QFileInfoList listSFiles = dirS.entryInfoList();
+
+    // Database comic rows can represent leaf image directories too. Classify
+    // them once, then use the same ordering/type throughout the merge.
+    QSet<QString> imageFolders;
+    for (int index = listSFolders.size() - 1; index >= 0; --index) {
+        if (ComicImageFolder::isComic(listSFolders.at(index))) {
+            imageFolders.insert(listSFolders.at(index).absoluteFilePath());
+            listSFiles.append(listSFolders.takeAt(index));
+        }
+    }
+    const auto isCollectionFolder = [&imageFolders](const QFileInfo &info) {
+        return info.isDir() && !imageFolders.contains(info.absoluteFilePath());
+    };
 
     std::sort(listSFolders.begin(), listSFolders.end(), naturalSortLessThanCIFileInfo);
     std::sort(listSFiles.begin(), listSFiles.end(), naturalSortLessThanCIFileInfo);
@@ -572,7 +621,7 @@ void LibraryCreator::update(QDir dirS)
                     return;
                 }
                 QFileInfo fileInfoS = listS.at(i);
-                if (fileInfoS.isDir()) // create folder
+                if (isCollectionFolder(fileInfoS)) // create folder
                 {
 #ifdef Q_OS_MACOS
                     QStringList src = _source.split("/");
@@ -614,7 +663,7 @@ void LibraryCreator::update(QDir dirS)
             QString nameD = "/" + fileInfoD->name;
 
             int comparation = QString::localeAwareCompare(nameS, nameD);
-            if (fileInfoS.isDir() && fileInfoD->isDir())
+            if (isCollectionFolder(fileInfoS) && fileInfoD->isDir())
                 if (comparation == 0) // same folder, update
                 {
                     _currentPathFolders.append(*static_cast<Folder *>(fileInfoD)); // fileInfoD conoce su padre y su id
@@ -653,7 +702,7 @@ void LibraryCreator::update(QDir dirS)
                         i++; // skip library directory
                 }
             else // one of them(or both) is a file
-                if (fileInfoS.isDir()) // this folder doesn't exist on library
+                if (isCollectionFolder(fileInfoS)) // this folder doesn't exist on library
                 {
                     if (nameS != "/.yacreaderlibrary") // skip .yacreaderlibrary folder
                     {
@@ -704,12 +753,14 @@ void LibraryCreator::update(QDir dirS)
                             j++;
                         } else // file with the same name
                         {
-                            if (fileInfoS.isFile() && !fileInfoD->isDir()) {
+                            if (!isCollectionFolder(fileInfoS) && !fileInfoD->isDir()) {
                                 auto comicDB = static_cast<ComicDB *>(fileInfoD);
                                 auto lastModified = fileInfoS.lastModified().toSecsSinceEpoch();
                                 auto added = comicDB->info.added.toULongLong();
 
-                                auto sizeHasChanged = comicDB->getFileSize() != fileInfoS.size();
+                                auto sizeHasChanged = fileInfoS.isDir()
+                                        ? comicDB->info.hash != pseudoHash(fileInfoS)
+                                        : comicDB->getFileSize() != fileInfoS.size();
                                 auto hasBeenModified = added > 0 && added < lastModified && checkModifiedDatesOnUpdate;
 
                                 if (sizeHasChanged || hasBeenModified) {

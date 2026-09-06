@@ -287,6 +287,13 @@ void YACReaderMetadataLookupDialog::cancelSearch()
     setBusy(false);
 }
 
+void YACReaderMetadataLookupDialog::searchTitle(const QString &title)
+{
+    cancelSearch();
+    searchEdit->setText(title.trimmed());
+    startSearch();
+}
+
 void YACReaderMetadataLookupDialog::startSearch()
 {
     const QString search = searchEdit->text().trimmed();

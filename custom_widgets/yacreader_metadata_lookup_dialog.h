@@ -22,6 +22,7 @@ class YACReaderMetadataLookupDialog : public QDialog
     Q_OBJECT
 public:
     explicit YACReaderMetadataLookupDialog(QWidget *parent = nullptr);
+    void searchTitle(const QString &title);
 
     void setComic(const QString &libraryPath,
                   qulonglong comicInfoId,

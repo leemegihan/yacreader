@@ -37,18 +37,74 @@ jobs:
           if errorlevel 1 exit /b 1
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON -DDECOMPRESSION_BACKEND=7zip -DPDF_BACKEND=pdfium -DBUILD_NUMBER=${{ github.run_number }}
           if errorlevel 1 exit /b 1
-          cmake --build build --target metadata_search_test metadata_workflow_test --parallel %NUMBER_OF_PROCESSORS%
+          cmake --build build --target metadata_search_test metadata_workflow_test local_metadata_test --parallel %NUMBER_OF_PROCESSORS%
           if errorlevel 1 exit /b 1
           set PATH=%GITHUB_WORKSPACE%\dependencies\pdfium\win\x64;%PATH%
-          ctest --test-dir build -R "^metadata_(search|workflow)_test$" --output-on-failure
+          ctest --test-dir build -R "^(metadata_(search|workflow)|local_metadata)_test$" --output-on-failure
           if errorlevel 1 exit /b 1
           cmake --build build --parallel %NUMBER_OF_PROCESSORS% -- -k 0
           if errorlevel 1 exit /b 1
+
+      - name: Check out pinned OCR build tools
+        uses: actions/checkout@v6
+        with:
+          repository: microsoft/vcpkg
+          ref: '2025.06.13'
+          path: ocr-build/vcpkg
+
+      - name: Cache compiled OCR dependencies
+        uses: actions/cache@v4
+        with:
+          path: ocr-build/vcpkg/installed
+          key: manga-tesseract-5.5.1-vcpkg-2025.06.13-x64-v1
+
+      - name: Build local OCR from source
+        run: |
+          & ./ocr-build/vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg bootstrap failed' }
+          & ./ocr-build/vcpkg/vcpkg.exe install tesseract:x64-windows --clean-after-build --disable-metrics
+          if ($LASTEXITCODE -ne 0) { throw 'OCR build failed' }
+          $installed = Join-Path $env:GITHUB_WORKSPACE 'ocr-build/vcpkg/installed/x64-windows'
+          $ocr = Join-Path $env:GITHUB_WORKSPACE 'build/bin/ocr'
+          New-Item -ItemType Directory -Force "$ocr/licenses" | Out-Null
+          Copy-Item "$installed/tools/tesseract/tesseract.exe" $ocr
+          Get-ChildItem "$installed/tools/tesseract", "$installed/bin" -Filter '*.dll' | Copy-Item -Destination $ocr -Force
+          Get-ChildItem "$installed/share" -Directory | ForEach-Object {
+            if (Test-Path "$($_.FullName)/copyright") {
+              Copy-Item "$($_.FullName)/copyright" "$ocr/licenses/$($_.Name).txt"
+            }
+          }
+
+      - name: Check out pinned OCR language data
+        uses: actions/checkout@v6
+        with:
+          repository: tesseract-ocr/tessdata_fast
+          ref: '4.1.0'
+          path: ocr-build/tessdata
+          sparse-checkout: |
+            eng.traineddata
+            jpn.traineddata
+            jpn_vert.traineddata
+            kor.traineddata
+            LICENSE
+          sparse-checkout-cone-mode: false
+
+      - name: Stage offline OCR languages
+        run: |
+          $ocr = Join-Path $env:GITHUB_WORKSPACE 'build/bin/ocr'
+          New-Item -ItemType Directory -Force "$ocr/tessdata" | Out-Null
+          foreach ($language in @('eng', 'jpn', 'jpn_vert', 'kor')) {
+            Copy-Item "ocr-build/tessdata/$language.traineddata" "$ocr/tessdata/"
+          }
+          Copy-Item 'ocr-build/tessdata/LICENSE' "$ocr/licenses/tessdata_fast.txt"
+          & "$ocr/tesseract.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled OCR failed to start' }
 
       - name: Run all regression tests
         run: |
           $env:PATH = "$env:GITHUB_WORKSPACE\dependencies\pdfium\win\x64;$env:PATH"
           $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:YACREADER_REQUIRE_OCR = '1'
           ctest --test-dir build --output-on-failure --timeout 120 --output-junit test-results.xml
           if ($LASTEXITCODE -ne 0) { throw 'Regression tests failed' }
 
@@ -69,7 +125,7 @@ jobs:
       - name: Install package and verify GUI startup
         run: |
           $staging = Join-Path $env:GITHUB_WORKSPACE 'ci/win/installer_contents'
-          $package = Join-Path $env:RUNNER_TEMP 'manga-installed'
+          $package = Join-Path $env:RUNNER_TEMP 'manga installed 한글'
           $installers = @(Get-ChildItem 'ci/win/Output/YACReader*.exe')
           if ($installers.Count -ne 1) { throw 'Expected exactly one installer' }
           $env:APPDATA = Join-Path $env:RUNNER_TEMP 'manga-smoke/roaming'
@@ -96,6 +152,26 @@ jobs:
           Remove-Item Env:QT_PLUGIN_PATH -ErrorAction SilentlyContinue
           Remove-Item Env:QML2_IMPORT_PATH -ErrorAction SilentlyContinue
           Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
+          # Check the installed OCR in isolation, including Unicode paths.
+          Add-Type -AssemblyName System.Drawing
+          $fixture = Join-Path $package 'ocr-test.png'
+          $bitmap = New-Object System.Drawing.Bitmap(1400, 500)
+          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+          $font = New-Object System.Drawing.Font('Arial', 48)
+          try {
+            $graphics.Clear([System.Drawing.Color]::White)
+            $graphics.DrawString('Author: Alice Example', $font, [System.Drawing.Brushes]::Black, 50, 100)
+            $bitmap.Save($fixture, [System.Drawing.Imaging.ImageFormat]::Png)
+          } finally { $font.Dispose(); $graphics.Dispose(); $bitmap.Dispose() }
+          Push-Location $package
+          try {
+            $text = & './ocr/tesseract.exe' ocr-test.png stdout -l eng --psm 6 --tessdata-dir './ocr/tessdata'
+            if ($LASTEXITCODE -ne 0 -or ($text -join ' ') -notmatch 'Alice Example') { throw 'Installed OCR failed text recognition' }
+            $languages = & './ocr/tesseract.exe' --list-langs --tessdata-dir './ocr/tessdata'
+            foreach ($required in @('eng', 'jpn', 'jpn_vert', 'kor')) {
+              if ($required -notin $languages) { throw "Missing OCR language: $required" }
+            }
+          } finally { Pop-Location }
           foreach ($name in @('YACReader.exe', 'YACReaderLibrary.exe')) {
             $process = Start-Process (Join-Path $package $name) -WorkingDirectory $package -PassThru
             try {

@@ -34,6 +34,8 @@ Root: HKCR; SubKey: YACReader Data Base (ydb); ValueType: string; ValueData: YAC
 Root: HKCR; Subkey: YACReader Data Base (ydb)\DefaultIcon; ValueType: string; ValueData: {app}\YACReaderLibrary.exe,1; Flags: uninsdeletevalue
 
 [Files]
+; Keep OCR DLLs isolated from Qt and include third-party license notices.
+Source: ocr\*; DestDir: {app}\ocr; Flags: recursesubdirs createallsubdirs skipifsourcedoesntexist
 ;Include every root DLL deployed by windeployqt (Qt modules, multimedia and graphics runtimes).
 ;The dependency set changes between Qt releases, so do not maintain a partial DLL allowlist.
 Source: *.dll; DestDir: {app}
