@@ -234,9 +234,13 @@ Reading chooseReading(const QVector<Reading> &readings)
     QVector<Reading> valid;
     QStringList errors;
     for (const auto &reading : readings) {
-        if (reading.error.isEmpty() && !reading.text.isEmpty())
-            valid.append(reading);
-        else if (!reading.error.isEmpty())
+        if (reading.error.isEmpty() && !reading.text.isEmpty()) {
+            auto sameLanguage = std::find_if(valid.begin(), valid.end(), [&](const Reading &other) { return other.language == reading.language; });
+            if (sameLanguage == valid.end())
+                valid.append(reading);
+            else if (reading.score > sameLanguage->score)
+                *sameLanguage = reading;
+        } else if (!reading.error.isEmpty())
             errors.append(reading.language + ": " + reading.error);
     }
     if (valid.isEmpty()) {

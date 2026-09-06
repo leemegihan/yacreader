@@ -429,6 +429,8 @@ void LocalMetadataTest::tsvConfidenceAndLanguageSelection()
     auto selected = LocalMetadata::chooseReading({ wrongKorean, japanese });
     QCOMPARE(selected.language, QString("jpn+eng"));
     QVERIFY(!selected.uncertainLanguage);
+    const auto alternateLayout = LocalMetadata::parseTsv(tsvFor({ "奥付", "タイトル", "育い空", "発行者", "見本太郎" }, 90), "jpn+eng");
+    QVERIFY(!LocalMetadata::chooseReading({ japanese, alternateLayout, wrongKorean }).uncertainLanguage);
     auto korean = LocalMetadata::parseTsv(tsvFor({ "제목: 푸른 하늘", "작가: 홍길동" }, 92), "kor+eng");
     auto wrongJapanese = LocalMetadata::parseTsv(tsvFor({ "あ", "xx" }, 30), "jpn+eng");
     QCOMPARE(LocalMetadata::chooseReading({ wrongJapanese, korean }).language, QString("kor+eng"));
@@ -514,6 +516,7 @@ void LocalMetadataTest::realMultilingualColophon()
         const auto fixturePath = QCoreApplication::applicationDirPath() + (korean ? "/ocr-colophon-kor" : "/ocr-colophon-jpn");
         QVERIFY(image.save(fixturePath + ".png"));
         const auto reading = LocalMetadata::recognizePage(image, options, std::make_shared<std::atomic_bool>(false));
+        qInfo() << "Colophon language/confidence/score:" << reading.language << reading.confidence << reading.score;
         QFile recognized(fixturePath + ".txt");
         QVERIFY(recognized.open(QIODevice::WriteOnly));
         recognized.write(reading.text.toUtf8());

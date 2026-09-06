@@ -277,12 +277,25 @@ Reading recognizePage(const QImage &image, const OcrOptions &options, const Canc
             return { };
         auto selected = options;
         selected.language = language;
-        QString error;
-        const auto tsv = runOcrTsv(image, selected, cancel, &error);
-        auto reading = parseTsv(tsv, language);
-        if (!error.isEmpty())
-            reading.error = error;
+        auto read = [&](const OcrOptions &pass) {
+            QString error;
+            const auto tsv = runOcrTsv(image, pass, cancel, &error);
+            auto reading = parseTsv(tsv, language);
+            if (!error.isEmpty())
+                reading.error = error;
+            return reading;
+        };
+        const auto reading = read(selected);
         readings.append(reading);
+        // Sparse layout can split Hangul syllables into separate fragments.
+        // Compare a block pass for recognizable credits or weak readings, while
+        // preserving an explicitly chosen layout and the cancellation boundary.
+        if (options.language == "auto" && options.segmentation == 11 && !options.vertical && reading.error.isEmpty() && (reading.confidence < 60 || classifyPage(reading.text, 0) != PageKind::Unknown)) {
+            if (cancelled(cancel))
+                return { };
+            selected.segmentation = 6;
+            readings.append(read(selected));
+        }
     }
     return options.language == "auto" ? chooseReading(readings) : readings.first();
 }
