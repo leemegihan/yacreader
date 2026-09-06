@@ -239,8 +239,32 @@ QString recognize(const QImage &image, const OcrOptions &options, const Cancella
     environment.insert(QStringLiteral("OMP_THREAD_LIMIT"), QStringLiteral("2"));
     process.setProcessEnvironment(environment);
     QStringList arguments { "page.png", "stdout", "-l", options.language, "--psm", options.vertical ? "5" : "11" };
-    if (!options.dataPath.isEmpty())
-        arguments << "--tessdata-dir" << options.dataPath;
+    QString dataPath = options.dataPath;
+#ifdef Q_OS_WIN
+    // Tesseract still uses narrow fopen() for language files. A Unicode install
+    // path may not survive the executable's ANSI argv conversion. Qt can copy
+    // the selected models into this private working directory; relative ASCII
+    // paths then work even when Windows 8.3 short names are disabled.
+    if (std::any_of(dataPath.cbegin(), dataPath.cend(), [](QChar ch) { return ch.unicode() > 127; })) {
+        const QString staged = temporary.filePath(QStringLiteral("tessdata"));
+        if (!QDir().mkpath(staged)) {
+            *error = tr("Could not prepare temporary OCR language data.");
+            return { };
+        }
+        const QRegularExpression languageName(QStringLiteral("^[A-Za-z0-9_]+$"));
+        for (const auto &language : options.language.split(QLatin1Char('+'), Qt::SkipEmptyParts)) {
+            if (cancelled(cancel))
+                return { };
+            if (!languageName.match(language).hasMatch() || !QFile::copy(QDir(dataPath).filePath(language + QStringLiteral(".traineddata")), QDir(staged).filePath(language + QStringLiteral(".traineddata")))) {
+                *error = tr("Could not prepare OCR language: %1").arg(language);
+                return { };
+            }
+        }
+        dataPath = QStringLiteral("tessdata");
+    }
+#endif
+    if (!dataPath.isEmpty())
+        arguments << "--tessdata-dir" << dataPath;
     if (!run(process, options.executable, arguments, options.timeoutMs, cancel, error))
         return { };
     const QString warnings = QString::fromUtf8(process.readAllStandardError());
