@@ -21,6 +21,7 @@
 #include <QListWidget>
 #include <QPainter>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QSqlDatabase>
@@ -519,7 +520,42 @@ void LocalMetadataTest::realMultilingualColophon()
         QVERIFY2(reading.error.isEmpty(), qPrintable(reading.error));
         QCOMPARE(reading.language, korean ? QString("kor+eng") : QString("jpn+eng"));
         const auto normalized = LocalMetadata::normalizeOcrText(reading.text);
-        QVERIFY2(normalized.contains(korean ? QString("하늘") : QString("青い空")), qPrintable(normalized));
+        // OCR can confuse a single glyph (e.g. 青/育) even on clean text.
+        // Bound errors across the entire known transcript, then require the
+        // metadata labels to remain usable. This is not a perfect-OCR claim.
+        auto compact = [](QString text) {
+            text.remove(QRegularExpression(QStringLiteral("\\s+")));
+            return text;
+        };
+        const auto actual = compact(normalized);
+        const auto expected = compact(lines.join(QLatin1Char('\n')));
+        QVector<int> distance(actual.size() + 1);
+        for (int j = 0; j <= actual.size(); ++j)
+            distance[j] = j;
+        for (int i = 1; i <= expected.size(); ++i) {
+            int previous = distance[0];
+            distance[0] = i;
+            for (int j = 1; j <= actual.size(); ++j) {
+                const int saved = distance[j];
+                distance[j] = qMin(qMin(distance[j] + 1, distance[j - 1] + 1), previous + (expected.at(i - 1) != actual.at(j - 1)));
+                previous = saved;
+            }
+        }
+        QVERIFY2(distance.last() <= 1, qPrintable(QString("Full colophon character errors: %1; inspect the UTF-8 OCR diagnostic.").arg(distance.last())));
+        LocalMetadata::Page page;
+        page.number = 20;
+        page.text = reading.text;
+        page.reading = reading;
+        QCOMPARE(LocalMetadata::classifyPage(page.text, page.number), LocalMetadata::PageKind::Colophon);
+        bool titleFound = false, creditFound = false;
+        for (const auto &candidate : LocalMetadata::suggest({ page }, "/downloads/Fixture.zip")) {
+            if (candidate.page != 20 || !candidate.labelled)
+                continue;
+            titleFound = titleFound || candidate.field == LocalMetadata::Suggestion::Title;
+            creditFound = creditFound || candidate.field == (korean ? LocalMetadata::Suggestion::Author : LocalMetadata::Suggestion::Publisher);
+        }
+        QVERIFY(titleFound);
+        QVERIFY(creditFound);
         QVERIFY(reading.confidence > 0);
     }
 }
