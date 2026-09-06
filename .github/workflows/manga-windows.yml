@@ -189,12 +189,10 @@ jobs:
               if ($required -notin $languages) { throw "Missing OCR language: $required" }
             }
           } finally { Pop-Location }
-          $env:QT_QPA_PLATFORM = 'offscreen'
           & "$package/local_metadata_test.exe" realOcr -o "$env:GITHUB_WORKSPACE/build/installed-ocr.txt,txt"
           $ocrTestExit = $LASTEXITCODE
           Get-Content "$env:GITHUB_WORKSPACE/build/installed-ocr.txt"
           if ($ocrTestExit -ne 0) { throw 'Application OCR wrapper failed in the installed Unicode path' }
-          Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
           foreach ($name in @('YACReader.exe', 'YACReaderLibrary.exe')) {
             $process = Start-Process (Join-Path $package $name) -WorkingDirectory $package -PassThru
             try {
