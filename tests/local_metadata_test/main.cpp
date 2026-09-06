@@ -1,3 +1,4 @@
+#include "comic_db.h"
 #include "comic_image_folder.h"
 #include "initial_comic_info_extractor.h"
 #include "library_creator.h"
@@ -120,9 +121,9 @@ void LocalMetadataTest::folderAndArchiveUseSamePageOrder()
         QFile file(QDir(folder).filePath(name));
         QVERIFY(file.open(QIODevice::WriteOnly));
         QCOMPARE(file.write(png), png.size());
-        files.append({ name, png });
+        files.append(QPair<QString, QByteArray> { name, png });
     }
-    files.append({ "notes.txt", "not a page" });
+    files.append(QPair<QString, QByteArray> { QStringLiteral("notes.txt"), QByteArrayLiteral("not a page") });
     QVERIFY(writeZip(temporary.filePath("作品.cbz"), files));
     const auto cancel = std::make_shared<std::atomic_bool>(false);
     auto directoryResult = LocalMetadata::readPages(folder, 2, cancel);
@@ -140,12 +141,21 @@ void LocalMetadataTest::folderAndArchiveUseSamePageOrder()
     extractor.extract();
     QVERIFY(extractor.hasValidCover());
     QCOMPARE(extractor.getNumPages(), 7);
+    std::unique_ptr<Comic> viewer(FactoryComic::newComic(folder));
+    QVERIFY(viewer != nullptr);
+    ComicDB metadata;
+    metadata.info.currentPage = 2;
+    QVERIFY(viewer->load(folder, metadata));
+    viewer->process();
+    QCOMPARE(viewer->numPages(), 7U);
+    QCOMPARE(viewer->getIndex(), 1U);
 }
 
 void LocalMetadataTest::collectionFolderIsNotAComic()
 {
     QTemporaryDir temporary;
     QVERIFY(sampleImage().save(temporary.filePath("cover.png")));
+    QVERIFY(QDir().mkpath(temporary.filePath(".yacreaderlibrary")));
     QVERIFY(ComicImageFolder::isComic(QFileInfo(temporary.path())));
     QVERIFY(QDir().mkpath(temporary.filePath("another-work")));
     QVERIFY(!ComicImageFolder::isComic(QFileInfo(temporary.path())));

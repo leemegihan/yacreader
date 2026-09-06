@@ -720,6 +720,20 @@ bool FolderComic::load(const QString &path, int atPage)
     return true;
 }
 
+bool FolderComic::load(const QString &path, const ComicDB &comic)
+{
+    if (!QFileInfo(path).isDir()) {
+        emit errorOpening();
+        return false;
+    }
+    const QList<int> bookmarks { comic.info.bookmark1, comic.info.bookmark2, comic.info.bookmark3 };
+    _firstPage = qMax(0, comic.info.currentPage - 1);
+    if (bm->load(bookmarks, _firstPage))
+        emit bookmarksUpdated();
+    _path = QDir::cleanPath(path);
+    return true;
+}
+
 void FolderComic::process()
 {
     QDir d(_path);

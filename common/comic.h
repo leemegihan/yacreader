@@ -158,6 +158,7 @@ public:
     ~FolderComic();
 
     bool load(const QString &path, int atPage = -1);
+    bool load(const QString &path, const ComicDB &comic) override;
 
 public slots:
 
