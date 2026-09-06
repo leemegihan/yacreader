@@ -502,8 +502,9 @@ void LocalMetadataTest::realMultilingualColophon()
     options.dataPath = unicodeModels;
 #endif
     QString fixtureFamily;
+    const auto fixtureDirectory = qEnvironmentVariable("YACREADER_TEST_CJK_FIXTURES");
     const auto fixtureFont = qEnvironmentVariable("YACREADER_TEST_CJK_FONT");
-    if (!fixtureFont.isEmpty()) {
+    if (fixtureDirectory.isEmpty() && !fixtureFont.isEmpty()) {
         const int fontId = QFontDatabase::addApplicationFont(fixtureFont);
         QVERIFY2(fontId >= 0, "Could not load the pinned CJK fixture font.");
         const auto families = QFontDatabase::applicationFontFamilies(fontId);
@@ -511,23 +512,29 @@ void LocalMetadataTest::realMultilingualColophon()
         fixtureFamily = families.first();
     }
     for (const bool korean : { false, true }) {
-        QImage image(1600, 900, QImage::Format_RGB32);
-        image.fill(Qt::white);
-        QPainter painter(&image);
-        QFont font(fixtureFamily.isEmpty() ? (korean ? "Malgun Gothic" : "Yu Gothic") : fixtureFamily);
-        font.setPixelSize(56);
-        painter.setFont(font);
-        painter.setPen(Qt::black);
-        const QStringList lines = korean ? QStringList { "제목", "푸른 하늘", "작가", "홍길동", "발행일", "2025" }
-                                         : QStringList { "奥付", "タイトル", "青い空", "発行者", "見本太郎", "発行日" };
-        int y = 100;
-        for (const auto &line : lines) {
-            for (const auto ch : line)
-                QVERIFY2(QFontMetrics(font).inFontUcs4(ch.unicode()), "The fixture font lacks a required CJK glyph; do not OCR missing-glyph boxes.");
-            painter.drawText(100, y, line);
-            y += 120;
+        QImage image;
+        if (!fixtureDirectory.isEmpty()) {
+            // Installed-path checks use exactly the same input pixels. Native
+            // Windows and offscreen font rasterizers otherwise change the test.
+            QVERIFY(image.load(QDir(fixtureDirectory).filePath(korean ? "ocr-colophon-kor.png" : "ocr-colophon-jpn.png")));
+        } else {
+            image = QImage(1600, 900, QImage::Format_RGB32);
+            image.fill(Qt::white);
+            QPainter painter(&image);
+            QFont font(fixtureFamily.isEmpty() ? (korean ? "Malgun Gothic" : "Yu Gothic") : fixtureFamily);
+            font.setPixelSize(56);
+            painter.setFont(font);
+            painter.setPen(Qt::black);
+            const QStringList lines = korean ? QStringList { "제목", "푸른 하늘", "작가", "홍길동", "발행일", "2025" }
+                                             : QStringList { "奥付", "タイトル", "青い空", "発行者", "見本太郎", "発行日" };
+            int y = 100;
+            for (const auto &line : lines) {
+                for (const auto ch : line)
+                    QVERIFY2(QFontMetrics(font).inFontUcs4(ch.unicode()), "The fixture font lacks a required CJK glyph; do not OCR missing-glyph boxes.");
+                painter.drawText(100, y, line);
+                y += 120;
+            }
         }
-        painter.end();
         const auto fixturePath = QCoreApplication::applicationDirPath() + (korean ? "/ocr-colophon-kor" : "/ocr-colophon-jpn");
         QVERIFY(image.save(fixturePath + ".png"));
         const auto reading = LocalMetadata::recognizePage(image, options, std::make_shared<std::atomic_bool>(false));

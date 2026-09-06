@@ -148,6 +148,13 @@ jobs:
           $testExit = $LASTEXITCODE
           Get-Content build/tests/local_metadata_test/local-metadata.txt
           if ($testExit -ne 0) { throw 'Actual OCR regression tests failed' }
+          # Match the installed native Qt environment using the same input pixels.
+          $env:YACREADER_TEST_CJK_FIXTURES = "$env:GITHUB_WORKSPACE/build/bin"
+          Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
+          & build/bin/local_metadata_test.exe realMultilingualColophon -o "build/native-ocr.txt,txt"
+          $nativeExit = $LASTEXITCODE
+          Get-Content build/native-ocr.txt
+          if ($nativeExit -ne 0) { throw 'Native Qt OCR check failed' }
 
       - name: Build all applications
         shell: cmd
@@ -202,6 +209,12 @@ jobs:
             if (!(Test-Path $installedDll)) { throw "Installer omitted: $($dll.Name)" }
             if ((Get-FileHash $dll.FullName).Hash -ne (Get-FileHash $installedDll).Hash) { throw "Installer altered: $($dll.Name)" }
           }
+          foreach ($file in Get-ChildItem (Join-Path $staging 'ocr') -File -Recurse) {
+            $relative = [System.IO.Path]::GetRelativePath($staging, $file.FullName)
+            $installed = Join-Path $package $relative
+            if (!(Test-Path -LiteralPath $installed)) { throw "Missing OCR runtime file: $relative" }
+            if ((Get-FileHash -LiteralPath $file.FullName).Hash -ne (Get-FileHash -LiteralPath $installed).Hash) { throw "Installer altered OCR runtime file: $relative" }
+          }
           foreach ($file in @('YACReader.exe', 'YACReaderLibrary.exe', 'YACReaderLibraryServer.exe', 'Qt6Core.dll', 'Qt6Widgets.dll', 'platforms/qwindows.dll', 'sqldrivers/qsqlite.dll', 'pdfium.dll', 'utils/7z.dll')) {
             if (!(Test-Path (Join-Path $package $file))) { throw "Missing runtime file: $file" }
           }
@@ -236,9 +249,13 @@ jobs:
             }
           } finally { Pop-Location }
           $env:YACREADER_REQUIRE_OCR = '1'
+          Copy-Item 'build/bin/ocr-colophon-*.png' $package
+          $env:YACREADER_TEST_CJK_FIXTURES = $package
           & "$package/local_metadata_test.exe" realOcr croppedCreditOcr realMultilingualColophon -o "$env:GITHUB_WORKSPACE/build/installed-ocr.txt,txt"
           $ocrTestExit = $LASTEXITCODE
           Get-Content "$env:GITHUB_WORKSPACE/build/installed-ocr.txt"
+          New-Item -ItemType Directory -Force 'build/installed-cjk' | Out-Null
+          Copy-Item "$package/ocr-colophon-*" 'build/installed-cjk/'
           if ($ocrTestExit -ne 0) { throw 'Application OCR wrapper failed in the installed Unicode path' }
           foreach ($name in @('YACReader.exe', 'YACReaderLibrary.exe')) {
             $process = Start-Process (Join-Path $package $name) -WorkingDirectory $package -PassThru
@@ -274,6 +291,8 @@ jobs:
           path: |
             build/installer.log
             build/installed-ocr.txt
+            build/native-ocr.txt
+            build/installed-cjk/
             build/bin/ocr-fixture.png
             build/bin/ocr-colophon-*
             build/test-results.xml
