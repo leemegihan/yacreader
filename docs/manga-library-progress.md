@@ -129,3 +129,17 @@ ThemeManager/사이드바 심볼까지 참조해 실패했다. 메타데이터 �
 설치 스크립트의 고정 DLL 목록은 windeployqt가 배포한 루트 DLL 전체를 포함하도록
 변경했다. 최종 Windows 검증은 실제 설치 파일을 임시 경로에 설치하고,
 설치된 DLL들의 해시를 비교한 뒤 설치 경로에서 GUI를 시작하도록 강화했다.
+
+### 최종 Windows 검증 성공
+
+- 실행: https://github.com/leemegihan/yacreader/actions/runs/34023935268
+- 빌드 소스 커밋: `0769195a60d6492587f1b19cdecf263e33929dd4`
+- Windows x64 전체 빌드 성공, CTest 11개 묶음 전부 통과(64.33초).
+- 메타데이터 화면 테스트 9개와 검색 테스트 17개도 포함한다.
+- Inno Setup 설치 파일 생성 성공. 별도 임시 경로에 무인 설치 성공.
+- 설치된 루트 DLL을 배포 원본과 해시 대조했고, 설치 경로에서
+  YACReader와 YACReaderLibrary가 창을 생성해 각각 15초 동안 유지됨을 확인했다.
+- 설치 파일 artifact: `9986595812` (약 67.7 MB ZIP).
+- 실제 사용자 만화 폴더에서의 탐색, Grid/List, 읽던 위치 복원은 사용자 확인이 남는다.
+- 후속 문서/번역 추출 대상 등록은 실행 코드 및 이 설치 파일을 변경하지 않는다.
+  `metadata_widgets`는 `update_translations`의 SOURCE_TARGETS에도 등록했다.

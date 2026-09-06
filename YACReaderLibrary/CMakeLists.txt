@@ -511,6 +511,7 @@ qt_add_translations(YACReaderLibrary
         comic_backend
         common_gui
         custom_widgets_library
+        metadata_widgets
         shortcuts_library
         comic_vine
         organize_files
