@@ -37,7 +37,14 @@ QString plainTitle(QString title)
 {
     // Remove catalog wrappers, retaining the original display title separately.
     // Do not infer an artist from a circle, uploader, or bracketed filename.
-    title.remove(QRegularExpression(QStringLiteral("\\[[^\\]]*\\]")));
+    const QRegularExpression prefix(QStringLiteral("^\\s*\\[[^\\]]+\\]\\s*(?=\\S)"));
+    while (prefix.match(title).hasMatch())
+        title.remove(prefix);
+    // Only common catalog edition/language suffixes are stripped. Brackets
+    // inside an actual title (or a title consisting of brackets) are retained.
+    const QRegularExpression suffix(QStringLiteral("\\s+\\[(?:English|Japanese|Korean|Chinese|Digital|Translated|Ongoing|日本語|韓国語|中国語|英訳|한국어|번역)\\]\\s*$"), QRegularExpression::CaseInsensitiveOption);
+    while (suffix.match(title).hasMatch())
+        title.remove(suffix);
     title.remove(QRegularExpression(QStringLiteral("^\\s*\\(C[0-9]+\\)"), QRegularExpression::CaseInsensitiveOption));
     return title.simplified();
 }

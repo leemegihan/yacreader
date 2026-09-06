@@ -87,6 +87,9 @@ void MetadataWorkflowTest::galleryMetadataKeepsNamespaces()
     QCOMPARE(candidates.first().pageCount, 24);
     QCOMPARE(candidates.first().year, 0); // Upload date is not publication date.
     QCOMPARE(CatalogMetadata::plainTitle(candidates.first().romajiTitle), QString("Test Book"));
+    QCOMPARE(CatalogMetadata::plainTitle("The [Lost] Book"), QString("The [Lost] Book"));
+    QCOMPARE(CatalogMetadata::plainTitle("[Only Title]"), QString("[Only Title]"));
+    QCOMPARE(CatalogMetadata::plainTitle("Book [Part 2]"), QString("Book [Part 2]"));
     QVERIFY(CatalogMetadata::parseGalleryMetadata("{\"gmetadata\":[{\"gid\":123,\"error\":\"unavailable\"}]}", &error).isEmpty());
     QVERIFY(!error.isEmpty());
     QVERIFY(CatalogMetadata::parseGalleryMetadata("<html>access challenge</html>", &error).isEmpty());

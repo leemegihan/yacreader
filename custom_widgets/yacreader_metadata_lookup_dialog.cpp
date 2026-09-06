@@ -64,6 +64,8 @@ YACReaderMetadataLookupDialog::YACReaderMetadataLookupDialog(QWidget *parent)
 {
     setWindowTitle(tr("Find manga metadata"));
     resize(840, 620);
+    for (auto *label : { fileNameLabel, existingInfoLabel, authorsLabel, genresLabel, formatLabel, yearLabel, matchLabel, statusLabel })
+        label->setTextFormat(Qt::PlainText);
 
     fileNameLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     fileNameLabel->setWordWrap(true);
