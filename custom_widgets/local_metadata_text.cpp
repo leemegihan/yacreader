@@ -3,6 +3,9 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMap>
 #include <QRegularExpression>
 #include <QSet>
@@ -134,6 +137,20 @@ QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePat
                 // printer or thanks entry as the preceding title/author.
                 if (i + 1 >= lines.size() || label(lines.at(i + 1)).role != Role::None)
                     continue;
+                auto boundsFor = [&](const QString &text) {
+                    for (const auto &line : page.reading.lines)
+                        if (line.text == text)
+                            return line.bounds;
+                    return QRect();
+                };
+                const auto a = boundsFor(lines.at(i));
+                const auto b = boundsFor(lines.at(i + 1));
+                if (!a.isEmpty() && !b.isEmpty()) {
+                    const bool below = b.top() >= a.top() && b.top() - a.bottom() <= 4 * qMax(a.height(), b.height()) && b.left() <= a.right() && a.left() <= b.right();
+                    const bool beside = b.left() >= a.left() && b.left() - a.right() <= 4 * qMax(a.height(), b.height()) && b.top() <= a.bottom() && a.top() <= b.bottom();
+                    if (!below && !beside)
+                        continue;
+                }
                 credit.value = lines.at(++i);
             }
             const auto field = credit.role == Role::Title ? Suggestion::Title : credit.role == Role::Author ? Suggestion::Author
@@ -168,6 +185,55 @@ QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePat
     if (!generic.contains(parent.toCaseFolded()))
         append(Suggestion::Author, parent, tr("부모 폴더 이름 힌트 — 작가가 아닐 수 있습니다."), 0);
     return result;
+}
+
+Reading parseNeuralReading(const QByteArray &json, const QSize &imageSize)
+{
+    Reading reading;
+    reading.engine = QStringLiteral("PaddleOCR · 영역 탐지 (시험)");
+    reading.reviewRequired = true;
+    auto invalid = [&] {
+        Reading failure;
+        failure.reviewRequired = true;
+        failure.error = tr("영역 OCR 응답이 올바르지 않습니다.");
+        return failure;
+    };
+    if (json.size() > 4 * 1024 * 1024)
+        return invalid();
+    const auto document = QJsonDocument::fromJson(json);
+    const auto object = document.object();
+    if (!document.isObject() || object.value("version").toInt() != 1 || object.value("engine").toString() != "paddle-regions" || !object.value("lines").isArray())
+        return invalid();
+    reading.language = object.value("language").toString();
+    if (reading.language != "auto" && reading.language != "jpn" && reading.language != "kor")
+        return invalid();
+    const auto lines = object.value("lines").toArray();
+    if (lines.size() > 256)
+        return invalid();
+    double sum = 0;
+    int weight = 0;
+    for (const auto &value : lines) {
+        const auto line = value.toObject();
+        const QString text = line.value("text").toString().simplified();
+        const double confidence = line.value("confidence").toDouble(-1);
+        const auto box = line.value("box").toArray();
+        const auto language = line.value("language").toString();
+        if (text.isEmpty() || text.size() > 1000 || !std::isfinite(confidence) || confidence < 0 || confidence > 100 || box.size() != 4 || (language != "jpn" && language != "kor"))
+            return invalid();
+        for (const auto &coordinate : box)
+            if (!coordinate.isDouble() || !std::isfinite(coordinate.toDouble()) || coordinate.toDouble() != coordinate.toInt(-1))
+                return invalid();
+        const QRect bounds(box[0].toInt(), box[1].toInt(), box[2].toInt() - box[0].toInt(), box[3].toInt() - box[1].toInt());
+        if (bounds.isEmpty() || !QRect(QPoint(), imageSize).contains(bounds))
+            return invalid();
+        reading.lines.append({ text, confidence, bounds });
+        reading.text += text + QLatin1Char('\n');
+        sum += confidence * text.size();
+        weight += text.size();
+    }
+    reading.text = reading.text.trimmed();
+    reading.confidence = weight ? sum / weight : -1;
+    return reading;
 }
 
 Reading parseTsv(const QByteArray &tsv, const QString &language)

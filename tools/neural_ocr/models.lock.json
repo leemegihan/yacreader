@@ -1,0 +1,38 @@
+[
+  {
+    "path": "models/korean_PP-OCRv5_mobile_rec/inference.json",
+    "sha256": "562404e3c590c50c93778d5f0a94df21b47b5ab8f3ea6d47c7f8a7930c3bc844"
+  },
+  {
+    "path": "models/korean_PP-OCRv5_mobile_rec/inference.pdiparams",
+    "sha256": "cac3e5f12cf04aaa77f6a5bc704e4e736ef2908476551891d84b41b4e9090462"
+  },
+  {
+    "path": "models/korean_PP-OCRv5_mobile_rec/inference.yml",
+    "sha256": "f757fa1c40e99edcf27e9cce879b93eb2a51fa46f5ef39095689b8c37dd75998"
+  },
+  {
+    "path": "models/PP-OCRv5_mobile_det/inference.json",
+    "sha256": "05feef1acb00aa4cd7362b15f7f501fc4f99d7b1fa73c1c871e0c7b1504b0f5c"
+  },
+  {
+    "path": "models/PP-OCRv5_mobile_det/inference.pdiparams",
+    "sha256": "afa1820cb16c1fd0dad589d0f8b389139061c1ef6d68019685fd07be997dda5b"
+  },
+  {
+    "path": "models/PP-OCRv5_mobile_det/inference.yml",
+    "sha256": "98069072e1b6b37d727fd9d9f11725faa46d6ea0de012f2ed26caea011c37699"
+  },
+  {
+    "path": "models/PP-OCRv5_server_rec/inference.json",
+    "sha256": "8e6e12e5d42531840310977fffb58165bf889fc5061408c5a8afdb6985f47fcb"
+  },
+  {
+    "path": "models/PP-OCRv5_server_rec/inference.pdiparams",
+    "sha256": "63853f062a5f4089befc16f565a68277618e0da5cb45468b49d11079de0ada77"
+  },
+  {
+    "path": "models/PP-OCRv5_server_rec/inference.yml",
+    "sha256": "2c719dba044c4e2228aef8ff92f5f575394d75d24c16de096a33b7cfd902f66d"
+  }
+]

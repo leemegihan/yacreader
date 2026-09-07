@@ -271,8 +271,50 @@ static QByteArray runOcrTsv(const QImage &image, const OcrOptions &options, cons
     return process.readAllStandardOutput().left(4 * 1024 * 1024 + 1);
 }
 
+static Reading recognizeNeuralPage(const QImage &image, const OcrOptions &options, const Cancellation &cancel)
+{
+    Reading reading;
+    reading.reviewRequired = true;
+    const QDir root(QCoreApplication::applicationDirPath() + QStringLiteral("/ocr-neural"));
+    const auto python = root.filePath(QStringLiteral("runtime/python.exe"));
+    if (!QFileInfo::exists(python) || !QFileInfo::exists(root.filePath(QStringLiteral("worker.py")))) {
+        reading.error = tr("영역 탐지 OCR이 포함된 Windows 설치본이 필요합니다.");
+        return reading;
+    }
+    if (options.language != "auto" && options.language != "jpn+eng" && options.language != "jpn_vert+eng" && options.language != "kor+eng") {
+        reading.error = tr("영역 OCR은 자동, 일본어 또는 한국어를 선택해 주세요.");
+        return reading;
+    }
+    QTemporaryDir temporary;
+    const auto prepared = prepareOcrImage(image, options);
+    if (!temporary.isValid() || prepared.isNull() || !prepared.save(temporary.filePath("page.png"))) {
+        reading.error = tr("Could not create the temporary OCR image.");
+        return reading;
+    }
+    QProcess process;
+    process.setWorkingDirectory(root.path());
+    auto environment = QProcessEnvironment::systemEnvironment();
+    environment.remove(QStringLiteral("PYTHONHOME"));
+    environment.remove(QStringLiteral("PYTHONPATH"));
+    environment.insert(QStringLiteral("PYTHONUTF8"), QStringLiteral("1"));
+    process.setProcessEnvironment(environment);
+    const QString language = options.language == "auto" ? "auto" : options.language.startsWith("kor") ? "kor"
+                                                                                                      : "jpn";
+    const QStringList arguments { "-I", "-X", "utf8", root.filePath("worker.py"), "--image", temporary.filePath("page.png"), "--output", temporary.filePath("result.json"), "--language", language };
+    if (!run(process, python, arguments, qMax(options.timeoutMs, 180000), cancel, &reading.error))
+        return reading;
+    QFile output(temporary.filePath("result.json"));
+    if (!output.open(QIODevice::ReadOnly) || output.size() > 4 * 1024 * 1024) {
+        reading.error = tr("영역 OCR 결과를 읽지 못했습니다.");
+        return reading;
+    }
+    return parseNeuralReading(output.readAll(), prepared.size());
+}
+
 Reading recognizePage(const QImage &image, const OcrOptions &options, const Cancellation &cancel)
 {
+    if (options.neural)
+        return recognizeNeuralPage(image, options, cancel);
     const QStringList languages = options.language == "auto"
             ? QStringList { options.vertical || options.segmentation == 5 ? "jpn_vert+eng" : "jpn+eng", "kor+eng" }
             : QStringList { options.language };

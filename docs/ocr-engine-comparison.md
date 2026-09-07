@@ -71,3 +71,24 @@ CPU 시간을 비교한다. 선택한 엔진은 취소 가능한 별도 프로�
 - https://github.com/dmMaze/comic-text-detector
 - https://github.com/kha-white/manga-ocr
 - https://github.com/PaddlePaddle/PaddleOCR/tree/v3.2.0
+
+## 2026-09-07 비교 결과와 시험 적용
+
+Windows CPU 실행 `34134188887` (server 탐지), `34135058558` (mobile 탐지) 성공.
+생성한 8장, 제목·작가 16개 항목을 대상으로 Tesseract page 11/16,
+탐지+Tesseract 12/16, 탐지+PaddleOCR 16/16, 일본어 탐지+Manga OCR 8/8이었다.
+빈 페이지는 모든 방식에서 텍스트를 만들지 않았다. Mobile 탐지는 참고 글자 영역
+32개를 모두 포함했고, 탐지+PaddleOCR의 페이지당 시간은 약 1.65~3.25초였다.
+Server 탐지+PaddleOCR은 약 15.15~17.82초였다. 모델 준비/프로세스 시작은 제외한다.
+상세 전사는 `ocr-comparison-mobile.json`에 보존한다. 실제 작품의 정확도 수치가 아니다.
+
+한국어·일본어를 함께 제공하고 추가 일본어 모델 크기를 줄이기 위해 우선
+mobile 탐지 + PaddleOCR 일본어/한국어 인식을 앱의 선택 가능한 시험 모드로 연결한다.
+Manga OCR은 이 시험에서 일본어 정확도 차이를 입증하지 못해 설치본에는 넣지 않는다.
+기본 Tesseract 모드는 유지한다. 시험 모드에서는 인식 결과의 후보를 직접 선택하며
+자동 입력/자동 외부 검색을 실행하지 않는다. 명시적인 검색·저장은 기존 흐름을 사용한다.
+
+`tools/neural_ocr/models.lock.json`은 비교 실행에서 확인한 모델 9개 파일의 SHA-256을
+고정한다. 빌드 시 다운로드 바이트를 대조하고 CPython·의존성과 함께 별도 하위 폴더에
+배포한다. 워커는 로컬 모델만 열고 Python 소켓 연결을 차단한다. 이 선택 모드의
+설치 후 검증은 Windows 워크플로에서 별도로 수행한다.

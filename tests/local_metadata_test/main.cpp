@@ -16,6 +16,9 @@
 #include <QFile>
 #include <QFontDatabase>
 #include <QFontMetrics>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -117,6 +120,8 @@ private slots:
     void tsvConfidenceAndLanguageSelection();
     void automaticQueryUsesOnlyStrongCredits();
     void realMultilingualColophon();
+    void neuralResponseAndReview();
+    void realNeuralOcr();
     void folderScanAndMetadataPreservation();
     void rootImageFolderSurvivesRescan();
     void closingAndSwitchingCancelWorkers();
@@ -585,6 +590,61 @@ void LocalMetadataTest::realMultilingualColophon()
         QVERIFY2(distance.last() <= 1, "Title/credit OCR exceeds the one-character error bound; inspect the UTF-8 diagnostic.");
         QVERIFY(reading.confidence > 0);
     }
+}
+
+void LocalMetadataTest::neuralResponseAndReview()
+{
+    QJsonArray lines;
+    for (const auto &pair : { qMakePair(QString("제목"), 10), qMakePair(QString("푸른 하늘"), 40), qMakePair(QString("작가"), 80), qMakePair(QString("홍길동"), 110) })
+        lines.append(QJsonObject { { "text", pair.first }, { "language", "kor" }, { "confidence", 95 }, { "box", QJsonArray { 10, pair.second, 150, pair.second + 20 } } });
+    QJsonObject response { { "version", 1 }, { "engine", "paddle-regions" }, { "language", "kor" }, { "lines", lines } };
+    const auto reading = LocalMetadata::parseNeuralReading(QJsonDocument(response).toJson(), QSize(200, 200));
+    QVERIFY(reading.error.isEmpty());
+    QVERIFY(reading.reviewRequired);
+    QCOMPARE(reading.lines.size(), 4);
+    LocalMetadata::Page page;
+    page.number = 10;
+    page.text = reading.text;
+    page.reading = reading;
+    page.kind = LocalMetadata::PageKind::Colophon;
+    LocalMetadata::Result result;
+    result.pages = { page };
+    result.suggestions = LocalMetadata::suggest(result.pages, QString());
+    QCOMPARE(result.suggestions.size(), 2);
+    YACReaderArchiveInspectorDialog dialog;
+    QSignalSpy requests(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    dialog.showResult(result);
+    QVERIFY(dialog.titleEdit->text().isEmpty());
+    QVERIFY(dialog.authorEdit->text().isEmpty());
+    dialog.requestSearch(true);
+    QCOMPARE(requests.count(), 0);
+    // Do not attach a label to a distant, unrelated detected text region.
+    page.reading.lines[1].bounds.moveLeft(500);
+    QCOMPARE(LocalMetadata::suggest({ page }, QString()).size(), 1);
+    lines[0] = QJsonObject { { "text", "제목" }, { "confidence", 101 }, { "language", "kor" }, { "box", QJsonArray { 0, 0, 10, 10 } } };
+    response["lines"] = lines;
+    QVERIFY(!LocalMetadata::parseNeuralReading(QJsonDocument(response).toJson(), QSize(200, 200)).error.isEmpty());
+    QVERIFY(!LocalMetadata::parseNeuralReading("{}", QSize(200, 200)).error.isEmpty());
+}
+
+void LocalMetadataTest::realNeuralOcr()
+{
+    if (qEnvironmentVariableIsEmpty("YACREADER_REQUIRE_NEURAL_OCR"))
+        QSKIP("The neural Windows package job requires this test.");
+    auto options = LocalMetadata::defaultOcrOptions();
+    options.neural = true;
+    options.language = "kor+eng";
+    QImage image(QCoreApplication::applicationDirPath() + QStringLiteral("/ocr-colophon-kor.png"));
+    QVERIFY(!image.isNull());
+    const auto reading = LocalMetadata::recognizePage(image, options, std::make_shared<std::atomic_bool>(false));
+    QVERIFY2(reading.error.isEmpty(), qPrintable(reading.error));
+    QVERIFY(reading.reviewRequired);
+    QString compact = reading.text;
+    compact.remove(QRegularExpression(QStringLiteral("\\s+")));
+    QVERIFY2(compact.contains(QStringLiteral("푸른하늘")), qPrintable(reading.text));
+    QVERIFY2(compact.contains(QStringLiteral("홍길동")), qPrintable(reading.text));
+    auto cancelled = std::make_shared<std::atomic_bool>(true);
+    QVERIFY(LocalMetadata::recognizePage(image, options, cancelled).text.isEmpty());
 }
 
 void LocalMetadataTest::folderScanAndMetadataPreservation()

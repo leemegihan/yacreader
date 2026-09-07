@@ -173,6 +173,36 @@ jobs:
           Get-Content build/tests/local_metadata_test/local-metadata.txt
           if ($testExit -ne 0) { throw 'Regression tests failed' }
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: tools/neural_ocr/requirements.txt
+
+      - name: Stage isolated offline region OCR runtime
+        run: |
+          python -m pip install -r tools/neural_ocr/requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Region OCR dependencies failed' }
+          $neural = Join-Path $env:GITHUB_WORKSPACE 'build/bin/ocr-neural'
+          New-Item -ItemType Directory -Force $neural | Out-Null
+          Copy-Item tools/neural_ocr/worker.py $neural
+          python tools/neural_ocr/stage_models.py $neural
+          if ($LASTEXITCODE -ne 0) { throw 'Region OCR models failed' }
+          $runtime = Join-Path $neural 'runtime'
+          New-Item -ItemType Directory -Force $runtime | Out-Null
+          # Full CPython layout relocates with python.exe; -I ignores user site/PYTHONPATH.
+          robocopy $env:pythonLocation $runtime /E /XD __pycache__ Scripts /XF *.pyc | Out-Null
+          if ($LASTEXITCODE -ge 8) { throw 'Python runtime staging failed' }
+          python -m pip freeze | Out-File "$neural/packages.txt" -Encoding utf8
+          curl.exe --fail --location --retry 3 https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/v3.2.0/LICENSE --output "$neural/LICENSE-PaddleOCR.txt"
+          if ($LASTEXITCODE -ne 0) { throw 'PaddleOCR license missing' }
+          $env:PATH = "$env:GITHUB_WORKSPACE\dependencies\pdfium\win\x64;$env:PATH"
+          $env:YACREADER_REQUIRE_NEURAL_OCR = '1'
+          & build/bin/local_metadata_test.exe neuralResponseAndReview realNeuralOcr -o build/neural-ocr.txt,txt
+          $code = $LASTEXITCODE
+          Get-Content build/neural-ocr.txt
+          if ($code -ne 0) { throw 'Region OCR wrapper failed' }
+
       - name: Download Visual C++ runtime
         run: |
           curl.exe --fail --location --retry 5 --retry-all-errors https://aka.ms/vs/17/release/vc_redist.x64.exe --output vc_redist.x64.exe
@@ -215,6 +245,12 @@ jobs:
             if (!(Test-Path -LiteralPath $installed)) { throw "Missing OCR runtime file: $relative" }
             if ((Get-FileHash -LiteralPath $file.FullName).Hash -ne (Get-FileHash -LiteralPath $installed).Hash) { throw "Installer altered OCR runtime file: $relative" }
           }
+          foreach ($file in Get-ChildItem (Join-Path $staging 'ocr-neural') -File -Recurse) {
+            $relative = [System.IO.Path]::GetRelativePath($staging, $file.FullName)
+            $installed = Join-Path $package $relative
+            if (!(Test-Path -LiteralPath $installed)) { throw "Missing region OCR file: $relative" }
+            if ((Get-FileHash -LiteralPath $file.FullName).Hash -ne (Get-FileHash -LiteralPath $installed).Hash) { throw "Region OCR file mismatch: $relative" }
+          }
           foreach ($file in @('YACReader.exe', 'YACReaderLibrary.exe', 'YACReaderLibraryServer.exe', 'Qt6Core.dll', 'Qt6Widgets.dll', 'platforms/qwindows.dll', 'sqldrivers/qsqlite.dll', 'pdfium.dll', 'utils/7z.dll')) {
             if (!(Test-Path (Join-Path $package $file))) { throw "Missing runtime file: $file" }
           }
@@ -249,9 +285,10 @@ jobs:
             }
           } finally { Pop-Location }
           $env:YACREADER_REQUIRE_OCR = '1'
+          $env:YACREADER_REQUIRE_NEURAL_OCR = '1'
           Copy-Item 'build/bin/ocr-colophon-*.png' $package
           $env:YACREADER_TEST_CJK_FIXTURES = $package
-          & "$package/local_metadata_test.exe" realOcr croppedCreditOcr realMultilingualColophon -o "$env:GITHUB_WORKSPACE/build/installed-ocr.txt,txt"
+          & "$package/local_metadata_test.exe" realOcr croppedCreditOcr realMultilingualColophon neuralResponseAndReview realNeuralOcr -o "$env:GITHUB_WORKSPACE/build/installed-ocr.txt,txt"
           $ocrTestExit = $LASTEXITCODE
           Get-Content "$env:GITHUB_WORKSPACE/build/installed-ocr.txt"
           New-Item -ItemType Directory -Force 'build/installed-cjk' | Out-Null
@@ -292,6 +329,9 @@ jobs:
             build/installer.log
             build/installed-ocr.txt
             build/native-ocr.txt
+            build/neural-ocr.txt
+            build/bin/ocr-neural/models.json
+            build/bin/ocr-neural/packages.txt
             build/installed-cjk/
             build/bin/ocr-fixture.png
             build/bin/ocr-colophon-*

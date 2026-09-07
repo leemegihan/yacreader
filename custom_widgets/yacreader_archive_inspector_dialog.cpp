@@ -4,6 +4,7 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFileInfo>
@@ -19,6 +20,8 @@
 #include <QSplitter>
 #include <QThread>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent)
     : QDialog(parent)
@@ -45,6 +48,8 @@ YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent
     quality = new QComboBox(this);
     quality->addItem(tr("정밀 모델 (느림)"), true);
     quality->addItem(tr("빠른 모델"), false);
+    if (QFileInfo::exists(QCoreApplication::applicationDirPath() + QStringLiteral("/ocr-neural/worker.py")))
+        quality->addItem(tr("영역 탐지 OCR (시험 · 후보 직접 확인)"), 2);
     ocrButton = new QPushButton(tr("페이지 글자 읽기"), this);
     cancelButton = new QPushButton(tr("중지"), this);
     auto *controls = new QHBoxLayout;
@@ -131,6 +136,11 @@ YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent
     layout->addWidget(autoSearch);
     layout->addWidget(buttons);
 
+    connect(quality, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] {
+        const bool neural = quality->currentData().toInt() == 2;
+        textLayout->setEnabled(!neural);
+        threshold->setEnabled(!neural);
+    });
     connect(ocrButton, &QPushButton::clicked, this, [this] { start(true); });
     connect(regionButton, &QPushButton::clicked, this, &YACReaderArchiveInspectorDialog::recognizeRegion);
     connect(cancelButton, &QPushButton::clicked, this, [this] {
@@ -177,10 +187,10 @@ void YACReaderArchiveInspectorDialog::setBusy(bool busy)
     pageLimit->setEnabled(!busy);
     language->setEnabled(!busy);
     quality->setEnabled(!busy);
-    textLayout->setEnabled(!busy);
+    textLayout->setEnabled(!busy && quality->currentData().toInt() != 2);
     rotation->setEnabled(!busy);
     invert->setEnabled(!busy);
-    threshold->setEnabled(!busy);
+    threshold->setEnabled(!busy && quality->currentData().toInt() != 2);
     imageLabel->setEnabled(!busy);
     regionButton->setEnabled(!busy && !result.pages.isEmpty());
     saveButton->setEnabled(!busy && !sourcePath.isEmpty());
@@ -268,6 +278,9 @@ void YACReaderArchiveInspectorDialog::showResult(const LocalMetadata::Result &va
     for (const auto field : { LocalMetadata::Suggestion::Title, LocalMetadata::Suggestion::Author, LocalMetadata::Suggestion::Publisher }) {
         QStringList values;
         for (const auto &candidate : result.suggestions) {
+            const auto evidence = std::find_if(result.pages.cbegin(), result.pages.cend(), [&](const LocalMetadata::Page &page) { return page.number == candidate.page; });
+            if (evidence != result.pages.cend() && evidence->reading.reviewRequired)
+                continue;
             if (candidate.field == field && candidate.labelled && candidate.page > 0 && (candidate.confidence < 0 || candidate.confidence >= 45) && !values.contains(candidate.value, Qt::CaseInsensitive))
                 values.append(candidate.value);
         }
@@ -301,19 +314,22 @@ void YACReaderArchiveInspectorDialog::showPage(int row)
                               .arg(LocalMetadata::pageKindName(page.kind), page.reading.language,
                                    page.reading.confidence < 0 ? tr("없음") : QString::number(page.reading.confidence, 'f', 0),
                                    page.reading.uncertainLanguage ? tr(" · 언어 판정 불확실") : QString()));
+    if (page.reading.reviewRequired)
+        pageInfo->setText(pageInfo->text() + tr(" · 영역 탐지 OCR 시험 결과 — 후보를 직접 선택해 주세요."));
     pageText->setPlainText(page.error.isEmpty() ? page.text : page.error + QStringLiteral("\n\n") + page.text);
 }
 
 LocalMetadata::OcrOptions YACReaderArchiveInspectorDialog::ocrOptions() const
 {
     auto options = LocalMetadata::defaultOcrOptions();
+    options.neural = quality->currentData().toInt() == 2;
     options.language = language->currentData().toString();
     options.vertical = options.language.startsWith("jpn_vert");
     options.segmentation = textLayout->currentData().toInt();
     options.rotation = rotation->currentData().toInt();
     options.invert = invert->isChecked();
     options.adaptiveThreshold = threshold->isChecked();
-    if (!options.dataPath.isEmpty()) {
+    if (!options.neural && !options.dataPath.isEmpty()) {
         const QDir ocrRoot(QFileInfo(options.executable).absolutePath());
         const auto requested = ocrRoot.filePath(quality->currentData().toBool() ? "tessdata_best" : "tessdata");
         // Do not silently label a fast-model result as a precise-model result.
@@ -347,11 +363,16 @@ void YACReaderArchiveInspectorDialog::recognizeRegion()
         auto updated = result;
         auto &page = updated.pages[row];
         if (!output->text.isEmpty())
-            page.text = (page.text + QStringLiteral("\n") + output->text).trimmed();
+            page.text = (page.text + QStringLiteral("\n---\n") + output->text).trimmed();
         page.error = output->error;
         const auto oldLines = page.reading.lines;
+        const bool reviewRequired = page.reading.reviewRequired || output->reading.reviewRequired;
         page.reading = output->reading;
         page.reading.lines = oldLines + output->reading.lines;
+        page.reading.reviewRequired = reviewRequired;
+        // A crop and a full page use different coordinate systems.
+        for (auto &line : page.reading.lines)
+            line.bounds = QRect();
         page.kind = LocalMetadata::classifyPage(page.text, page.number);
         updated.suggestions = LocalMetadata::suggest(updated.pages, sourcePath);
         showResult(updated);
@@ -379,7 +400,7 @@ void YACReaderArchiveInspectorDialog::requestSearch(bool automatic)
             return;
         bool supported = false;
         for (const auto &page : result.pages) {
-            if (page.kind == LocalMetadata::PageKind::Unknown || page.reading.uncertainLanguage || !page.error.isEmpty())
+            if (page.kind == LocalMetadata::PageKind::Unknown || page.reading.reviewRequired || page.reading.uncertainLanguage || !page.error.isEmpty())
                 continue;
             for (const auto &candidate : result.suggestions)
                 supported = supported || (candidate.field == LocalMetadata::Suggestion::Title && candidate.page == page.number && candidate.confidence >= 50);

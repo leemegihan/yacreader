@@ -2,6 +2,7 @@
 #define LOCAL_METADATA_H
 
 #include <QImage>
+#include <QRect>
 #include <QStringList>
 #include <QVector>
 
@@ -18,6 +19,7 @@ enum class PageKind { Unknown,
 struct TextLine {
     QString text;
     double confidence = -1;
+    QRect bounds;
 };
 struct Reading {
     QString text;
@@ -27,6 +29,8 @@ struct Reading {
     double confidence = -1;
     double score = -1;
     bool uncertainLanguage = false;
+    bool reviewRequired = false;
+    QString engine;
 };
 
 struct Page {
@@ -59,6 +63,7 @@ struct Result {
 };
 
 struct OcrOptions {
+    bool neural = false;
     QString executable;
     QString dataPath;
     QString language = QStringLiteral("auto");
@@ -76,6 +81,7 @@ QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePat
 QString normalizeOcrText(const QString &text);
 PageKind classifyPage(const QString &text, int pageNumber);
 QString pageKindName(PageKind kind);
+Reading parseNeuralReading(const QByteArray &json, const QSize &imageSize);
 Reading parseTsv(const QByteArray &tsv, const QString &language);
 Reading chooseReading(const QVector<Reading> &readings);
 Reading recognizePage(const QImage &image, const OcrOptions &options, const Cancellation &cancel);

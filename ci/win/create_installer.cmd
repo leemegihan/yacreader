@@ -37,6 +37,10 @@ if exist "%exe_path%\ocr\tesseract.exe" (
     xcopy "%exe_path%\ocr" .\ocr /i /e /y || exit /b
 )
 
+if exist "%exe_path%\ocr-neural\worker.py" (
+    xcopy "%exe_path%\ocr-neural" .\ocr-neural /i /e /y || exit /b
+)
+
 IF "%COMPRESSION%"=="7z" (
     copy %src_path%\dependencies\7zip\win\%ARCH%\7z.dll .\utils\7z.dll
 ) ELSE (
