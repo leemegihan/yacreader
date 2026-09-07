@@ -92,3 +92,9 @@ Manga OCR은 이 시험에서 일본어 정확도 차이를 입증하지 못해 
 고정한다. 빌드 시 다운로드 바이트를 대조하고 CPython·의존성과 함께 별도 하위 폴더에
 배포한다. 워커는 로컬 모델만 열고 Python 소켓 연결을 차단한다. 이 선택 모드의
 설치 후 검증은 Windows 워크플로에서 별도로 수행한다.
+
+시험 모드를 포함한 `10.3.0.26`은 Windows 실행 `34135749563`에서 설치 후 검증까지
+통과했다. `tools/neural_ocr/constraints.txt`는 이 설치본에서 실제 사용한 의존 버전이다.
+비교 도구는 Manga OCR 때문에 별도 Transformers/PyTorch 의존성을 사용하므로,
+비교 환경과 제품 워커의 전체 패키지 목록이 같지는 않다. 설치본 워커에는 Manga OCR,
+PyTorch, Transformers를 포함하지 않는다.
