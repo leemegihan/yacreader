@@ -4,6 +4,8 @@ Manifest ground truth is only used after recognition, never for model selection.
 Private images remain local. CI only supplies generated synthetic fixtures.
 """
 import argparse
+import hashlib
+import re
 import importlib.metadata
 import json
 import os
@@ -17,11 +19,12 @@ os.environ.setdefault('PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK', 'True')
 os.environ.setdefault('PADDLE_PDX_MODEL_SOURCE', 'BOS')
 
 from PIL import Image, ImageDraw
-from core import field_errors, normalized, ordered_boxes, tesseract
+from core import field_errors, normalized, ordered_boxes, tesseract, covered_fields
 
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--detector-model', choices=['PP-OCRv5_server_det', 'PP-OCRv5_mobile_det'], default='PP-OCRv5_server_det')
     parser.add_argument('--manifest', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--tesseract', type=Path, required=True)
@@ -36,11 +39,11 @@ def main():
     torch.set_num_threads(min(4, os.cpu_count() or 1))
     start = time.perf_counter()
     common = dict(device='cpu', enable_mkldnn=False, cpu_threads=min(4, os.cpu_count() or 1))
-    detector = TextDetection(model_name='PP-OCRv5_server_det', **common)
+    detector = TextDetection(model_name=args.detector_model, **common)
     recognizers = {lang: TextRecognition(model_name=model, **common) for lang, model in
                    [('jpn', 'PP-OCRv5_server_rec'), ('kor', 'korean_PP-OCRv5_mobile_rec')]}
     manga = MangaOcr(force_cpu=True)
-    report = {'synthetic': manifest.get('synthetic', False), 'platform': platform.platform(),
+    report = {'synthetic': manifest.get('synthetic', False), 'platform': platform.platform(), 'detector_model': args.detector_model,
               'model_load_seconds': time.perf_counter() - start,
               'versions': {p: importlib.metadata.version(p) for p in
                            ['paddleocr', 'paddlex', 'paddlepaddle', 'torch', 'manga-ocr', 'transformers']},
@@ -50,8 +53,13 @@ def main():
                   'Tesseract baseline chooses layout by its confidence, not ground truth.',
                   'Manga OCR has no calibrated confidence and can hallucinate.']}
     for case in manifest['cases']:
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', case['id']):
+            raise ValueError('Case id must be a simple filename')
+        if case['language'] not in ('jpn', 'kor'):
+            raise ValueError('Unsupported reference language')
         image = Image.open(args.manifest.parent / case['image']).convert('RGB')
-        image.thumbnail((4000, 4000))
+        if max(image.size) > 4000:
+            raise ValueError('Prepare images and reference boxes at <=4000 pixels')
         lang = case['language']
         print(f"CASE {case['id']}", flush=True)
         with tempfile.TemporaryDirectory() as directory:
@@ -63,6 +71,7 @@ def main():
             detection = next(iter(detector.predict(np.array(image)[:, :, ::-1])))
             boxes = ordered_boxes(detection['dt_polys'], image.width, image.height)
             detection_seconds = time.perf_counter() - start
+            coverage = covered_fields(case.get('boxes', []), boxes)
             overlay = image.copy()
             draw = ImageDraw.Draw(overlay)
             for i, box in enumerate(boxes):
@@ -86,7 +95,8 @@ def main():
                     texts.append(text)
                 methods[method] = {'text': '\n'.join(texts), 'seconds': time.perf_counter() - start + detection_seconds}
             for method, result in methods.items():
-                result.update(case=case['id'], method=method, regions=len(boxes))
+                result.update(case=case['id'], method=method, regions=len(boxes),
+                              reference_box_coverage=coverage)
                 for field in ('title', 'author'):
                     expected = case[field]
                     result[field + '_errors'] = field_errors(expected, result['text']) if expected else None
@@ -95,6 +105,15 @@ def main():
                 report['results'].append(result)
                 print(json.dumps({k: v for k, v in result.items() if k != 'text'}, ensure_ascii=True), flush=True)
         (args.output / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+    models = []
+    for root in [Path.home() / '.paddlex/official_models', Path.home() / '.cache/huggingface/hub/models--kha-white--manga-ocr-base/snapshots']:
+        if root.exists():
+            for file in sorted(root.rglob('*')):
+                if file.is_file():
+                    with file.open('rb') as stream:
+                        digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+                    models.append({'file': str(file.relative_to(root)), 'sha256': digest, 'bytes': file.stat().st_size})
+    (args.output / 'models.json').write_text(json.dumps(models, indent=2), encoding='utf-8')
     lines = ['# OCR comparison', '', 'Synthetic fixtures only; not real-manga accuracy.', '',
              '| Case | Method | Title errors | Author errors | Seconds |', '|---|---|---:|---:|---:|']
     for r in report['results']:

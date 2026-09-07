@@ -58,7 +58,7 @@ jobs:
         run: |
           $bin = Resolve-Path 'ocr-build/vcpkg/installed/x64-windows/bin'
           $env:PATH = "$bin;$env:PATH"
-          python tools/ocr_benchmark/compare.py --manifest fixtures/manifest.json --output comparison --tesseract ocr-build/vcpkg/installed/x64-windows/tools/tesseract/tesseract.exe --tessdata tessdata
+          python tools/ocr_benchmark/compare.py --detector-model PP-OCRv5_mobile_det --manifest fixtures/manifest.json --output comparison --tesseract ocr-build/vcpkg/installed/x64-windows/tools/tesseract/tesseract.exe --tessdata tessdata
           if ($LASTEXITCODE -ne 0) { throw 'OCR comparison failed' }
           Get-Content comparison/report.md | Add-Content $env:GITHUB_STEP_SUMMARY
       - uses: actions/upload-artifact@v6

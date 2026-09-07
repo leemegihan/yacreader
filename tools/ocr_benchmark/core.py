@@ -78,3 +78,16 @@ def tesseract(image, executable, data, language, layout, directory):
             scores += conf * len(row['text'])
     return {'text': '\n'.join(' '.join(line) for line in lines.values()),
             'confidence': scores / weights if weights else -1}
+
+
+def covered_fields(truth_boxes, detected):
+    """Fraction of each reference text box covered by its best detected box."""
+    coverage = []
+    for x0, y0, x1, y1 in truth_boxes:
+        area = max(0, x1-x0) * max(0, y1-y0)
+        if not area:
+            raise ValueError('Empty ground-truth box')
+        coverage.append(max((max(0, min(x1, b[2])-max(x0, b[0])) *
+                             max(0, min(y1, b[3])-max(y0, b[1])) / area
+                             for b in detected), default=0))
+    return coverage

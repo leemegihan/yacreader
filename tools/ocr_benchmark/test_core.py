@@ -1,5 +1,5 @@
 import unittest
-from core import field_errors, ordered_boxes
+from core import field_errors, ordered_boxes, covered_fields
 
 
 class ComparisonTests(unittest.TestCase):
@@ -18,6 +18,11 @@ class ComparisonTests(unittest.TestCase):
             ordered_boxes([[[float('nan'), 0]] * 4], 40, 40)
         with self.assertRaises(ValueError):
             ordered_boxes([[[0, 0]] * 3], 40, 40)
+
+    def test_detection_coverage_separate_from_recognition(self):
+        self.assertEqual(covered_fields([[0, 0, 10, 10]], []), [0])
+        self.assertEqual(covered_fields([[0, 0, 10, 10]], [[0, 0, 5, 10]]), [0.5])
+        self.assertEqual(covered_fields([[0, 0, 10, 10]], [[0, 0, 10, 10]]), [1])
 
     def test_vertical_order(self):
         polys = [[[x, 10], [x + 10, 10], [x + 10, 90], [x, 90]] for x in (10, 60)]
