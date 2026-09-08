@@ -450,13 +450,18 @@ bool save(const QString &libraryPath, qulonglong comicInfoId, const QString &sou
                 success = query.exec(QStringLiteral("CREATE TABLE IF NOT EXISTS local_metadata_evidence (id INTEGER PRIMARY KEY, comicInfoId INTEGER, sourcePath TEXT, reviewedTitle TEXT, reviewedAuthor TEXT, evidence TEXT, created INTEGER)"));
             if (success) {
                 QJsonArray items;
-                for (const auto &item : evidence)
+                for (const auto &item : evidence) {
+                    QJsonArray sources;
+                    for (const auto &source : item.evidence)
+                        sources.append(QJsonObject { { "page", source.page }, { "labelled", source.labelled }, { "ocrConfidence", source.confidence } });
                     items.append(QJsonObject { { "field", item.field == Suggestion::Title ? "title" : item.field == Suggestion::Author ? "author"
                                                                                                                                        : "publisher" },
                                                { "value", item.value },
                                                { "page", item.page },
                                                { "reason", item.reason },
+                                               { "sources", sources },
                                                { "ocrConfidence", item.confidence } });
+                }
                 query.prepare(QStringLiteral("INSERT INTO local_metadata_evidence (comicInfoId,sourcePath,reviewedTitle,reviewedAuthor,evidence,created) VALUES (?,?,?,?,?,?)"));
                 query.addBindValue(QVariant::fromValue(comicInfoId));
                 query.addBindValue(sourcePath);

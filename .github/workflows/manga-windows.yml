@@ -177,7 +177,9 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
-          cache-dependency-path: tools/neural_ocr/requirements.txt
+          cache-dependency-path: |
+            tools/neural_ocr/requirements.txt
+            tools/neural_ocr/constraints.txt
 
       - name: Stage isolated offline region OCR runtime
         run: |
@@ -288,7 +290,7 @@ jobs:
           $env:YACREADER_REQUIRE_NEURAL_OCR = '1'
           Copy-Item 'build/bin/ocr-colophon-*.png' $package
           $env:YACREADER_TEST_CJK_FIXTURES = $package
-          & "$package/local_metadata_test.exe" realOcr croppedCreditOcr realMultilingualColophon neuralResponseAndReview realNeuralOcr -o "$env:GITHUB_WORKSPACE/build/installed-ocr.txt,txt"
+          & "$package/local_metadata_test.exe" realOcr croppedCreditOcr realMultilingualColophon neuralResponseAndReview coverTitlesAndCombinedEvidence coverLayoutRejectsUnrelatedText nameHintsExcludeLibraryRoots neuralCandidatesOpenReviewBeforeSearch conflictingCandidatesRequireSelection realNeuralOcr -o "$env:GITHUB_WORKSPACE/build/installed-ocr.txt,txt"
           $ocrTestExit = $LASTEXITCODE
           Get-Content "$env:GITHUB_WORKSPACE/build/installed-ocr.txt"
           New-Item -ItemType Directory -Force 'build/installed-cjk' | Out-Null

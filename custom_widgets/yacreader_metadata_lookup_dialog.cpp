@@ -73,6 +73,11 @@ YACReaderMetadataLookupDialog::YACReaderMetadataLookupDialog(QWidget *parent)
     fileNameLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     fileNameLabel->setWordWrap(true);
     existingInfoLabel->setWordWrap(true);
+    ocrEvidenceLabel = new QLabel(this);
+    ocrEvidenceLabel->setTextFormat(Qt::PlainText);
+    ocrEvidenceLabel->setWordWrap(true);
+    ocrEvidenceLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    ocrEvidenceLabel->hide();
     existingInfoLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
     searchEdit->setClearButtonEnabled(true);
@@ -128,6 +133,7 @@ YACReaderMetadataLookupDialog::YACReaderMetadataLookupDialog(QWidget *parent)
     layout->addSpacing(6);
     layout->addLayout(searchLayout);
     layout->addWidget(authorEdit);
+    layout->addWidget(ocrEvidenceLabel);
     auto *privacyLabel = new QLabel(tr("조회하면 제목·작가 또는 입력한 작품 링크를 선택한 서비스에 전송합니다. 페이지 이미지는 전송하지 않습니다."), this);
     privacyLabel->setWordWrap(true);
     layout->addWidget(privacyLabel);
@@ -171,6 +177,8 @@ void YACReaderMetadataLookupDialog::setComic(const QString &libraryPath,
     sourcePageCount = 0;
     nameHints.clear();
     publisherHints.clear();
+    ocrEvidenceLabel->clear();
+    ocrEvidenceLabel->hide();
 
     fileNameLabel->setText(fileName);
 
@@ -327,7 +335,7 @@ void YACReaderMetadataLookupDialog::searchTitle(const QString &title)
     startSearch();
 }
 
-void YACReaderMetadataLookupDialog::prepareOcrSearch(const QString &title, const QString &author, int pageCount, const QStringList &hints, const QStringList &publishers, bool runSearch)
+void YACReaderMetadataLookupDialog::prepareOcrSearch(const QString &title, const QString &author, int pageCount, const QStringList &hints, const QStringList &publishers, bool runSearch, const QString &evidenceSummary)
 {
     cancelSearch();
     clearResults();
@@ -337,6 +345,8 @@ void YACReaderMetadataLookupDialog::prepareOcrSearch(const QString &title, const
     sourcePageCount = qMax(0, pageCount);
     nameHints = hints.mid(0, 3);
     publisherHints = publishers.mid(0, 3);
+    ocrEvidenceLabel->setText(evidenceSummary.isEmpty() ? QString() : tr("조회 단서의 원본 (입력값을 수정하면 아래 근거와 다를 수 있습니다)\n%1").arg(evidenceSummary));
+    ocrEvidenceLabel->setVisible(!evidenceSummary.isEmpty());
     statusLabel->setText(tr("OCR 후보를 가져왔습니다. 제목·작가를 확인하고 조회를 눌러 주세요."));
     if (runSearch)
         startSearch();

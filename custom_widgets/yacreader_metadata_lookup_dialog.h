@@ -27,7 +27,7 @@ class YACReaderMetadataLookupDialog : public QDialog
 public:
     explicit YACReaderMetadataLookupDialog(QWidget *parent = nullptr);
     void searchTitle(const QString &title);
-    void prepareOcrSearch(const QString &title, const QString &author, int pageCount, const QStringList &nameHints = { }, const QStringList &publishers = { }, bool runSearch = false);
+    void prepareOcrSearch(const QString &title, const QString &author, int pageCount, const QStringList &nameHints = { }, const QStringList &publishers = { }, bool runSearch = false, const QString &evidenceSummary = { });
 
     void setComic(const QString &libraryPath,
                   qulonglong comicInfoId,
@@ -92,6 +92,7 @@ private:
 
     QLabel *fileNameLabel;
     QLabel *existingInfoLabel;
+    QLabel *ocrEvidenceLabel;
     QLineEdit *searchEdit;
     QLineEdit *authorEdit;
     QComboBox *providerChoice;

@@ -151,3 +151,33 @@ CTest 묶음과 설치 검증을 통과했다. 로컬 OCR 테스트는 실제 �
 소스는 `03477da5194dcfb4b9bf6027d35c87b6b7fb8401`이다. 새 워커의 설치 후 실제
 문자 검사는 한국어 합성 판권을 사용했으며, 일본어 인식과 탐지 엔진 비교는 별도
 비교 워크플로에서 확인했다. 사용자 작품의 정확도와 혼합 언어 선택은 별도 확인 대상이다.
+# Candidate consolidation and review handoff (2026-09-08)
+
+- First-page neural text boxes can propose a title without a title label when a
+  readable author credit is present and one to three larger text regions form a
+  compact, consistent layout. Vertical columns use right-to-left order;
+  horizontal lines use top-to-bottom order. Low-confidence pieces, sentence
+  punctuation, mixed orientations and distant regions veto this inference.
+- This is a review candidate, not an asserted identity. It cannot independently
+  trigger an automatic lookup. It does not cover every decorative title, title
+  split across many small boxes, or pages lacking an author credit.
+- Equal field/value candidates share one UI row with all supporting page
+  numbers. Distinct titles/authors remain separate. Each page's label and OCR
+  confidence are retained in local evidence JSON; confidence is not increased
+  merely because a crop rereads the same page.
+- Library roots, common storage names, numeric/language/storage placeholders,
+  and language-only bracket labels are excluded from name hints. A plausible
+  author directory below the library root remains a low-confidence hint.
+- Clicking **메타데이터 대조…** with empty inputs transfers unambiguous OCR
+  candidates to the lookup review form, including source page summaries. The
+  user clicks Search there before any request is made for newly proposed values.
+  Conflicting candidates require a selection. Explicitly entered/selected values
+  retain the existing immediate-lookup behavior.
+- This change leaves bulk processing, automatic database writes, artist alias
+  resolution and additional providers for later steps. Catalog Apply continues
+  to preserve existing values by default and records the reviewed catalog source.
+- New regression cases cover the reported split Japanese title, a slanted
+  author credit, Korean title spaces, merged page evidence, root-folder hints,
+  conflicting identities and review-only handoff. Packaged neural checks now
+  include Japanese, Korean, and automatic language choice on both synthetic
+  colophons. Windows run results are recorded in `manga-library-progress.md`.

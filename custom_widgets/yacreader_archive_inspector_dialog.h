@@ -25,7 +25,7 @@ public:
 
 signals:
     void metadataSaved(const QString &libraryPath, qulonglong comicInfoId);
-    void titleSearchRequested(const QString &libraryPath, qulonglong comicInfoId, const QString &title, const QString &author, int pageCount, const QStringList &nameHints, const QStringList &publishers, bool runSearch);
+    void titleSearchRequested(const QString &libraryPath, qulonglong comicInfoId, const QString &title, const QString &author, int pageCount, const QStringList &nameHints, const QStringList &publishers, bool runSearch, const QString &evidenceSummary);
 
 private:
     friend class LocalMetadataTest;

@@ -43,6 +43,12 @@ struct Page {
     PageKind kind = PageKind::Unknown;
 };
 
+struct SuggestionEvidence {
+    int page = 0;
+    bool labelled = false;
+    double confidence = -1;
+};
+
 struct Suggestion {
     enum Field { Title,
                  Author,
@@ -53,6 +59,7 @@ struct Suggestion {
     int page = 0; // 0 means a path hint, not image evidence.
     bool labelled = false;
     double confidence = -1;
+    QVector<SuggestionEvidence> evidence;
 };
 
 struct Result {
@@ -77,7 +84,8 @@ struct OcrOptions {
 
 QVector<int> sampleIndexes(int pageCount, int perEnd);
 Result readPages(const QString &path, int perEnd, const Cancellation &cancel);
-QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePath);
+QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePath, const QString &libraryRoot = { });
+QString suggestionSource(const Suggestion &suggestion);
 QString normalizeOcrText(const QString &text);
 PageKind classifyPage(const QString &text, int pageNumber);
 QString pageKindName(PageKind kind);

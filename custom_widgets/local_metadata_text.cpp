@@ -70,6 +70,77 @@ bool usable(const QString &value)
         letters += ch.isLetter();
     return value.size() >= 2 && value.size() <= 180 && letters >= 2 && !value.contains(QRegularExpression(QStringLiteral("(?:https?://|www\\.|@)"), QRegularExpression::CaseInsensitiveOption));
 }
+
+bool genericPathName(QString value)
+{
+    value = value.normalized(QString::NormalizationForm_KC).toCaseFolded();
+    value.remove(QRegularExpression(QStringLiteral("[\\s_.\\-]+")));
+    value.remove(QRegularExpression(QStringLiteral("^[0-9]+|[0-9]+$")));
+    static const QSet<QString> generic { "", "downloads", "download", "comics", "comic", "manga", "images", "image", "pictures", "library", "testlibrary", "test", "tests", "sample", "samples", "archive", "archives", "folder", "books", "book", "temp", "tmp", "unidentified", "unknown", "desktop", "documents", "만화", "다운로드", "미분류", "테스트", "새폴더", "라이브러리", "자료", "漫画", "未分類" };
+    if (generic.contains(value) || QStringList { "japanese", "korean", "english", "한국어", "일본어", "영어", "日本語", "翻訳" }.contains(value))
+        return true;
+    // Number/language/storage labels are organizational names, not artists.
+    return QRegularExpression(QStringLiteral("^(?:ko|kr|jp|ja|en|zh|mixed)(?:archive|folder|comic|manga|sample|test)$")).match(value).hasMatch();
+}
+
+QVector<TextLine> coverTitleLines(const Page &page)
+{
+    // Layout alone cannot prove identity. Only the first page, with a detected
+    // author credit, may contribute an explicitly unlabelled review candidate.
+    if (page.number != 1 || !page.error.isEmpty() || page.reading.uncertainLanguage || classifyPage(page.text, page.number) != PageKind::Unknown)
+        return { };
+    int creditSize = 0;
+    for (const auto &line : page.reading.lines) {
+        const auto credit = label(line.text);
+        if (credit.role == Role::Author && usable(credit.value) && line.confidence >= 70 && !line.bounds.isEmpty()) {
+            // A slanted credit has an inflated bounding-box height. Estimate
+            // its glyph size from the advance as well, so it cannot dwarf the
+            // actual cover lettering merely because it is on an angle.
+            double units = 0;
+            for (const auto ch : line.text)
+                units += ch.isSpace() ? 0.3 : ch.unicode() >= 0x2e80 ? 1.0
+                                                                     : 0.55;
+            const bool vertical = line.bounds.height() > 1.5 * line.bounds.width();
+            const int advance = vertical ? line.bounds.height() : line.bounds.width();
+            const int size = qMin(qMin(line.bounds.width(), line.bounds.height()), int(std::ceil(advance / qMax(1.0, units))));
+            creditSize = qMax(creditSize, size);
+        }
+    }
+    if (!creditSize)
+        return { };
+    QVector<TextLine> titles;
+    for (const auto &line : page.reading.lines) {
+        if (label(line.text).role != Role::None || !usable(line.text) || line.bounds.isEmpty())
+            continue;
+        if (qMin(line.bounds.width(), line.bounds.height()) < 1.5 * creditSize)
+            continue;
+        // Do not silently drop a weak/sentence-like part and present the
+        // remaining pieces as a complete title.
+        if (line.confidence < 70 || line.text.contains(QRegularExpression(QStringLiteral("[。！？!?…]"))))
+            return { };
+        titles.append(line);
+    }
+    if (titles.isEmpty() || titles.size() > 3)
+        return { };
+    const bool vertical = titles.first().bounds.height() > 1.5 * titles.first().bounds.width();
+    for (const auto &line : titles)
+        if ((line.bounds.height() > 1.5 * line.bounds.width()) != vertical)
+            return { };
+    std::sort(titles.begin(), titles.end(), [vertical](const TextLine &a, const TextLine &b) {
+        return vertical ? a.bounds.left() > b.bounds.left() : a.bounds.top() < b.bounds.top();
+    });
+    for (int i = 1; i < titles.size(); ++i) {
+        const auto a = titles.at(i - 1).bounds;
+        const auto b = titles.at(i).bounds;
+        const int unit = vertical ? qMax(a.width(), b.width()) : qMax(a.height(), b.height());
+        const int otherUnit = vertical ? qMin(a.width(), b.width()) : qMin(a.height(), b.height());
+        const int gap = vertical ? a.left() - b.right() : b.top() - a.bottom();
+        const int overlap = vertical ? qMin(a.bottom(), b.bottom()) - qMax(a.top(), b.top()) : qMin(a.right(), b.right()) - qMax(a.left(), b.left());
+        if (unit > 2 * otherUnit || gap > 2 * unit || gap < -unit / 2 || overlap <= 0)
+            return { };
+    }
+    return titles;
+}
 }
 
 QString normalizeOcrText(const QString &text)
@@ -113,18 +184,51 @@ QString pageKindName(PageKind kind)
     }
 }
 
-QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePath)
+QString suggestionSource(const Suggestion &suggestion)
+{
+    QStringList pages;
+    QVector<int> numbers;
+    for (const auto &evidence : suggestion.evidence)
+        if (evidence.page > 0 && !numbers.contains(evidence.page))
+            numbers.append(evidence.page);
+    if (numbers.isEmpty() && suggestion.page > 0)
+        numbers.append(suggestion.page);
+    std::sort(numbers.begin(), numbers.end());
+    for (int number : numbers)
+        pages.append(QString::number(number));
+    return pages.isEmpty() ? tr("이름 힌트 · 낮은 신뢰") : tr("%1페이지").arg(pages.join(QStringLiteral(", ")));
+}
+
+QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePath, const QString &libraryRoot)
 {
     QVector<Suggestion> result;
     auto append = [&](Suggestion::Field field, QString value, const QString &reason, int page, bool labelled = false, double confidence = -1) {
         value = normalizeOcrText(value).simplified();
         if (!usable(value))
             return;
-        for (const auto &existing : result) {
-            if (existing.field == field && existing.value.compare(value, Qt::CaseInsensitive) == 0 && existing.page == page)
+        for (auto &existing : result) {
+            if (existing.field == field && existing.value.compare(value, Qt::CaseInsensitive) == 0) {
+                if (page > 0) {
+                    auto evidence = std::find_if(existing.evidence.begin(), existing.evidence.end(), [page](const SuggestionEvidence &item) { return item.page == page; });
+                    if (evidence == existing.evidence.end())
+                        existing.evidence.append({ page, labelled, confidence });
+                    else if ((labelled && !evidence->labelled) || (labelled == evidence->labelled && confidence > evidence->confidence))
+                        *evidence = { page, labelled, confidence };
+                    if ((labelled && !existing.labelled) || (labelled == existing.labelled && confidence > existing.confidence)) {
+                        existing.page = page;
+                        existing.labelled = labelled;
+                        existing.confidence = confidence;
+                    }
+                }
+                if (!existing.reason.contains(reason))
+                    existing.reason += QLatin1Char('\n') + reason;
                 return;
+            }
         }
-        result.append({ field, value, reason, page, labelled, confidence });
+        Suggestion suggestion { field, value, reason, page, labelled, confidence, { } };
+        if (page > 0)
+            suggestion.evidence.append({ page, labelled, confidence });
+        result.append(suggestion);
     };
     for (const auto &page : pages) {
         const auto lines = page.text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
@@ -167,7 +271,21 @@ QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePat
             }
             append(field, credit.value, reason, page.number, true, confidence);
         }
+        const auto titleLines = coverTitleLines(page);
+        if (!titleLines.isEmpty()) {
+            QStringList parts;
+            double confidence = 100;
+            for (const auto &line : titleLines) {
+                parts.append(line.text.trimmed());
+                confidence = qMin(confidence, line.confidence);
+            }
+            // A space preserves Korean/Latin word boundaries; normalization
+            // removes spurious inter-character spaces only for Japanese.
+            append(Suggestion::Title, parts.join(QLatin1Char(' ')), tr("표지의 큰 글자를 위치 순서로 연결한 추정 제목입니다. 판권 또는 외부 정보와 대조해 주세요."), page.number, false, confidence);
+        }
     }
+    if (sourcePath.trimmed().isEmpty())
+        return result;
     const QFileInfo info(sourcePath);
     QString base = info.isDir() ? info.fileName() : info.completeBaseName();
     // Edition markers before [name] must not hide the bracketed name hint.
@@ -176,13 +294,15 @@ QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePat
         base.remove(decoration);
     const auto bracket = QRegularExpression(QStringLiteral(R"(^\[([^\]]+)\]\s*(.+)$)")).match(base);
     if (bracket.hasMatch()) {
-        append(Suggestion::Author, bracket.captured(1), tr("파일명 이름 힌트 — 외부 artist 태그와 일치하는지 확인합니다."), 0);
+        if (!genericPathName(bracket.captured(1)))
+            append(Suggestion::Author, bracket.captured(1), tr("파일명 이름 힌트 — 외부 artist 태그와 일치하는지 확인합니다."), 0);
         base = bracket.captured(2);
     }
-    append(Suggestion::Title, base, tr("파일명·폴더명 힌트 — OCR로 확인한 제목이 아닙니다."), 0);
+    if (!genericPathName(base))
+        append(Suggestion::Title, base, tr("파일명·폴더명 힌트 — OCR로 확인한 제목이 아닙니다."), 0);
     const QString parent = info.dir().dirName();
-    const QStringList generic { "downloads", "download", "comics", "manga", "images", "pictures", "만화", "다운로드", "미분류", "unidentified", "temp" };
-    if (!generic.contains(parent.toCaseFolded()))
+    const bool root = !libraryRoot.isEmpty() && (QDir::cleanPath(info.dir().absolutePath()) == QDir::cleanPath(QFileInfo(libraryRoot).absoluteFilePath()) || QDir::cleanPath(info.absoluteFilePath()) == QDir::cleanPath(QFileInfo(libraryRoot).absoluteFilePath()));
+    if (!root && !genericPathName(parent))
         append(Suggestion::Author, parent, tr("부모 폴더 이름 힌트 — 작가가 아닐 수 있습니다."), 0);
     return result;
 }

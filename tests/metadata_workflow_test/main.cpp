@@ -69,6 +69,7 @@ private slots:
     void provenanceFailureRollsBackMetadata();
     void hintQueriesAndRetryCancellation();
     void automaticSelectionRequiresAgreement();
+    void ocrReviewCarriesEvidenceAndResets();
 
 private:
     PendingReply *attachReply(YACReaderMetadataLookupDialog &dialog);
@@ -77,6 +78,25 @@ private:
     QString connectionName;
     QSqlDatabase database;
 };
+
+void MetadataWorkflowTest::ocrReviewCarriesEvidenceAndResets()
+{
+    YACReaderMetadataLookupDialog dialog;
+    dialog.setComic(directory.path(), 1, "archive.cbz", "", "", "");
+    const QString evidence = "제목: 星空 (1, 8페이지)\n작가: Alice Example (1, 8페이지)";
+    dialog.prepareOcrSearch("星空", "Alice Example", 8, { }, { "Example Press" }, false, evidence);
+    QCOMPARE(dialog.searchEdit->text(), QString("星空"));
+    QCOMPARE(dialog.authorEdit->text(), QString("Alice Example"));
+    QVERIFY(dialog.ocrEvidenceLabel->text().contains(evidence));
+    QVERIFY(!dialog.ocrEvidenceLabel->isHidden());
+    QVERIFY(dialog.activeReply == nullptr);
+    QVERIFY(!dialog.buttonBox->button(QDialogButtonBox::Apply)->isEnabled());
+    dialog.setComic(directory.path(), 2, "next.cbz", "", "", "");
+    QVERIFY(dialog.ocrEvidenceLabel->text().isEmpty());
+    QVERIFY(dialog.ocrEvidenceLabel->isHidden());
+    QVERIFY(dialog.nameHints.isEmpty());
+    QVERIFY(dialog.publisherHints.isEmpty());
+}
 
 void MetadataWorkflowTest::galleryMetadataKeepsNamespaces()
 {

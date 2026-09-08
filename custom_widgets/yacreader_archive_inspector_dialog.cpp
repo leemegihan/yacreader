@@ -23,6 +23,21 @@
 
 #include <algorithm>
 
+namespace {
+bool usableEvidence(const LocalMetadata::Suggestion &candidate, const LocalMetadata::Result &result, bool automatic, double minimum)
+{
+    for (const auto &evidence : candidate.evidence) {
+        if (evidence.confidence < minimum || (automatic && !evidence.labelled))
+            continue;
+        for (const auto &page : result.pages) {
+            if (page.number == evidence.page && page.error.isEmpty() && !page.reading.uncertainLanguage && (!automatic || (!page.reading.reviewRequired && page.kind != LocalMetadata::PageKind::Unknown)))
+                return true;
+        }
+    }
+    return false;
+}
+}
+
 YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent)
     : QDialog(parent)
 {
@@ -232,16 +247,16 @@ void YACReaderArchiveInspectorDialog::start(bool ocr)
     cancellation = std::make_shared<std::atomic_bool>(false);
     const auto flag = cancellation;
     const auto source = sourcePath;
+    const auto root = libraryPath;
     const int count = pageLimit->value();
     const auto options = ocrOptions();
     const auto output = std::make_shared<LocalMetadata::Result>();
     setBusy(true);
     statusLabel->setText(ocr ? tr("PC에서 앞·뒤 페이지를 읽는 중… 페이지당 시간이 걸릴 수 있습니다. 중지 버튼으로 취소할 수 있습니다.") : tr("앞·뒤 페이지를 불러오는 중…"));
     // Worker owns copied values only; cancelled/stale results never touch the UI.
-    auto *thread = QThread::create([source, count, options, flag, output, ocr] {
+    auto *thread = QThread::create([source, root, count, options, flag, output, ocr] {
         *output = ocr ? LocalMetadata::analyze(source, count, options, flag) : LocalMetadata::readPages(source, count, flag);
-        if (!ocr)
-            output->suggestions = LocalMetadata::suggest(output->pages, source);
+        output->suggestions = LocalMetadata::suggest(output->pages, source, root);
     });
     connect(thread, &QThread::finished, this, [this, flag, output, ocr] {
         if (flag->load() || flag != cancellation)
@@ -269,7 +284,7 @@ void YACReaderArchiveInspectorDialog::showResult(const LocalMetadata::Result &va
     for (const auto &candidate : result.suggestions) {
         const auto field = candidate.field == LocalMetadata::Suggestion::Title ? tr("제목") : candidate.field == LocalMetadata::Suggestion::Author ? tr("작가")
                                                                                                                                                    : tr("발행자·서클");
-        const auto source = candidate.page > 0 ? tr("%1페이지").arg(candidate.page) : tr("이름 힌트 · 낮은 신뢰");
+        const auto source = LocalMetadata::suggestionSource(candidate) + (candidate.page > 0 && !candidate.labelled ? tr(" · 추정") : QString());
         auto *item = new QListWidgetItem(QStringLiteral("[%1 · %2] %3").arg(field, source, candidate.value), candidateList);
         item->setToolTip(candidate.reason);
     }
@@ -278,10 +293,12 @@ void YACReaderArchiveInspectorDialog::showResult(const LocalMetadata::Result &va
     for (const auto field : { LocalMetadata::Suggestion::Title, LocalMetadata::Suggestion::Author, LocalMetadata::Suggestion::Publisher }) {
         QStringList values;
         for (const auto &candidate : result.suggestions) {
-            const auto evidence = std::find_if(result.pages.cbegin(), result.pages.cend(), [&](const LocalMetadata::Page &page) { return page.number == candidate.page; });
-            if (evidence != result.pages.cend() && evidence->reading.reviewRequired)
-                continue;
-            if (candidate.field == field && candidate.labelled && candidate.page > 0 && (candidate.confidence < 0 || candidate.confidence >= 45) && !values.contains(candidate.value, Qt::CaseInsensitive))
+            const bool needsReview = std::any_of(candidate.evidence.cbegin(), candidate.evidence.cend(), [&](const LocalMetadata::SuggestionEvidence &evidence) {
+                return std::any_of(result.pages.cbegin(), result.pages.cend(), [&](const LocalMetadata::Page &page) {
+                    return page.number == evidence.page && (page.reading.reviewRequired || page.reading.uncertainLanguage || !page.error.isEmpty());
+                });
+            });
+            if (!needsReview && candidate.field == field && candidate.labelled && candidate.page > 0 && (candidate.confidence < 0 || candidate.confidence >= 45) && !values.contains(candidate.value, Qt::CaseInsensitive))
                 values.append(candidate.value);
         }
         auto *edit = field == LocalMetadata::Suggestion::Title ? titleEdit : field == LocalMetadata::Suggestion::Author ? authorEdit
@@ -374,7 +391,7 @@ void YACReaderArchiveInspectorDialog::recognizeRegion()
         for (auto &line : page.reading.lines)
             line.bounds = QRect();
         page.kind = LocalMetadata::classifyPage(page.text, page.number);
-        updated.suggestions = LocalMetadata::suggest(updated.pages, sourcePath);
+        updated.suggestions = LocalMetadata::suggest(updated.pages, sourcePath, libraryPath);
         showResult(updated);
         pageList->setCurrentRow(row);
         setBusy(false);
@@ -391,7 +408,7 @@ void YACReaderArchiveInspectorDialog::requestSearch(bool automatic)
     if (automatic) {
         QStringList titles;
         for (const auto &candidate : result.suggestions) {
-            if (candidate.field != LocalMetadata::Suggestion::Title || !candidate.labelled || candidate.page <= 0)
+            if (candidate.field != LocalMetadata::Suggestion::Title || candidate.page <= 0)
                 continue;
             if (!titles.contains(candidate.value))
                 titles.append(candidate.value);
@@ -399,25 +416,46 @@ void YACReaderArchiveInspectorDialog::requestSearch(bool automatic)
         if (titles.size() != 1)
             return;
         bool supported = false;
-        for (const auto &page : result.pages) {
-            if (page.kind == LocalMetadata::PageKind::Unknown || page.reading.reviewRequired || page.reading.uncertainLanguage || !page.error.isEmpty())
-                continue;
-            for (const auto &candidate : result.suggestions)
-                supported = supported || (candidate.field == LocalMetadata::Suggestion::Title && candidate.page == page.number && candidate.confidence >= 50);
-        }
+        for (const auto &candidate : result.suggestions)
+            supported = supported || (candidate.field == LocalMetadata::Suggestion::Title && usableEvidence(candidate, result, true, 50));
         if (!supported)
             return;
+    }
+    auto title = titleEdit->text().trimmed();
+    auto author = authorEdit->text().trimmed();
+    bool proposed = false;
+    // An explicit click can take unambiguous OCR candidates to a review form.
+    // It does not silently send unreviewed neural/layout candidates to a site.
+    auto propose = [&](LocalMetadata::Suggestion::Field field, QString &value) {
+        if (!value.isEmpty())
+            return true;
+        QStringList candidates;
+        for (const auto &candidate : result.suggestions) {
+            if (candidate.field == field && usableEvidence(candidate, result, false, 50) && !candidates.contains(candidate.value, Qt::CaseInsensitive))
+                candidates.append(candidate.value);
+        }
+        if (candidates.size() > 1)
+            return false;
+        if (candidates.size() == 1) {
+            value = candidates.first();
+            proposed = true;
+        }
+        return true;
+    };
+    if (!automatic && (!propose(LocalMetadata::Suggestion::Title, title) || !propose(LocalMetadata::Suggestion::Author, author))) {
+        statusLabel->setText(tr("서로 다른 제목 또는 작가 후보가 있습니다. 사용할 후보를 두 번 클릭하거나 직접 입력한 뒤 대조해 주세요."));
+        return;
     }
     QStringList hints, publishers;
     for (const auto &candidate : result.suggestions) {
         if (candidate.field == LocalMetadata::Suggestion::Author && candidate.page == 0 && !hints.contains(candidate.value))
             hints.append(candidate.value);
-        if (candidate.field == LocalMetadata::Suggestion::Publisher && !publishers.contains(candidate.value))
+        if (candidate.field == LocalMetadata::Suggestion::Publisher && usableEvidence(candidate, result, false, 50) && !publishers.contains(candidate.value))
             publishers.append(candidate.value);
     }
     if (!publisherEdit->text().trimmed().isEmpty() && !publishers.contains(publisherEdit->text().trimmed()))
         publishers.prepend(publisherEdit->text().trimmed());
-    if (titleEdit->text().trimmed().isEmpty() && authorEdit->text().trimmed().isEmpty() && hints.isEmpty()) {
+    if (title.isEmpty() && author.isEmpty() && hints.isEmpty()) {
         if (!automatic)
             statusLabel->setText(tr("대조할 제목이나 작가 후보를 선택해 주세요."));
         return;
@@ -425,11 +463,16 @@ void YACReaderArchiveInspectorDialog::requestSearch(bool automatic)
     automaticSearchDone = true;
     const auto path = libraryPath;
     const auto id = comicInfoId;
-    const auto title = titleEdit->text().trimmed();
-    const auto author = authorEdit->text().trimmed();
+    QStringList summary;
+    for (const auto &candidate : result.suggestions) {
+        const auto selected = candidate.field == LocalMetadata::Suggestion::Title ? title : candidate.field == LocalMetadata::Suggestion::Author ? author
+                                                                                                                                                 : QString();
+        if (!selected.isEmpty() && candidate.value.compare(selected, Qt::CaseInsensitive) == 0 && candidate.page > 0)
+            summary.append(tr("%1: %2 (%3%4)").arg(candidate.field == LocalMetadata::Suggestion::Title ? tr("제목") : tr("작가"), candidate.value, LocalMetadata::suggestionSource(candidate), candidate.labelled ? QString() : tr(" · 배치로 추정")));
+    }
     const int pages = result.pageCount;
     reject();
-    emit titleSearchRequested(path, id, title, author, pages, hints, publishers, true);
+    emit titleSearchRequested(path, id, title, author, pages, hints, publishers, !proposed, summary.join(QLatin1Char('\n')));
 }
 
 void YACReaderArchiveInspectorDialog::save()

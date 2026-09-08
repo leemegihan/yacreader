@@ -121,6 +121,12 @@ private slots:
     void automaticQueryUsesOnlyStrongCredits();
     void realMultilingualColophon();
     void neuralResponseAndReview();
+    void coverTitlesAndCombinedEvidence();
+    void coverLayoutRejectsUnrelatedText();
+    void nameHintsExcludeLibraryRoots();
+    void neuralCandidatesOpenReviewBeforeSearch();
+    void conflictingCandidatesRequireSelection();
+    void realNeuralOcr_data();
     void realNeuralOcr();
     void folderScanAndMetadataPreservation();
     void rootImageFolderSurvivesRescan();
@@ -633,18 +639,197 @@ void LocalMetadataTest::realNeuralOcr()
         QSKIP("The neural Windows package job requires this test.");
     auto options = LocalMetadata::defaultOcrOptions();
     options.neural = true;
-    options.language = "kor+eng";
-    QImage image(QCoreApplication::applicationDirPath() + QStringLiteral("/ocr-colophon-kor.png"));
+    QFETCH(QString, language);
+    QFETCH(QString, fixture);
+    QFETCH(QString, title);
+    QFETCH(QString, credit);
+    options.language = language;
+    QImage image(QCoreApplication::applicationDirPath() + "/ocr-colophon-" + fixture + ".png");
     QVERIFY(!image.isNull());
     const auto reading = LocalMetadata::recognizePage(image, options, std::make_shared<std::atomic_bool>(false));
     QVERIFY2(reading.error.isEmpty(), qPrintable(reading.error));
     QVERIFY(reading.reviewRequired);
     QString compact = reading.text;
     compact.remove(QRegularExpression(QStringLiteral("\\s+")));
-    QVERIFY2(compact.contains(QStringLiteral("푸른하늘")), qPrintable(reading.text));
-    QVERIFY2(compact.contains(QStringLiteral("홍길동")), qPrintable(reading.text));
+    QVERIFY2(compact.contains(title), qPrintable(reading.text));
+    QVERIFY2(compact.contains(credit), qPrintable(reading.text));
     auto cancelled = std::make_shared<std::atomic_bool>(true);
     QVERIFY(LocalMetadata::recognizePage(image, options, cancelled).text.isEmpty());
+}
+
+void LocalMetadataTest::realNeuralOcr_data()
+{
+    QTest::addColumn<QString>("language");
+    QTest::addColumn<QString>("fixture");
+    QTest::addColumn<QString>("title");
+    QTest::addColumn<QString>("credit");
+    QTest::newRow("Korean") << QString("kor+eng") << QString("kor") << QString("푸른하늘") << QString("홍길동");
+    QTest::newRow("Japanese") << QString("jpn+eng") << QString("jpn") << QString("青い空") << QString("見本太郎");
+    QTest::newRow("Auto-Korean") << QString("auto") << QString("kor") << QString("푸른하늘") << QString("홍길동");
+    QTest::newRow("Auto-Japanese") << QString("auto") << QString("jpn") << QString("青い空") << QString("見本太郎");
+}
+
+namespace {
+LocalMetadata::Page detectedCover()
+{
+    LocalMetadata::Page page;
+    page.number = 1;
+    page.reading.reviewRequired = true;
+    // Deliberately reverse detector order. Original boxes define Japanese
+    // right-to-left columns even when OCR returns the left column first.
+    page.reading.lines = { { "図書館", 92, QRect(680, 70, 100, 340) }, { "星降る夜の", 94, QRect(830, 50, 90, 550) }, { "著者：青木そら", 95, QRect(60, 1300, 270, 35) } };
+    for (const auto &line : page.reading.lines)
+        page.text += line.text + QLatin1Char('\n');
+    return page;
+}
+LocalMetadata::Page detectedColophon()
+{
+    LocalMetadata::Page page;
+    page.number = 8;
+    page.kind = LocalMetadata::PageKind::Colophon;
+    page.reading.reviewRequired = true;
+    page.reading.lines = { { "タイトル：星降る夜の図書館", 96, QRect(100, 500, 400, 30) }, { "著者：青木そら", 97, QRect(100, 550, 240, 30) }, { "発行所：月のアトリエ", 95, QRect(100, 600, 280, 30) }, { "翻訳：橋本ゆき", 95, QRect(100, 650, 240, 30) }, { "奥付", 95, QRect(100, 450, 100, 35) } };
+    for (const auto &line : page.reading.lines)
+        page.text += line.text + QLatin1Char('\n');
+    return page;
+}
+}
+
+void LocalMetadataTest::coverTitlesAndCombinedEvidence()
+{
+    const auto cover = detectedCover();
+    const auto colophon = detectedColophon();
+    auto candidates = LocalMetadata::suggest({ cover }, QString());
+    QCOMPARE(candidates.size(), 2);
+    QCOMPARE(candidates.last().value, QString("星降る夜の図書館"));
+    QVERIFY(!candidates.last().labelled);
+    QCOMPARE(candidates.last().confidence, 92.0);
+    auto slanted = cover;
+    slanted.reading.lines.last().bounds = QRect(60, 1300, 270, 110);
+    QCOMPARE(LocalMetadata::suggest({ slanted }, QString()).last().value, QString("星降る夜の図書館"));
+    candidates = LocalMetadata::suggest({ cover, colophon }, "/TestLibrary/02_JP_Archive.cbz");
+    QCOMPARE(candidates.size(), 3);
+    for (const auto &candidate : candidates) {
+        if (candidate.field == LocalMetadata::Suggestion::Publisher) {
+            QCOMPARE(candidate.value, QString("月のアトリエ"));
+            QCOMPARE(candidate.evidence.size(), 1);
+        } else {
+            QCOMPARE(candidate.evidence.size(), 2);
+            QVERIFY(candidate.labelled);
+            QCOMPARE(candidate.page, 8);
+            QVERIFY(LocalMetadata::suggestionSource(candidate).contains("1, 8"));
+        }
+    }
+    YACReaderArchiveInspectorDialog dialog;
+    LocalMetadata::Result result;
+    result.pages = { cover, colophon };
+    result.suggestions = candidates;
+    dialog.showResult(result);
+    QCOMPARE(dialog.candidateList->count(), 3);
+    QVERIFY(dialog.titleEdit->text().isEmpty());
+    QVERIFY(dialog.authorEdit->text().isEmpty());
+
+    auto horizontal = cover;
+    horizontal.text = "비 오는 날의\n우체국\n글·그림 김하늘";
+    horizontal.reading.lines = { { "비 오는 날의", 92, QRect(100, 70, 600, 90) }, { "우체국", 93, QRect(150, 180, 400, 90) }, { "글·그림 김하늘", 95, QRect(100, 1300, 300, 30) } };
+    QCOMPARE(LocalMetadata::suggest({ horizontal }, QString()).last().value, QString("비 오는 날의 우체국"));
+}
+
+void LocalMetadataTest::coverLayoutRejectsUnrelatedText()
+{
+    auto noTitle = [](const LocalMetadata::Page &page) {
+        for (const auto &candidate : LocalMetadata::suggest({ page }, QString()))
+            if (candidate.field == LocalMetadata::Suggestion::Title)
+                return false;
+        return true;
+    };
+    auto page = detectedCover();
+    page.number = 2;
+    QVERIFY(noTitle(page));
+    page = detectedCover();
+    for (auto &line : page.reading.lines)
+        line.bounds = QRect(); // Crop re-read must not mix coordinate systems.
+    QVERIFY(noTitle(page));
+    page = detectedCover();
+    page.reading.lines[0].bounds.moveTop(850); // Unrelated column.
+    QVERIFY(noTitle(page));
+    page = detectedCover();
+    page.error = "OCR failed";
+    QVERIFY(noTitle(page));
+    page = detectedCover();
+    page.reading.lines.removeLast(); // No detected author credit.
+    QVERIFY(noTitle(page));
+    page = detectedCover();
+    page.reading.lines[0].confidence = 20;
+    page.reading.lines[1].confidence = 20;
+    QVERIFY(noTitle(page));
+    page = detectedCover();
+    page.reading.lines[0].text = "ここで待とう。";
+    page.reading.lines[1].text = "明日は晴れる？";
+    QVERIFY(noTitle(page));
+}
+
+void LocalMetadataTest::nameHintsExcludeLibraryRoots()
+{
+    QVERIFY(LocalMetadata::suggest({ }, "/TestLibrary/02_JP_Archive.cbz").isEmpty());
+    QVERIFY(LocalMetadata::suggest({ }, QString()).isEmpty());
+    const auto rootHints = LocalMetadata::suggest({ }, "/My personal collection/Evening.cbz", "/My personal collection");
+    QCOMPARE(rootHints.size(), 1);
+    QCOMPARE(rootHints.first().field, LocalMetadata::Suggestion::Title);
+    const auto authorHints = LocalMetadata::suggest({ }, "/Library/青木そら/Evening.cbz", "/Library");
+    QCOMPARE(authorHints.last().value, QString("青木そら"));
+    QCOMPARE(authorHints.last().page, 0);
+    const auto bracket = LocalMetadata::suggest({ }, "/Library/[Alice Example] Evening.cbz", "/Library");
+    QCOMPARE(bracket.first().value, QString("Alice Example"));
+    const auto languageMarker = LocalMetadata::suggest({ }, "/downloads/[Japanese] Evening.cbz");
+    QCOMPARE(languageMarker.size(), 1);
+    QCOMPARE(languageMarker.first().field, LocalMetadata::Suggestion::Title);
+    QTemporaryDir temporary;
+    QVERIFY(QDir().mkpath(temporary.filePath("My collection/01_KO_Folder")));
+    QVERIFY(LocalMetadata::suggest({ }, temporary.filePath("My collection/01_KO_Folder"), temporary.filePath("My collection")).isEmpty());
+}
+
+void LocalMetadataTest::neuralCandidatesOpenReviewBeforeSearch()
+{
+    YACReaderArchiveInspectorDialog dialog;
+    LocalMetadata::Result result;
+    result.pages = { detectedCover(), detectedColophon() };
+    result.pageCount = 8;
+    result.suggestions = LocalMetadata::suggest(result.pages, QString());
+    dialog.showResult(result);
+    QSignalSpy requests(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    dialog.autoSearch->setChecked(true);
+    dialog.requestSearch(true);
+    QCOMPARE(requests.count(), 0);
+    dialog.requestSearch(false);
+    QCOMPARE(requests.count(), 1);
+    QCOMPARE(requests.first().at(2).toString(), QString("星降る夜の図書館"));
+    QCOMPARE(requests.first().at(3).toString(), QString("青木そら"));
+    QVERIFY(!requests.first().at(7).toBool()); // Open review; no HTTP request.
+    QVERIFY(requests.first().at(8).toString().contains("1, 8"));
+    QCOMPARE(requests.first().at(6).toStringList(), QStringList { "月のアトリエ" });
+}
+
+void LocalMetadataTest::conflictingCandidatesRequireSelection()
+{
+    YACReaderArchiveInspectorDialog dialog;
+    LocalMetadata::Result result;
+    auto other = detectedColophon();
+    other.number = 7;
+    other.text.replace("青木そら", "青木うみ");
+    other.reading.lines[1].text = "著者：青木うみ";
+    result.pages = { detectedCover(), detectedColophon(), other };
+    result.suggestions = LocalMetadata::suggest(result.pages, QString());
+    dialog.showResult(result);
+    QSignalSpy requests(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    dialog.requestSearch(false);
+    QCOMPARE(requests.count(), 0);
+    QVERIFY(dialog.statusLabel->text().contains("서로 다른"));
+    dialog.authorEdit->setText("青木そら");
+    dialog.titleEdit->setText("星降る夜の図書館");
+    dialog.requestSearch(false);
+    QCOMPARE(requests.count(), 1);
+    QVERIFY(requests.first().at(7).toBool()); // Explicit values can be queried.
 }
 
 void LocalMetadataTest::folderScanAndMetadataPreservation()
