@@ -160,7 +160,7 @@ CTest 묶음과 설치 검증을 통과했다. 로컬 OCR 테스트는 실제 �
 ## Candidate consolidation and review handoff (2026-09-08)
 
 - First-page neural text boxes can propose a title without a title label when a
-  readable author credit is present and one to three larger text regions form a
+  readable author credit is present and up to eight larger text regions form a
   compact, consistent layout. Vertical columns use right-to-left order;
   horizontal lines use top-to-bottom order. Low-confidence pieces, sentence
   punctuation, mixed orientations and distant regions veto this inference.
@@ -187,3 +187,51 @@ CTest 묶음과 설치 검증을 통과했다. 로컬 OCR 테스트는 실제 �
   conflicting identities and review-only handoff. Packaged neural checks now
   include Japanese, Korean, and automatic language choice on both synthetic
   colophons. Windows run results are recorded in `manga-library-progress.md`.
+
+## 작가 연결과 처리 속도 개선 (2026-09-08)
+
+- `김하늘 지음`, 이름 바로 아래의 `지음`, `誌名`, `発行／著者` 표기를 지원한다.
+  두 역할을 함께 쓴 경우 슬래시 양쪽을 발행자/작가로 구분한다. 읽히지 않은 이름을
+  출판사나 파일명으로 채워 넣지 않는다. 가까운 두 줄의 필명은 위치·글자 크기 근거가
+  있을 때만 묶는다. 짧은 역할 단어 뒤에 나온 대사를 작가명으로 연결하지 않는다.
+- 영역 OCR은 한 작품에서 선택한 최대 12장을 한 프로세스로 읽으며 탐지/인식 모델을
+  재사용한다. 인식할 영역은 최대 8개씩 묶는다. 작품을 다시 읽거나 선택 영역을 다시
+  읽으면 새 작업이 시작되므로 모델 준비 비용이 다시 발생한다.
+- `CPU 균형`은 최대 8스레드, `CPU 여유`는 4, `CPU 최대`는 16이다. 실제 CPU의
+  논리 프로세서 수를 넘지 않는다. 더 많은 스레드가 언제나 더 빠른 것은 아니다.
+  언어 자동 비교는 계속 일본어/한국어 두 모델을 사용한다.
+- 진행 표시에는 완료한 페이지 수, 모델 준비/탐지/인식/판권 재검사 단계와 경과 시간을
+  표시한다. 중지와 작품 전환 시 이전 작업의 표시 및 결과는 무시한다.
+- 기울어진 글자 영역을 평평하게 보정한다. 똑바로 세워진 한글 세로쓰기는 글자 간격을
+  분리할 수 있는 경우 가로로 재배열한 결과도 비교한다. 모든 세로쓰기/장식 글씨를
+  처리하는 것은 아니다. 작은 판권 라벨 아래는 제한된 영역만 확대해 다시 탐지한다.
+- 점수는 **인식된 글자의 점수**다. 탐지에서 빠진 글자까지 정확하다는 뜻이 아니므로
+  화면에 누락 영역이 평가되지 않는다고 명시한다. 모든 영역 OCR 후보는 계속 직접
+  확인해야 하며, 자동 저장/자동 외부 검색의 근거로 승격하지 않는다.
+
+NVIDIA 선택 구성 요소는 기본 앱의 `ocr-neural` 모델을 공유하고, GPU 실행 환경을
+`ocr-neural-gpu`에 별도로 설치한다. 추가 설치 후 앱을 다시 열면 처리 장치에서
+`NVIDIA GPU · 실패 시 CPU`를 고를 수 있다. GPU가 없거나 실행에 실패하면 CPU로
+다시 읽고 실제 처리 장치와 전환 사실을 표시한다. 기본 CPU 설치만으로도 사용할 수 있다.
+CUDA 11.8용 공식 PaddlePaddle 3.2.2를 사용하며 사용자 Python 설치를 변경하지 않는다.
+자동 검증의 Windows 실행기는 NVIDIA GPU가 없으므로 설치/이동/CPU 전환을 확인한다.
+실제 GPU 인식과 속도는 사용자 PC에서 별도로 확인해야 한다. 검증 결과와 설치본 정보는
+`manga-library-progress.md`에 기록한다.
+
+### NVIDIA 구성 요소 설치와 확인
+
+1. 두 앱을 종료하고 기본 `10.3.0.30` Windows 설치본을 설치한다.
+   기본 설치본만으로 CPU OCR을 사용할 수 있다.
+2. `YACReader-NVIDIA-OCR-Part-1.zip`부터 `Part-5.zip`까지 모두 다운로드한다.
+   다섯 ZIP을 **같은 폴더에** 풀면 설치 EXE 하나와 번호가 붙은 BIN 다섯 개가 나온다.
+   ZIP마다 별도 하위 폴더에 풀었다면 EXE와 BIN을 모두 한 폴더로 모은다.
+3. `YACReader-NVIDIA-OCR-3-win64.exe`를 실행하고 기본 YACReader와 **같은 설치 폴더**를
+   선택한다. 설치 프로그램이 BIN을 순서대로 읽으므로 BIN을 따로 실행하지 않는다.
+4. 앱을 다시 열고 `영역 탐지 OCR`과 `NVIDIA GPU · 실패 시 CPU`를 선택한다.
+   같은 실제 작품의 같은 페이지로 작가 후보와 처리 시간을 비교한다. 결과에 표시된
+   실제 장치가 `NVIDIA GPU`인지 확인한다. CPU 전환 경고가 있으면 해당 문구를 확인한다.
+
+추가 구성 요소는 압축 상태로 약 2.36GB다. 별도 Python/CUDA 설치 없이 사용할 수 있도록
+실행 환경을 포함한다. Windows 자동 검증에서는 CUDA 지원 빌드, 설치 파일 일치,
+한글·공백 경로 설치와 GPU가 없는 환경의 실제 OCR/CPU 전환을 확인했다.
+실제 NVIDIA 장치에서의 실행 여부와 속도는 이 자동 검증 결과에 포함되지 않는다.
