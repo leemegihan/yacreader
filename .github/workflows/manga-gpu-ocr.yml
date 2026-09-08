@@ -77,11 +77,56 @@ jobs:
           if ($result.device -ne 'cpu' -or $result.warning -notmatch 'GPU unavailable' -or ($result.lines.text -join ' ') -notmatch 'Alice Example' -or $result.error) { throw 'Unexpected GPU-less fallback result' }
           Copy-Item "$base/result.json" ci/win/OutputGpu/CPU-FALLBACK-TEST.json
           Copy-Item ci/win/gpu_contents/BUILD.txt ci/win/OutputGpu/
-          Get-FileHash $exe.FullName -Algorithm SHA256 | Format-List | Out-File ci/win/OutputGpu/SHA256.txt
+          $payload = @(Get-ChildItem ci/win/OutputGpu/* -File | Where-Object { $_.Extension -in @('.exe','.bin') })
+          $slices = @($payload | Where-Object Extension -eq '.bin')
+          if ($slices.Count -ne 5 -or @($slices | Where-Object Length -gt 480000000).Count -ne 0) { throw 'Unexpected GPU volume count/size' }
+          $payload | Get-FileHash -Algorithm SHA256 | Format-List | Out-File ci/win/OutputGpu/SHA256.txt
+          $checksums = @($payload | Sort-Object Name | ForEach-Object {
+            @{ name=$_.Name; size_bytes=$_.Length; sha256=(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() }
+          })
+          ConvertTo-Json -InputObject $checksums | Out-File ci/win/OutputGpu/CHECKSUMS.json -Encoding utf8
       - uses: actions/upload-artifact@v6
         with:
-          name: manga-nvidia-ocr-${{ github.sha }}
-          path: ci/win/OutputGpu/
+          name: manga-nvidia-ocr-part-1-${{ github.sha }}
+          path: |
+            ci/win/OutputGpu/*-1.bin
+            ci/win/OutputGpu/*.exe
+            ci/win/OutputGpu/BUILD.txt
+            ci/win/OutputGpu/SHA256.txt
+            ci/win/OutputGpu/CHECKSUMS.json
+            ci/win/OutputGpu/CPU-FALLBACK-TEST.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v6
+        with:
+          name: manga-nvidia-ocr-part-2-${{ github.sha }}
+          path: |
+            ci/win/OutputGpu/*-2.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v6
+        with:
+          name: manga-nvidia-ocr-part-3-${{ github.sha }}
+          path: |
+            ci/win/OutputGpu/*-3.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v6
+        with:
+          name: manga-nvidia-ocr-part-4-${{ github.sha }}
+          path: |
+            ci/win/OutputGpu/*-4.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v6
+        with:
+          name: manga-nvidia-ocr-part-5-${{ github.sha }}
+          path: |
+            ci/win/OutputGpu/*-5.bin
           if-no-files-found: error
           compression-level: 0
           retention-days: 30

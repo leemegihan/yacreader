@@ -15,6 +15,9 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 Compression=lzma2/fast
 SolidCompression=yes
+DiskSpanning=yes
+DiskSliceSize=480000000
+SlicesPerDisk=1
 PrivilegesRequired=admin
 [Files]
 Source: "gpu_contents\*"; DestDir: "{app}\ocr-neural-gpu"; Flags: ignoreversion recursesubdirs createallsubdirs
