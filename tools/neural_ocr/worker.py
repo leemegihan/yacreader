@@ -244,7 +244,8 @@ def main():
             write_json(progress_path, {'completed': index, 'total': len(pages), 'stage': stage})
     start = time.perf_counter()
     progress('models')
-    engine = Engine(root, args.language, threads, args.device, progress)
+    # Relative model paths preserve Paddle's Windows Unicode-path workaround.
+    engine = Engine(Path('.'), args.language, threads, args.device, progress)
     initialization_ms = round((time.perf_counter() - start) * 1000)
     for index, (image_path, output_path) in enumerate(pages):
         started = time.perf_counter()
