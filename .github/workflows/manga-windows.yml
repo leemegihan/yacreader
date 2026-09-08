@@ -185,6 +185,8 @@ jobs:
         run: |
           python -m pip install -r tools/neural_ocr/requirements.txt
           if ($LASTEXITCODE -ne 0) { throw 'Region OCR dependencies failed' }
+          python tools/neural_ocr/test_worker.py
+          if ($LASTEXITCODE -ne 0) { throw 'Region geometry/batching tests failed' }
           $neural = Join-Path $env:GITHUB_WORKSPACE 'build/bin/ocr-neural'
           New-Item -ItemType Directory -Force $neural | Out-Null
           Copy-Item tools/neural_ocr/worker.py $neural
@@ -200,8 +202,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'PaddleOCR license missing' }
           $env:PATH = "$env:GITHUB_WORKSPACE\dependencies\pdfium\win\x64;$env:PATH"
           $env:YACREADER_REQUIRE_NEURAL_OCR = '1'
-          & build/bin/local_metadata_test.exe neuralResponseAndReview realNeuralOcr -o build/neural-ocr.txt,txt
+          $env:YACREADER_BENCHMARK_NEURAL_OCR = '1'
+          & build/bin/local_metadata_test.exe neuralResponseAndReview realNeuralOcr realNeuralWorkReuse -o build/neural-ocr.txt,txt
           $code = $LASTEXITCODE
+          Remove-Item Env:YACREADER_BENCHMARK_NEURAL_OCR
           Get-Content build/neural-ocr.txt
           if ($code -ne 0) { throw 'Region OCR wrapper failed' }
 
@@ -290,7 +294,7 @@ jobs:
           $env:YACREADER_REQUIRE_NEURAL_OCR = '1'
           Copy-Item 'build/bin/ocr-colophon-*.png' $package
           $env:YACREADER_TEST_CJK_FIXTURES = $package
-          & "$package/local_metadata_test.exe" realOcr croppedCreditOcr realMultilingualColophon neuralResponseAndReview coverTitlesAndCombinedEvidence coverLayoutRejectsUnrelatedText nameHintsExcludeLibraryRoots neuralCandidatesOpenReviewBeforeSearch conflictingCandidatesRequireSelection realNeuralOcr -o "$env:GITHUB_WORKSPACE/build/installed-ocr.txt,txt"
+          & "$package/local_metadata_test.exe" realOcr croppedCreditOcr realMultilingualColophon neuralResponseAndReview coverTitlesAndCombinedEvidence coverLayoutRejectsUnrelatedText nameHintsExcludeLibraryRoots neuralCandidatesOpenReviewBeforeSearch conflictingCandidatesRequireSelection creditSuffixAndCompoundLabels creditGeometryAndDialogue realNeuralOcr realNeuralWorkReuse -o "$env:GITHUB_WORKSPACE/build/installed-ocr.txt,txt"
           $ocrTestExit = $LASTEXITCODE
           Get-Content "$env:GITHUB_WORKSPACE/build/installed-ocr.txt"
           New-Item -ItemType Directory -Force 'build/installed-cjk' | Out-Null

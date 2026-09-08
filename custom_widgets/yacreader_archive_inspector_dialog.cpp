@@ -7,6 +7,7 @@
 #include <QCoreApplication>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -19,6 +20,7 @@
 #include <QSpinBox>
 #include <QSplitter>
 #include <QThread>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -65,6 +67,13 @@ YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent
     quality->addItem(tr("빠른 모델"), false);
     if (QFileInfo::exists(QCoreApplication::applicationDirPath() + QStringLiteral("/ocr-neural/worker.py")))
         quality->addItem(tr("영역 탐지 OCR (시험 · 후보 직접 확인)"), 2);
+    performance = new QComboBox(this);
+    performance->addItem(tr("CPU 균형 · 최대 8스레드"), 8);
+    performance->addItem(tr("CPU 여유 · 최대 4스레드"), 4);
+    performance->addItem(tr("CPU 최대 · 최대 16스레드"), 16);
+    if (QFileInfo::exists(QCoreApplication::applicationDirPath() + QStringLiteral("/ocr-neural-gpu/runtime/python.exe")))
+        performance->addItem(tr("NVIDIA GPU · 실패 시 CPU"), -1);
+    performance->setToolTip(tr("영역 탐지 OCR의 처리 장치를 선택합니다. 스레드를 늘려도 항상 빨라지지는 않습니다."));
     ocrButton = new QPushButton(tr("페이지 글자 읽기"), this);
     cancelButton = new QPushButton(tr("중지"), this);
     auto *controls = new QHBoxLayout;
@@ -142,6 +151,11 @@ YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent
     layout->addWidget(fileLabel);
     layout->addWidget(privacy);
     layout->addLayout(controls);
+    auto *deviceControls = new QHBoxLayout;
+    deviceControls->addWidget(new QLabel(tr("영역 OCR 처리 장치"), this));
+    deviceControls->addWidget(performance);
+    deviceControls->addStretch();
+    layout->addLayout(deviceControls);
     layout->addWidget(statusLabel);
     layout->addWidget(splitter, 1);
     layout->addWidget(new QLabel(tr("이미지에서 제목이나 작가명 부분을 드래그한 뒤 다시 읽어 보세요. 선택하지 않으면 현재 페이지를 읽습니다."), this));
@@ -155,6 +169,7 @@ YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent
         const bool neural = quality->currentData().toInt() == 2;
         textLayout->setEnabled(!neural);
         threshold->setEnabled(!neural);
+        performance->setEnabled(neural);
     });
     connect(ocrButton, &QPushButton::clicked, this, [this] { start(true); });
     connect(regionButton, &QPushButton::clicked, this, &YACReaderArchiveInspectorDialog::recognizeRegion);
@@ -202,6 +217,7 @@ void YACReaderArchiveInspectorDialog::setBusy(bool busy)
     pageLimit->setEnabled(!busy);
     language->setEnabled(!busy);
     quality->setEnabled(!busy);
+    performance->setEnabled(!busy && quality->currentData().toInt() == 2);
     textLayout->setEnabled(!busy && quality->currentData().toInt() != 2);
     rotation->setEnabled(!busy);
     invert->setEnabled(!busy);
@@ -253,19 +269,42 @@ void YACReaderArchiveInspectorDialog::start(bool ocr)
     const auto output = std::make_shared<LocalMetadata::Result>();
     setBusy(true);
     statusLabel->setText(ocr ? tr("PC에서 앞·뒤 페이지를 읽는 중… 페이지당 시간이 걸릴 수 있습니다. 중지 버튼으로 취소할 수 있습니다.") : tr("앞·뒤 페이지를 불러오는 중…"));
+    QElapsedTimer elapsed;
+    elapsed.start();
+    auto relay = std::shared_ptr<OcrProgressRelay>(new OcrProgressRelay, [](OcrProgressRelay *value) { value->deleteLater(); });
+    auto stageText = std::make_shared<QString>(statusLabel->text());
+    connect(relay.get(), &OcrProgressRelay::changed, this, [this, flag, stageText](int completed, int total, const QString &stage) {
+        if (!flag->load() && flag == cancellation)
+            *stageText = tr("%1 / %2장 완료 · %3").arg(completed).arg(total).arg(stage);
+    });
+    auto *ticker = new QTimer(this);
+    connect(ticker, &QTimer::timeout, this, [this, flag, stageText, elapsed, ticker] {
+        if (flag->load() || flag != cancellation) {
+            ticker->stop();
+            ticker->deleteLater();
+            return;
+        }
+        statusLabel->setText(*stageText + tr(" · 경과 %1초").arg(elapsed.elapsed() / 1000));
+    });
+    ticker->start(500);
     // Worker owns copied values only; cancelled/stale results never touch the UI.
-    auto *thread = QThread::create([source, root, count, options, flag, output, ocr] {
-        *output = ocr ? LocalMetadata::analyze(source, count, options, flag) : LocalMetadata::readPages(source, count, flag);
+    auto *thread = QThread::create([source, root, count, options, flag, output, ocr, relay] {
+        const LocalMetadata::Progress progress = [relay](int completed, int total, const QString &stage) { emit relay->changed(completed, total, stage); };
+        *output = ocr ? LocalMetadata::analyze(source, count, options, flag, progress) : LocalMetadata::readPages(source, count, flag);
         output->suggestions = LocalMetadata::suggest(output->pages, source, root);
     });
-    connect(thread, &QThread::finished, this, [this, flag, output, ocr] {
+    connect(thread, &QThread::finished, this, [this, flag, output, ocr, elapsed] {
         if (flag->load() || flag != cancellation)
             return;
         showResult(*output);
+        if (ocr)
+            statusLabel->setText(statusLabel->text() + tr(" · 총 %1초").arg(elapsed.elapsed() / 1000));
         setBusy(false);
         if (ocr)
             requestSearch(true);
     });
+    connect(thread, &QThread::finished, ticker, &QTimer::stop);
+    connect(thread, &QThread::finished, ticker, &QObject::deleteLater);
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
     thread->start();
 }
@@ -327,12 +366,16 @@ void YACReaderArchiveInspectorDialog::showPage(int row)
         return;
     const auto &page = result.pages.at(row);
     imageLabel->setPage(page.image);
-    pageInfo->setText(tr("%1 · %2 · OCR 신뢰도 %3 (정답 확률 아님)%4")
+    pageInfo->setText(tr("%1 · %2 · 인식된 글자 점수 %3 (누락 영역은 평가되지 않음)%4")
                               .arg(LocalMetadata::pageKindName(page.kind), page.reading.language,
                                    page.reading.confidence < 0 ? tr("없음") : QString::number(page.reading.confidence, 'f', 0),
                                    page.reading.uncertainLanguage ? tr(" · 언어 판정 불확실") : QString()));
     if (page.reading.reviewRequired)
         pageInfo->setText(pageInfo->text() + tr(" · 영역 탐지 OCR 시험 결과 — 후보를 직접 선택해 주세요."));
+    if (!page.reading.device.isEmpty())
+        pageInfo->setText(pageInfo->text() + tr(" · %1 · 읽기 %2초 / 모델 준비 %3초").arg(page.reading.device == "gpu:0" ? tr("NVIDIA GPU") : tr("CPU")).arg(page.reading.elapsedMs / 1000.0, 0, 'f', 1).arg(page.reading.initializationMs / 1000.0, 0, 'f', 1));
+    if (!page.reading.warning.isEmpty())
+        pageInfo->setText(pageInfo->text() + QStringLiteral(" · ") + page.reading.warning);
     pageText->setPlainText(page.error.isEmpty() ? page.text : page.error + QStringLiteral("\n\n") + page.text);
 }
 
@@ -340,6 +383,8 @@ LocalMetadata::OcrOptions YACReaderArchiveInspectorDialog::ocrOptions() const
 {
     auto options = LocalMetadata::defaultOcrOptions();
     options.neural = quality->currentData().toInt() == 2;
+    options.gpu = performance->currentData().toInt() == -1;
+    options.cpuThreads = options.gpu ? 8 : performance->currentData().toInt();
     options.language = language->currentData().toString();
     options.vertical = options.language.startsWith("jpn_vert");
     options.segmentation = textLayout->currentData().toInt();

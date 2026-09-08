@@ -15,6 +15,15 @@ class QPushButton;
 class QSpinBox;
 class OcrPageView;
 
+// Shared by the copied worker closure; destruction is queued on the UI thread.
+// Signals remain safe if the dialog closes while a process is being cancelled.
+class OcrProgressRelay : public QObject
+{
+    Q_OBJECT
+signals:
+    void changed(int completed, int total, const QString &stage);
+};
+
 class YACReaderArchiveInspectorDialog : public QDialog
 {
     Q_OBJECT
@@ -60,6 +69,7 @@ private:
     QCheckBox *overwrite;
     QComboBox *language;
     QComboBox *quality;
+    QComboBox *performance;
     QComboBox *textLayout;
     QComboBox *rotation;
     QCheckBox *invert;

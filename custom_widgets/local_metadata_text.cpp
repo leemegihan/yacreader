@@ -23,6 +23,7 @@ enum class Role { None,
                   Title,
                   Author,
                   Publisher,
+                  PublisherAuthor,
                   Date,
                   Contact,
                   Printer,
@@ -38,6 +39,13 @@ QString key(QString text)
 }
 Role role(const QString &text)
 {
+    const auto normalized = key(text);
+    if (QStringList { "誌名", "책명" }.contains(normalized))
+        return Role::Title;
+    if (QStringList { "지음", "지은이", "글쓴이", "글·그림", "글그림" }.contains(normalized))
+        return Role::Author;
+    if (QStringList { "発行著者", "発行作者", "발행저자", "발행작가" }.contains(normalized))
+        return Role::PublisherAuthor;
     static const QMap<QString, Role> roles {
         { "タイトル", Role::Title }, { "作品名", Role::Title }, { "書名", Role::Title }, { "제목", Role::Title }, { "작품명", Role::Title }, { "title", Role::Title }, { "著者", Role::Author }, { "作者", Role::Author }, { "著作", Role::Author }, { "原作", Role::Author }, { "作画", Role::Author }, { "漫画", Role::Author }, { "작가", Role::Author }, { "저자", Role::Author }, { "글그림", Role::Author }, { "글", Role::Author }, { "그림", Role::Author }, { "author", Role::Author }, { "writer", Role::Author }, { "artist", Role::Author }, { "story&art", Role::Author }, { "storyandart", Role::Author }, { "発行者", Role::Publisher }, { "発行所", Role::Publisher }, { "発行", Role::Publisher }, { "サークル", Role::Publisher }, { "발행인", Role::Publisher }, { "발행자", Role::Publisher }, { "출판사", Role::Publisher }, { "publisher", Role::Publisher }, { "circle", Role::Publisher }, { "発行日", Role::Date }, { "発行年月日", Role::Date }, { "발행일", Role::Date }, { "publicationdate", Role::Date }, { "連絡先", Role::Contact }, { "연락처", Role::Contact }, { "contact", Role::Contact }, { "印刷所", Role::Printer }, { "印刷", Role::Printer }, { "인쇄소", Role::Printer }, { "printer", Role::Printer }, { "specialthanks", Role::Thanks }, { "thanks", Role::Thanks }, { "謝辞", Role::Thanks }, { "翻訳", Role::Translator }, { "번역", Role::Translator }, { "식자", Role::Translator }, { "translator", Role::Translator }, { "奥付", Role::Colophon }, { "판권", Role::Colophon }, { "colophon", Role::Colophon }, { "あとがき", Role::Afterword }, { "後書き", Role::Afterword }, { "후기", Role::Afterword }, { "afterword", Role::Afterword }
     };
@@ -46,13 +54,17 @@ Role role(const QString &text)
 struct Label {
     Role role = Role::None;
     QString value;
+    bool suffix = false;
 };
 Label label(const QString &raw)
 {
     const auto line = raw.normalized(QString::NormalizationForm_KC).simplified();
     const auto direct = role(line);
     if (direct != Role::None)
-        return { direct, { } };
+        return { direct, { }, key(line) == QStringLiteral("지음") };
+    const auto suffix = QRegularExpression(QStringLiteral("^(.+?)\\s+(지음|글[·/]그림|著)$")).match(line);
+    if (suffix.hasMatch())
+        return { Role::Author, suffix.captured(1), true };
     const int colon = line.indexOf(QLatin1Char(':'));
     if (colon > 0 && role(line.left(colon)) != Role::None)
         return { role(line.left(colon)), line.mid(colon + 1).trimmed() };
@@ -69,6 +81,96 @@ bool usable(const QString &value)
     for (const auto ch : value)
         letters += ch.isLetter();
     return value.size() >= 2 && value.size() <= 180 && letters >= 2 && !value.contains(QRegularExpression(QStringLiteral("(?:https?://|www\\.|@)"), QRegularExpression::CaseInsensitiveOption));
+}
+
+bool usableCredit(const QString &value, Role field)
+{
+    if (!usable(value))
+        return false;
+    if (field == Role::Title)
+        return true;
+    // A readable sentence is not a person's name. Do not promote stray OCR
+    // role words in dialogue to identity evidence.
+    static const QRegularExpression sentence(QStringLiteral("[!?！？。…]|(?:합니다|입니다|습니다|할게요|할까요|하세요|해요|어요|아요|네요|예요|이에요)[.!。]*$"));
+    return value.size() <= 80 && !sentence.match(value.trimmed()).hasMatch();
+}
+
+struct Credit {
+    Role role = Role::None;
+    QString value;
+    QRect bounds;
+    double confidence = -1;
+    QString layoutText;
+};
+
+QVector<Credit> credits(const Page &page)
+{
+    const auto text = page.text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    auto lineFor = [&](int i) {
+        for (const auto &line : page.reading.lines)
+            if (line.text == text.at(i))
+                return line;
+        return TextLine { text.at(i), -1, { } };
+    };
+    auto close = [](const QRect &a, const QRect &b, bool above) {
+        if (a.isEmpty() || b.isEmpty())
+            return true; // Legacy plain-text fixtures have no layout evidence.
+        const int unit = qMax(a.height(), b.height());
+        const bool overlap = b.left() <= a.right() && a.left() <= b.right();
+        if (above)
+            return overlap && b.top() < a.top() && a.top() - b.bottom() <= 2 * unit;
+        return (overlap && b.top() >= a.top() && b.top() - a.bottom() <= 2 * unit) || (b.left() >= a.right() && b.left() - a.right() <= 3 * unit && b.top() <= a.bottom() && a.top() <= b.bottom());
+    };
+    const auto kind = classifyPage(page.text, page.number);
+    QVector<Credit> result;
+    for (int i = 0; i < text.size(); ++i) {
+        auto marked = label(text.at(i));
+        if (marked.role != Role::Title && marked.role != Role::Author && marked.role != Role::Publisher && marked.role != Role::PublisherAuthor)
+            continue;
+        const auto anchor = lineFor(i);
+        QRect bounds = anchor.bounds;
+        double confidence = anchor.confidence;
+        QString layoutText = anchor.text;
+        if (marked.value.isEmpty()) {
+            // Short role words can themselves be ordinary speech or a false
+            // recognition of art. Require a metadata context for these words.
+            if (kind == PageKind::Unknown && QStringList { "글", "그림", "漫画" }.contains(key(text.at(i))))
+                continue;
+            const int next = marked.suffix ? i - 1 : i + 1;
+            if (next < 0 || next >= text.size() || label(text.at(next)).role != Role::None)
+                continue;
+            const auto valueLine = lineFor(next);
+            if (!close(anchor.bounds, valueLine.bounds, marked.suffix))
+                continue;
+            marked.value = valueLine.text;
+            bounds = bounds.united(valueLine.bounds);
+            confidence = valueLine.confidence;
+            layoutText = valueLine.text;
+            // Korean covers may put family/pen-name components on two lines
+            // immediately above "지음". Geometry is required for this extension.
+            if (marked.suffix && next > 0 && !valueLine.bounds.isEmpty()) {
+                const auto previous = lineFor(next - 1);
+                if (label(previous.text).role == Role::None && !previous.bounds.isEmpty() && close(valueLine.bounds, previous.bounds, true) && previous.bounds.height() <= 1.5 * valueLine.bounds.height() && valueLine.bounds.height() <= 1.5 * previous.bounds.height() && usableCredit(previous.text, Role::Author)) {
+                    marked.value = previous.text + QLatin1Char(' ') + marked.value;
+                    bounds = bounds.united(previous.bounds);
+                    confidence = qMin(confidence, previous.confidence);
+                }
+            }
+        }
+        if (marked.role == Role::PublisherAuthor) {
+            // Order follows the two labels. One missing side must not turn
+            // the publisher into an author (or vice versa).
+            const auto names = marked.value.split(QRegularExpression(QStringLiteral("[/／]")), Qt::KeepEmptyParts);
+            if (names.size() == 2) {
+                if (usableCredit(names[0].trimmed(), Role::Publisher))
+                    result.append({ Role::Publisher, names[0].trimmed(), bounds, confidence, layoutText });
+                if (usableCredit(names[1].trimmed(), Role::Author))
+                    result.append({ Role::Author, names[1].trimmed(), bounds, confidence, layoutText });
+            }
+        } else if (usableCredit(marked.value, marked.role))
+            result.append({ marked.role, marked.value, bounds, confidence, layoutText });
+    }
+    return result;
 }
 
 bool genericPathName(QString value)
@@ -90,19 +192,18 @@ QVector<TextLine> coverTitleLines(const Page &page)
     if (page.number != 1 || !page.error.isEmpty() || page.reading.uncertainLanguage || classifyPage(page.text, page.number) != PageKind::Unknown)
         return { };
     int creditSize = 0;
-    for (const auto &line : page.reading.lines) {
-        const auto credit = label(line.text);
-        if (credit.role == Role::Author && usable(credit.value) && line.confidence >= 70 && !line.bounds.isEmpty()) {
+    for (const auto &credit : credits(page)) {
+        if (credit.role == Role::Author && credit.confidence >= 70 && !credit.bounds.isEmpty()) {
             // A slanted credit has an inflated bounding-box height. Estimate
             // its glyph size from the advance as well, so it cannot dwarf the
             // actual cover lettering merely because it is on an angle.
             double units = 0;
-            for (const auto ch : line.text)
+            for (const auto ch : credit.layoutText)
                 units += ch.isSpace() ? 0.3 : ch.unicode() >= 0x2e80 ? 1.0
                                                                      : 0.55;
-            const bool vertical = line.bounds.height() > 1.5 * line.bounds.width();
-            const int advance = vertical ? line.bounds.height() : line.bounds.width();
-            const int size = qMin(qMin(line.bounds.width(), line.bounds.height()), int(std::ceil(advance / qMax(1.0, units))));
+            const bool vertical = credit.bounds.height() > 1.5 * credit.bounds.width();
+            const int advance = vertical ? credit.bounds.height() : credit.bounds.width();
+            const int size = qMin(qMin(credit.bounds.width(), credit.bounds.height()), int(std::ceil(advance / qMax(1.0, units))));
             creditSize = qMax(creditSize, size);
         }
     }
@@ -120,7 +221,7 @@ QVector<TextLine> coverTitleLines(const Page &page)
             return { };
         titles.append(line);
     }
-    if (titles.isEmpty() || titles.size() > 3)
+    if (titles.isEmpty() || titles.size() > 8)
         return { };
     const bool vertical = titles.first().bounds.height() > 1.5 * titles.first().bounds.width();
     for (const auto &line : titles)
@@ -157,7 +258,7 @@ PageKind classifyPage(const QString &text, int pageNumber)
     QSet<int> roles;
     for (const auto &line : text.split(QLatin1Char('\n'), Qt::SkipEmptyParts))
         roles.insert(int(label(line).role));
-    if (roles.contains(int(Role::Colophon)) || ((roles.contains(int(Role::Title)) || roles.contains(int(Role::Author)) || roles.contains(int(Role::Publisher))) && (roles.contains(int(Role::Date)) || roles.contains(int(Role::Contact)) || roles.contains(int(Role::Printer)))))
+    if (roles.contains(int(Role::Colophon)) || ((roles.contains(int(Role::Title)) || roles.contains(int(Role::Author)) || roles.contains(int(Role::Publisher)) || roles.contains(int(Role::PublisherAuthor))) && (roles.contains(int(Role::Date)) || roles.contains(int(Role::Contact)) || roles.contains(int(Role::Printer)))))
         return PageKind::Colophon;
     // Publication-date labels are often missed. Two explicit identity fields
     // on a later page still provide a usable credit-page candidate.
@@ -231,45 +332,11 @@ QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePat
         result.append(suggestion);
     };
     for (const auto &page : pages) {
-        const auto lines = page.text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-        for (int i = 0; i < lines.size(); ++i) {
-            auto credit = label(lines.at(i));
-            if (credit.role != Role::Title && credit.role != Role::Author && credit.role != Role::Publisher)
-                continue;
-            if (credit.value.isEmpty()) {
-                // A new label is a hard boundary. Never consume a contact,
-                // printer or thanks entry as the preceding title/author.
-                if (i + 1 >= lines.size() || label(lines.at(i + 1)).role != Role::None)
-                    continue;
-                auto boundsFor = [&](const QString &text) {
-                    for (const auto &line : page.reading.lines)
-                        if (line.text == text)
-                            return line.bounds;
-                    return QRect();
-                };
-                const auto a = boundsFor(lines.at(i));
-                const auto b = boundsFor(lines.at(i + 1));
-                if (!a.isEmpty() && !b.isEmpty()) {
-                    const bool below = b.top() >= a.top() && b.top() - a.bottom() <= 4 * qMax(a.height(), b.height()) && b.left() <= a.right() && a.left() <= b.right();
-                    const bool beside = b.left() >= a.left() && b.left() - a.right() <= 4 * qMax(a.height(), b.height()) && b.top() <= a.bottom() && a.top() <= b.bottom();
-                    if (!below && !beside)
-                        continue;
-                }
-                credit.value = lines.at(++i);
-            }
+        for (const auto &credit : credits(page)) {
             const auto field = credit.role == Role::Title ? Suggestion::Title : credit.role == Role::Author ? Suggestion::Author
                                                                                                             : Suggestion::Publisher;
             const QString reason = field == Suggestion::Publisher ? tr("발행자·서클 라벨 — 개인 작가로 확정하지 않습니다.") : tr("명시된 제목·작가 라벨과 연결된 글자입니다. 원본과 대조해 주세요.");
-            double confidence = -1;
-            // Match normalized lines rather than assuming blank-line counts in
-            // TSV and plaintext are identical. Unknown confidence is explicit.
-            for (const auto &line : page.reading.lines) {
-                if (normalizeOcrText(line.text).contains(normalizeOcrText(credit.value))) {
-                    confidence = line.confidence;
-                    break;
-                }
-            }
-            append(field, credit.value, reason, page.number, true, confidence);
+            append(field, credit.value, reason, page.number, true, credit.confidence);
         }
         const auto titleLines = coverTitleLines(page);
         if (!titleLines.isEmpty()) {
@@ -327,6 +394,13 @@ Reading parseNeuralReading(const QByteArray &json, const QSize &imageSize)
     const auto object = document.object();
     if (!document.isObject() || object.value("version").toInt() != 1 || object.value("engine").toString() != "paddle-regions" || !object.value("lines").isArray())
         return invalid();
+    reading.device = object.value("device").toString().left(40);
+    reading.warning = object.value("warning").toString().left(500);
+    if (reading.warning == "GPU unavailable; CPU used")
+        reading.warning = tr("GPU를 사용할 수 없어 CPU로 처리했습니다.");
+    reading.error = object.value("error").toString().left(1500);
+    reading.elapsedMs = qMax(0, object.value("elapsedMs").toInt());
+    reading.initializationMs = qMax(0, object.value("initializationMs").toInt());
     reading.language = object.value("language").toString();
     if (reading.language != "auto" && reading.language != "jpn" && reading.language != "kor")
         return invalid();

@@ -271,26 +271,51 @@ static QByteArray runOcrTsv(const QImage &image, const OcrOptions &options, cons
     return process.readAllStandardOutput().left(4 * 1024 * 1024 + 1);
 }
 
-static Reading recognizeNeuralPage(const QImage &image, const OcrOptions &options, const Cancellation &cancel)
+static QVector<Reading> recognizeNeuralPages(const QVector<QImage> &images, const OcrOptions &options, const Cancellation &cancel, const Progress &progress)
 {
-    Reading reading;
-    reading.reviewRequired = true;
+    QVector<Reading> readings(images.size());
+    for (auto &reading : readings)
+        reading.reviewRequired = true;
+    auto fail = [&](const QString &error) {
+        for (auto &reading : readings)
+            if (reading.text.isEmpty() && reading.error.isEmpty())
+                reading.error = error;
+        return readings;
+    };
+    if (images.isEmpty() || cancelled(cancel))
+        return readings;
+    if (images.size() > 12)
+        return fail(tr("한 번에 최대 12장까지 읽을 수 있습니다."));
     const QDir root(QCoreApplication::applicationDirPath() + QStringLiteral("/ocr-neural"));
-    const auto python = root.filePath(QStringLiteral("runtime/python.exe"));
-    if (!QFileInfo::exists(python) || !QFileInfo::exists(root.filePath(QStringLiteral("worker.py")))) {
-        reading.error = tr("영역 탐지 OCR이 포함된 Windows 설치본이 필요합니다.");
-        return reading;
-    }
-    if (options.language != "auto" && options.language != "jpn+eng" && options.language != "jpn_vert+eng" && options.language != "kor+eng") {
-        reading.error = tr("영역 OCR은 자동, 일본어 또는 한국어를 선택해 주세요.");
-        return reading;
-    }
+    const auto cpuPython = root.filePath(QStringLiteral("runtime/python.exe"));
+    const auto gpuPython = QCoreApplication::applicationDirPath() + QStringLiteral("/ocr-neural-gpu/runtime/python.exe");
+    const bool gpu = options.gpu && QFileInfo::exists(gpuPython);
+    const auto python = gpu ? gpuPython : cpuPython;
+    if (!QFileInfo::exists(python) || !QFileInfo::exists(root.filePath(QStringLiteral("worker.py"))))
+        return fail(tr("영역 탐지 OCR이 포함된 Windows 설치본이 필요합니다."));
+    if (options.language != "auto" && options.language != "jpn+eng" && options.language != "jpn_vert+eng" && options.language != "kor+eng")
+        return fail(tr("영역 OCR은 자동, 일본어 또는 한국어를 선택해 주세요."));
     QTemporaryDir temporary;
-    const auto prepared = prepareOcrImage(image, options);
-    if (!temporary.isValid() || prepared.isNull() || !prepared.save(temporary.filePath("page.png"))) {
-        reading.error = tr("Could not create the temporary OCR image.");
-        return reading;
+    if (!temporary.isValid())
+        return fail(tr("Could not create the temporary OCR image."));
+    QJsonArray jobs;
+    QVector<QSize> sizes;
+    for (int i = 0; i < images.size(); ++i) {
+        if (cancelled(cancel))
+            return readings;
+        const auto prepared = prepareOcrImage(images.at(i), options);
+        const auto input = temporary.filePath(QStringLiteral("page-%1.png").arg(i));
+        const auto output = temporary.filePath(QStringLiteral("result-%1.json").arg(i));
+        if (prepared.isNull() || !prepared.save(input))
+            return fail(tr("Could not create the temporary OCR image."));
+        sizes.append(prepared.size());
+        jobs.append(QJsonObject { { "image", input }, { "output", output } });
     }
+    QFile manifest(temporary.filePath("manifest.json"));
+    const auto bytes = QJsonDocument(QJsonObject { { "version", 1 }, { "pages", jobs } }).toJson();
+    if (!manifest.open(QIODevice::WriteOnly) || manifest.write(bytes) != bytes.size())
+        return fail(tr("OCR 작업 목록을 만들지 못했습니다."));
+    manifest.close();
     QProcess process;
     process.setWorkingDirectory(root.path());
     auto environment = QProcessEnvironment::systemEnvironment();
@@ -300,21 +325,95 @@ static Reading recognizeNeuralPage(const QImage &image, const OcrOptions &option
     process.setProcessEnvironment(environment);
     const QString language = options.language == "auto" ? "auto" : options.language.startsWith("kor") ? "kor"
                                                                                                       : "jpn";
-    const QStringList arguments { "-I", "-X", "utf8", root.filePath("worker.py"), "--image", temporary.filePath("page.png"), "--output", temporary.filePath("result.json"), "--language", language };
-    if (!run(process, python, arguments, qMax(options.timeoutMs, 180000), cancel, &reading.error))
-        return reading;
-    QFile output(temporary.filePath("result.json"));
-    if (!output.open(QIODevice::ReadOnly) || output.size() > 4 * 1024 * 1024) {
-        reading.error = tr("영역 OCR 결과를 읽지 못했습니다.");
-        return reading;
+    const QStringList arguments { "-I", "-X", "utf8", root.filePath("worker.py"), "--manifest", manifest.fileName(), "--language", language,
+                                  "--threads", QString::number(qBound(1, options.cpuThreads, 16)), "--device", gpu ? "gpu:0" : "cpu" };
+    process.start(python, arguments, QIODevice::ReadOnly);
+    if (!process.waitForStarted(5000))
+        return fail(tr("Could not start local OCR: %1").arg(process.errorString()));
+    QElapsedTimer timer;
+    timer.start();
+    int completed = 0;
+    QString lastStage;
+    QString error;
+    QByteArray diagnostics;
+    auto collect = [&] {
+        while (completed < readings.size()) {
+            QFile file(temporary.filePath(QStringLiteral("result-%1.json").arg(completed)));
+            if (!file.exists())
+                break;
+            if (!file.open(QIODevice::ReadOnly) || file.size() > 4 * 1024 * 1024)
+                readings[completed].error = tr("영역 OCR 결과를 읽지 못했습니다.");
+            else
+                readings[completed] = parseNeuralReading(file.readAll(), sizes.at(completed));
+            if (options.gpu && !gpu)
+                readings[completed].warning = tr("GPU 추가 구성 요소가 없어 CPU로 처리했습니다.");
+            ++completed;
+            timer.restart(); // Per-page bound; progress heartbeats cannot extend it.
+        }
+        QFile file(temporary.filePath("progress.json"));
+        QString stage = QStringLiteral("models");
+        if (file.open(QIODevice::ReadOnly) && file.size() < 4096)
+            stage = QJsonDocument::fromJson(file.readAll()).object().value("stage").toString();
+        const QString key = QString::number(completed) + stage;
+        if (progress && key != lastStage) {
+            const QString label = stage == "detect" ? tr("글자 영역 찾는 중") : stage == "recognize" ? tr("글자 읽는 중")
+                    : stage == "credits"                                                             ? tr("작은 판권 글자 다시 읽는 중")
+                    : stage == "done"                                                                ? tr("완료")
+                                                                                                     : tr("OCR 모델 불러오는 중");
+            progress(completed, images.size(), label);
+            lastStage = key;
+        }
+        diagnostics = (diagnostics + process.readAllStandardError()).right(6000);
+        process.readAllStandardOutput(); // Drain model logging, never accumulate a work's logs.
+    };
+    while (!process.waitForFinished(100)) {
+        collect();
+        if (cancelled(cancel) || timer.elapsed() > qMax(options.timeoutMs, 180000)) {
+            error = cancelled(cancel) ? tr("Cancelled") : tr("OCR timed out for this page.");
+            process.kill();
+            process.waitForFinished(5000);
+            break;
+        }
     }
-    return parseNeuralReading(output.readAll(), prepared.size());
+    collect();
+    if (error.isEmpty() && (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0))
+        error = tr("Local OCR failed: %1").arg(QString::fromUtf8(diagnostics).right(1500));
+    if (gpu && !cancelled(cancel) && (!error.isEmpty() || std::any_of(readings.cbegin(), readings.cend(), [](const Reading &r) { return !r.error.isEmpty(); }))) {
+        auto fallback = options;
+        fallback.gpu = false;
+        if (progress)
+            progress(0, images.size(), tr("GPU 실행 실패 · CPU로 다시 읽는 중"));
+        auto recovered = recognizeNeuralPages(images, fallback, cancel, progress);
+        for (auto &reading : recovered)
+            reading.warning = tr("GPU 실행에 실패하여 CPU로 처리했습니다.");
+        return recovered;
+    }
+    if (!error.isEmpty())
+        return fail(error);
+    if (completed != readings.size())
+        return fail(tr("일부 페이지의 OCR 결과가 없습니다."));
+    return readings;
+}
+
+QVector<Reading> recognizePages(const QVector<QImage> &images, const OcrOptions &options, const Cancellation &cancel, const Progress &progress)
+{
+    if (options.neural)
+        return recognizeNeuralPages(images, options, cancel, progress);
+    QVector<Reading> readings;
+    for (const auto &image : images) {
+        if (cancelled(cancel))
+            break;
+        if (progress)
+            progress(readings.size(), images.size(), tr("글자 읽는 중"));
+        readings.append(recognizePage(image, options, cancel));
+    }
+    return readings;
 }
 
 Reading recognizePage(const QImage &image, const OcrOptions &options, const Cancellation &cancel)
 {
     if (options.neural)
-        return recognizeNeuralPage(image, options, cancel);
+        return recognizeNeuralPages({ image }, options, cancel, { }).first();
     const QStringList languages = options.language == "auto"
             ? QStringList { options.vertical || options.segmentation == 5 ? "jpn_vert+eng" : "jpn+eng", "kor+eng" }
             : QStringList { options.language };
@@ -354,18 +453,24 @@ QString recognize(const QImage &image, const OcrOptions &options, const Cancella
     return reading.text;
 }
 
-Result analyze(const QString &path, int perEnd, const OcrOptions &options, const Cancellation &cancel)
+Result analyze(const QString &path, int perEnd, const OcrOptions &options, const Cancellation &cancel, const Progress &progress)
 {
     Result result = readPages(path, perEnd, cancel);
-    for (auto &page : result.pages) {
-        if (cancelled(cancel))
-            return result;
-        if (!page.image.isNull()) {
-            page.reading = recognizePage(page.image, options, cancel);
-            page.text = page.reading.text;
-            page.error = page.reading.error;
-            page.kind = classifyPage(page.text, page.number);
+    QVector<QImage> images;
+    QVector<int> indexes;
+    for (int i = 0; i < result.pages.size(); ++i) {
+        if (!result.pages.at(i).image.isNull()) {
+            images.append(result.pages.at(i).image);
+            indexes.append(i);
         }
+    }
+    const auto readings = recognizePages(images, options, cancel, progress);
+    for (int i = 0; i < readings.size(); ++i) {
+        auto &page = result.pages[indexes.at(i)];
+        page.reading = readings.at(i);
+        page.text = page.reading.text;
+        page.error = page.reading.error;
+        page.kind = classifyPage(page.text, page.number);
     }
     result.suggestions = suggest(result.pages, path);
     return result;

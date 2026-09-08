@@ -7,10 +7,12 @@
 #include <QVector>
 
 #include <atomic>
+#include <functional>
 #include <memory>
 
 namespace LocalMetadata {
 using Cancellation = std::shared_ptr<std::atomic_bool>;
+using Progress = std::function<void(int completed, int total, const QString &stage)>;
 
 enum class PageKind { Unknown,
                       TitlePage,
@@ -31,6 +33,10 @@ struct Reading {
     bool uncertainLanguage = false;
     bool reviewRequired = false;
     QString engine;
+    QString device;
+    QString warning;
+    qint64 elapsedMs = 0;
+    qint64 initializationMs = 0;
 };
 
 struct Page {
@@ -71,6 +77,8 @@ struct Result {
 
 struct OcrOptions {
     bool neural = false;
+    bool gpu = false;
+    int cpuThreads = 8;
     QString executable;
     QString dataPath;
     QString language = QStringLiteral("auto");
@@ -93,10 +101,11 @@ Reading parseNeuralReading(const QByteArray &json, const QSize &imageSize);
 Reading parseTsv(const QByteArray &tsv, const QString &language);
 Reading chooseReading(const QVector<Reading> &readings);
 Reading recognizePage(const QImage &image, const OcrOptions &options, const Cancellation &cancel);
+QVector<Reading> recognizePages(const QVector<QImage> &images, const OcrOptions &options, const Cancellation &cancel, const Progress &progress = { });
 OcrOptions defaultOcrOptions();
 QImage prepareOcrImage(const QImage &image, const OcrOptions &options);
 QString recognize(const QImage &image, const OcrOptions &options, const Cancellation &cancel, QString *error);
-Result analyze(const QString &path, int perEnd, const OcrOptions &options, const Cancellation &cancel);
+Result analyze(const QString &path, int perEnd, const OcrOptions &options, const Cancellation &cancel, const Progress &progress = { });
 QString comicPath(const QString &libraryPath, qulonglong comicInfoId, QString *error);
 bool save(const QString &libraryPath, qulonglong comicInfoId, const QString &sourcePath,
           const QString &title, const QString &author, bool overwrite,

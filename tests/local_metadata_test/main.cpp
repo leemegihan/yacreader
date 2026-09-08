@@ -126,6 +126,9 @@ private slots:
     void nameHintsExcludeLibraryRoots();
     void neuralCandidatesOpenReviewBeforeSearch();
     void conflictingCandidatesRequireSelection();
+    void creditSuffixAndCompoundLabels();
+    void creditGeometryAndDialogue();
+    void realNeuralWorkReuse();
     void realNeuralOcr_data();
     void realNeuralOcr();
     void folderScanAndMetadataPreservation();
@@ -767,6 +770,114 @@ void LocalMetadataTest::coverLayoutRejectsUnrelatedText()
     page.reading.lines[0].text = "ここで待とう。";
     page.reading.lines[1].text = "明日は晴れる？";
     QVERIFY(noTitle(page));
+}
+
+void LocalMetadataTest::creditSuffixAndCompoundLabels()
+{
+    LocalMetadata::Page page;
+    page.number = 1;
+    page.reading.lines = { { "비 오는", 96, QRect(100, 80, 400, 90) }, { "날의", 96, QRect(100, 190, 400, 90) }, { "작은", 96, QRect(100, 300, 400, 90) }, { "우체국", 96, QRect(100, 410, 400, 90) }, { "김하늘", 94, QRect(100, 1200, 120, 30) }, { "지음", 95, QRect(100, 1240, 80, 30) } };
+    for (const auto &line : page.reading.lines)
+        page.text += line.text + QLatin1Char('\n');
+    auto candidates = LocalMetadata::suggest({ page }, QString());
+    QCOMPARE(candidates.size(), 2);
+    QCOMPARE(candidates.first().field, LocalMetadata::Suggestion::Author);
+    QCOMPARE(candidates.first().value, QString("김하늘"));
+    QCOMPARE(candidates.last().value, QString("비 오는 날의 작은 우체국"));
+    QVERIFY(!candidates.last().labelled);
+
+    page.reading.lines.insert(4, { "푸른", 96, QRect(100, 1160, 90, 30) });
+    page.text.clear();
+    for (const auto &line : page.reading.lines)
+        page.text += line.text + QLatin1Char('\n');
+    QCOMPARE(LocalMetadata::suggest({ page }, QString()).first().value, QString("푸른 김하늘"));
+
+    page.number = 30;
+    page.reading.lines.clear();
+    page.text = "奥付\n誌名\n雨の図書館\n発行／著者\n月の工房 / 高橋あおい\n翻訳\nWrong Person";
+    candidates = LocalMetadata::suggest({ page }, QString());
+    QCOMPARE(candidates.size(), 3);
+    QCOMPARE(candidates[0].value, QString("雨の図書館"));
+    QCOMPARE(candidates[1].field, LocalMetadata::Suggestion::Publisher);
+    QCOMPARE(candidates[1].value, QString("月の工房"));
+    QCOMPARE(candidates[2].field, LocalMetadata::Suggestion::Author);
+    QCOMPARE(candidates[2].value, QString("高橋あおい"));
+    page.text = "発行／著者\n月の工房 /";
+    candidates = LocalMetadata::suggest({ page }, QString());
+    QCOMPARE(candidates.size(), 1);
+    QCOMPARE(candidates.first().field, LocalMetadata::Suggestion::Publisher);
+    page.text = "発行／著者\n/";
+    QVERIFY(LocalMetadata::suggest({ page }, QString()).isEmpty());
+    page.text = "김하늘 지음";
+    QCOMPARE(LocalMetadata::suggest({ page }, QString()).first().value, QString("김하늘"));
+}
+
+void LocalMetadataTest::creditGeometryAndDialogue()
+{
+    LocalMetadata::Page page;
+    page.number = 2;
+    for (const auto &text : QStringList { "그림\n실례할게요", "작가: 여기서 기다릴까요?", "著者\n翻訳\nWrong Person", "발행/저자\n알 수 없음" }) {
+        page.text = text;
+        QVERIFY2(LocalMetadata::suggest({ page }, QString()).isEmpty(), qPrintable(text));
+    }
+    page.text = "著者\nOther Bubble";
+    page.reading.lines = { { "著者", 90, QRect(100, 100, 80, 30) }, { "Other Bubble", 95, QRect(700, 500, 220, 30) } };
+    QVERIFY(LocalMetadata::suggest({ page }, QString()).isEmpty());
+    page.text = "그림\n홍길동";
+    page.reading.lines.clear();
+    QVERIFY(LocalMetadata::suggest({ page }, QString()).isEmpty());
+}
+
+void LocalMetadataTest::realNeuralWorkReuse()
+{
+    if (qEnvironmentVariableIsEmpty("YACREADER_REQUIRE_NEURAL_OCR"))
+        QSKIP("The neural Windows package job requires this test.");
+    auto options = LocalMetadata::defaultOcrOptions();
+    options.neural = true;
+    options.language = "auto";
+    QVector<QImage> images;
+    for (int i = 0; i < 6; ++i) {
+        images.append(QImage(QCoreApplication::applicationDirPath() + (i % 2 ? "/ocr-colophon-jpn.png" : "/ocr-colophon-kor.png")));
+        QVERIFY(!images.last().isNull());
+    }
+    int lastCompleted = -1;
+    QElapsedTimer timer;
+    timer.start();
+    const auto readings = LocalMetadata::recognizePages(images, options, std::make_shared<std::atomic_bool>(false),
+                                                        [&](int completed, int total, const QString &stage) {
+                                                            QCOMPARE(total, 6);
+                                                            QVERIFY(completed >= lastCompleted);
+                                                            QVERIFY(!stage.isEmpty());
+                                                            lastCompleted = completed;
+                                                        });
+    const auto batchMs = timer.elapsed();
+    QCOMPARE(readings.size(), 6);
+    QCOMPARE(lastCompleted, 6);
+    for (int i = 0; i < readings.size(); ++i) {
+        const auto &reading = readings.at(i);
+        QVERIFY2(reading.error.isEmpty(), qPrintable(reading.error));
+        QVERIFY(reading.reviewRequired);
+        QCOMPARE(reading.device, QString("cpu"));
+        QVERIFY(reading.elapsedMs > 0);
+        if (i == 0)
+            QVERIFY(reading.initializationMs > 0);
+        else
+            QCOMPARE(reading.initializationMs, 0);
+        QString text = reading.text;
+        text.remove(QRegularExpression(QStringLiteral("\\s+")));
+        QVERIFY2(text.contains(i % 2 ? QString("見本太郎") : QString("홍길동")), qPrintable(reading.text));
+    }
+    // Measure the old per-page process pattern with identical pixels/models.
+    // Benchmark only on the staged runtime; installed verification checks reuse.
+    if (!qEnvironmentVariableIsEmpty("YACREADER_BENCHMARK_NEURAL_OCR")) {
+        timer.restart();
+        for (const auto &image : images) {
+            const auto reading = LocalMetadata::recognizePage(image, options, std::make_shared<std::atomic_bool>(false));
+            QVERIFY2(reading.error.isEmpty(), qPrintable(reading.error));
+        }
+        qInfo("OCR six pages, auto: separate processes=%lld ms; shared process=%lld ms", timer.elapsed(), batchMs);
+    }
+    qInfo("OCR shared six-page job: %lld ms", batchMs);
 }
 
 void LocalMetadataTest::nameHintsExcludeLibraryRoots()
