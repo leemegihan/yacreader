@@ -37,6 +37,8 @@
 #include <QThread>
 #include <QUuid>
 
+#include <cstdlib>
+
 namespace {
 QByteArray tsvFor(const QStringList &lines, int confidence = 90)
 {
@@ -148,19 +150,29 @@ private slots:
 void LocalMetadataTest::isolatedSettingsPaths()
 {
     const bool wasSet = qEnvironmentVariableIsSet("YACREADER_DATA_DIR");
-    const auto previous = qgetenv("YACREADER_DATA_DIR");
+    const auto previous = qEnvironmentVariable("YACREADER_DATA_DIR");
+    const auto setRoot = [](const QString &value) {
+#ifdef Q_OS_WIN
+        // qputenv is an ANSI CRT API on Windows. UTF-8 bytes can fail under
+        // a Korean system locale; preserve Unicode in the wide environment.
+        return _wputenv_s(L"YACREADER_DATA_DIR", value.toStdWString().c_str()) == 0;
+#else
+        return qputenv("YACREADER_DATA_DIR", value.toUtf8());
+#endif
+    };
     const auto restore = qScopeGuard([&] {
         if (wasSet)
-            qputenv("YACREADER_DATA_DIR", previous);
+            setRoot(previous);
         else
             qunsetenv("YACREADER_DATA_DIR");
     });
     QTemporaryDir directory;
-    qputenv("YACREADER_DATA_DIR", directory.path().toUtf8());
-    QCOMPARE(YACReader::getSettingsPath(), directory.filePath(QCoreApplication::applicationName()));
-    QCOMPARE(YACReader::getCommonSettingsPath(), directory.filePath("shared"));
-    QCOMPARE(YACReader::getPluginsPath(), directory.filePath("shared/plugins"));
-    qunsetenv("YACREADER_DATA_DIR");
+    const auto isolated = directory.filePath(QStringLiteral("한글 漫画"));
+    QVERIFY(setRoot(isolated));
+    QCOMPARE(YACReader::getSettingsPath(), QDir(isolated).filePath(QCoreApplication::applicationName()));
+    QCOMPARE(YACReader::getCommonSettingsPath(), QDir(isolated).filePath("shared"));
+    QCOMPARE(YACReader::getPluginsPath(), QDir(isolated).filePath("shared/plugins"));
+    QVERIFY(qunsetenv("YACREADER_DATA_DIR"));
     QCOMPARE(YACReader::getSettingsPath(), QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation));
 }
 
