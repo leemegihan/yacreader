@@ -322,11 +322,36 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: manga-validated-runtime-${{ github.sha }}
+          # PaddleX requires its hidden .version metadata at import time.
+          include-hidden-files: true
           path: |
             ${{ runner.temp }}/manga installed 한글/**
             !${{ runner.temp }}/manga installed 한글/unins*
           if-no-files-found: error
           retention-days: 14
+
+      - name: Download validation artifact for round-trip OCR check
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: manga-validated-runtime-${{ github.sha }}
+          path: ${{ runner.temp }}/manga artifact roundtrip 한글
+
+      - name: Verify OCR from downloaded validation artifact
+        shell: pwsh
+        run: |
+          $package = Join-Path $env:RUNNER_TEMP 'manga artifact roundtrip 한글'
+          $installed = Join-Path $env:RUNNER_TEMP 'manga installed 한글'
+          $relative = 'ocr-neural/runtime/Lib/site-packages/paddlex/.version'
+          if (!(Test-Path -LiteralPath (Join-Path $package $relative))) { throw 'Artifact omitted hidden PaddleX metadata' }
+          if ((Get-FileHash -LiteralPath (Join-Path $package $relative)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $installed $relative)).Hash) { throw 'Artifact altered PaddleX metadata' }
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $env:YACREADER_DATA_DIR = Join-Path $env:RUNNER_TEMP 'artifact settings 한글'
+          $env:YACREADER_EXPECT_NEURAL_DEVICE = 'cpu'
+          & "$package/local_metadata_test.exe" localNeuralDevice isolatedSettingsPaths -o "$env:GITHUB_WORKSPACE/build/artifact-ocr.txt,txt"
+          $testExit = $LASTEXITCODE
+          Remove-Item Env:YACREADER_EXPECT_NEURAL_DEVICE
+          Get-Content "$env:GITHUB_WORKSPACE/build/artifact-ocr.txt"
+          if ($testExit -ne 0) { throw 'Downloaded artifact OCR or settings isolation failed' }
 
       - name: Upload local-only OCR diagnostic executable
         uses: actions/upload-artifact@v6
@@ -355,6 +380,7 @@ jobs:
           path: |
             build/installer.log
             build/installed-ocr.txt
+            build/artifact-ocr.txt
             build/native-ocr.txt
             build/neural-ocr.txt
             build/bin/ocr-neural/models.json
