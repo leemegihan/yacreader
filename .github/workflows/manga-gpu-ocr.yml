@@ -1,7 +1,7 @@
 name: Optional NVIDIA OCR package
 on:
   push:
-    branches: [manga-library-v01]
+    branches: [manga-library-v01, manga-ocr-gpu-validation]
     paths:
       - '.github/workflows/manga-gpu-ocr.yml'
       - 'tools/neural_ocr/requirements-gpu.txt'
