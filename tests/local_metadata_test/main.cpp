@@ -787,6 +787,13 @@ void LocalMetadataTest::nameHintsExcludeLibraryRoots()
     QTemporaryDir temporary;
     QVERIFY(QDir().mkpath(temporary.filePath("My collection/01_KO_Folder")));
     QVERIFY(LocalMetadata::suggest({ }, temporary.filePath("My collection/01_KO_Folder"), temporary.filePath("My collection")).isEmpty());
+    const auto nativeHints = LocalMetadata::suggest({ }, QDir::toNativeSeparators(temporary.filePath("My collection/Evening.cbz")), temporary.filePath("My collection/./"));
+    QCOMPARE(nativeHints.size(), 1);
+    QCOMPARE(nativeHints.first().field, LocalMetadata::Suggestion::Title);
+#ifdef Q_OS_WIN
+    const auto caseHints = LocalMetadata::suggest({ }, temporary.filePath("My collection/Evening.cbz"), temporary.filePath("MY COLLECTION"));
+    QCOMPARE(caseHints.size(), 1);
+#endif
 }
 
 void LocalMetadataTest::neuralCandidatesOpenReviewBeforeSearch()

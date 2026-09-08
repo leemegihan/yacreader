@@ -301,7 +301,10 @@ QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePat
     if (!genericPathName(base))
         append(Suggestion::Title, base, tr("파일명·폴더명 힌트 — OCR로 확인한 제목이 아닙니다."), 0);
     const QString parent = info.dir().dirName();
-    const bool root = !libraryRoot.isEmpty() && (QDir::cleanPath(info.dir().absolutePath()) == QDir::cleanPath(QFileInfo(libraryRoot).absoluteFilePath()) || QDir::cleanPath(info.absoluteFilePath()) == QDir::cleanPath(QFileInfo(libraryRoot).absoluteFilePath()));
+    // Compare directory objects consistently: on Windows a rooted path without
+    // a drive can be expanded differently by QFileInfo and QDir.
+    const QDir libraryDirectory(libraryRoot);
+    const bool root = !libraryRoot.isEmpty() && (info.dir() == libraryDirectory || (info.isDir() && QDir(info.absoluteFilePath()) == libraryDirectory));
     if (!root && !genericPathName(parent))
         append(Suggestion::Author, parent, tr("부모 폴더 이름 힌트 — 작가가 아닐 수 있습니다."), 0);
     return result;
