@@ -81,3 +81,33 @@ Shared `作者・サークル名`/`著者・サークル名` credits produce unc
 Set `YACREADER_DATA_DIR` to an absolute, dedicated validation directory before launching the unpacked validation apps. Per-application settings/logs and shared settings/plugins then stay below that directory. With the variable unset, normal settings locations are unchanged. Relative override paths fail explicitly rather than falling back to the user's active settings. Never point this directory at original media or an operating library.
 
 For the explicitly local `localNeuralDevice` test, set `YACREADER_EXPECT_NEURAL_DEVICE` to `cpu` in a validation package without the optional GPU runtime, then to `gpu:0` after staging the isolated NVIDIA runtime. Both invocations request GPU through the application's C++ wrapper and require actual synthetic JP/KR text plus the expected returned device/warning. An absent variable skips this optional physical-device check in ordinary CI; mandatory packaged CPU and GPU-less fallback checks remain separate.
+
+
+## Keep the actual worker job and package intact
+
+The page probe uses the same prepareOcrImage path as the application, including
+white compositing, bounded scaling, a border and grayscale conversion. Freeze
+these emitted PNGs for comparisons; a different image library's preprocessing
+is a separate experiment.
+
+For --manifest, every image and result must be directly inside the manifest's
+job directory. Copy prepared images into a new private job directory, or link
+only private prepared copies. Never place job files next to original media.
+
+Validation artifacts must include hidden runtime metadata such as
+paddlex/.version. The workflow downloads its own uploaded artifact and runs OCR
+from those downloaded files so a successful pre-upload installation alone
+cannot hide packaging omissions.
+
+On Windows, set a Unicode YACREADER_DATA_DIR in the launching process and use
+the normal Windows Qt platform for local checks. For a blank GUI smoke test,
+set libraryConfig/SERVER_ON=false in the isolated YACReaderLibrary.ini first.
+QML_DISK_CACHE_PATH can select a private QML cache, and
+QT_DISABLE_SHADER_DISK_CACHE=1 disables automatic shader disk storage during
+the smoke test. See the [Qt QML cache documentation](https://doc.qt.io/qt-6.5/qmldiskcache.html)
+and [Qt graphics cache documentation](https://doc.qt.io/qt-6/qquickgraphicsconfiguration.html).
+
+Treat performance totals as the stated measurement interval, not full import
+time. Record first-run initialization separately; runtime bytecode and OS caches
+can change startup costs. Keep CPU/GPU comparison details and real-work review
+results local.
