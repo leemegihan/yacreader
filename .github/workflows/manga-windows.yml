@@ -315,6 +315,14 @@ jobs:
           $installers | Get-FileHash -Algorithm SHA256 | Format-List | Out-File 'ci/win/Output/SHA256.txt'
           "Source commit: $env:GITHUB_SHA" | Out-File 'ci/win/Output/BUILD.txt'
 
+      - name: Upload local-only OCR diagnostic executable
+        uses: actions/upload-artifact@v6
+        with:
+          name: manga-local-ocr-probe-${{ github.sha }}
+          path: build/bin/local_metadata_test.exe
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload tested installer
         uses: actions/upload-artifact@v6
         with:

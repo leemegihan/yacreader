@@ -25,6 +25,7 @@
 #include <QPainter>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QSqlDatabase>
@@ -102,10 +103,13 @@ bool writeZip(const QString &path, const QList<QPair<QString, QByteArray>> &file
 }
 }
 
+int localOcrProbe(const QStringList &args);
+
 class LocalMetadataTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void localProbePreservesInputs();
     void sampling();
     void folderAndArchiveUseSamePageOrder();
     void collectionFolderIsNotAComic();
@@ -136,6 +140,42 @@ private slots:
     void closingAndSwitchingCancelWorkers();
     void missingSourceDoesNotCreateDatabase();
 };
+
+void LocalMetadataTest::localProbePreservesInputs()
+{
+    QTemporaryDir directory;
+    const QString readingPath = directory.filePath("reading.json");
+    const QString manifestPath = directory.filePath("manifest.json");
+    const QString outputPath = directory.filePath("candidates.json");
+    QJsonArray lines;
+    for (const auto &pair : { qMakePair(QString("작가"), 80), qMakePair(QString("홍길동"), 110) })
+        lines.append(QJsonObject { { "text", pair.first }, { "language", "kor" }, { "confidence", 95 }, { "box", QJsonArray { 10, pair.second, 150, pair.second + 20 } } });
+    const auto bytes = QJsonDocument(QJsonObject { { "version", 1 }, { "engine", "paddle-regions" }, { "language", "kor" }, { "lines", lines } }).toJson();
+    QFile reading(readingPath);
+    QVERIFY(reading.open(QIODevice::WriteOnly));
+    QCOMPARE(reading.write(bytes), bytes.size());
+    reading.close();
+    QFile manifest(manifestPath);
+    QVERIFY(manifest.open(QIODevice::WriteOnly));
+    manifest.write(QJsonDocument(QJsonObject { { "version", 1 }, { "pages", QJsonArray { QJsonObject { { "number", 10 }, { "size", QJsonArray { 200, 200 } }, { "result", readingPath } } } } }).toJson());
+    manifest.close();
+    QCOMPARE(localOcrProbe({ "probe", "--local-ocr-candidates", manifestPath, outputPath }), 0);
+    QFile output(outputPath);
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    const auto result = QJsonDocument::fromJson(output.readAll()).object();
+    const auto candidates = result.value("candidates").toArray();
+    QCOMPARE(candidates.size(), 1);
+    QCOMPARE(candidates.first().toObject().value("field").toString(), QString("author"));
+    QCOMPARE(candidates.first().toObject().value("value").toString(), QString("홍길동"));
+    output.close();
+    QCOMPARE(localOcrProbe({ "probe", "--local-ocr-candidates", manifestPath, outputPath }), 2);
+    QCOMPARE(localOcrProbe({ "probe", "--local-ocr-candidates", readingPath, directory.filePath("invalid.json") }), 2);
+    QVERIFY(!QFileInfo::exists(directory.filePath("invalid.json")));
+    QCOMPARE(localOcrProbe({ "probe", "--local-ocr-pages", directory.path(), directory.filePath("unsafe") }), 2);
+    QVERIFY(!QFileInfo::exists(directory.filePath("unsafe")));
+    QVERIFY(reading.open(QIODevice::ReadOnly));
+    QCOMPARE(reading.readAll(), bytes);
+}
 
 void LocalMetadataTest::sampling()
 {
@@ -1059,6 +1099,84 @@ void LocalMetadataTest::missingSourceDoesNotCreateDatabase()
     QVERIFY(!QFileInfo::exists(YACReader::LibraryPaths::libraryDatabasePath(directory.path())));
 }
 
+// Explicit local diagnostics: no library database or external lookup.
+int localOcrProbe(const QStringList &args)
+{
+    if (args.size() != 4)
+        return 2;
+    const QFileInfo input(args.at(2)), output(args.at(3));
+    if (!input.exists() || output.exists() || !output.absoluteDir().exists())
+        return 2;
+    if (args.at(1) == "--local-ocr-pages") {
+        const QString sourceRoot = input.isDir() ? input.canonicalFilePath() : input.absoluteDir().canonicalPath();
+        const QString relative = QDir(sourceRoot).relativeFilePath(output.absoluteDir().canonicalPath());
+        if (relative != ".." && !relative.startsWith("../") && !QDir::isAbsolutePath(relative))
+            return 2;
+        const auto result = LocalMetadata::readPages(input.canonicalFilePath(), 3, std::make_shared<std::atomic_bool>(false));
+        if (!result.error.isEmpty() || result.pages.isEmpty() || !QDir().mkdir(output.absoluteFilePath()))
+            return 3;
+        QJsonArray pages;
+        int index = 0;
+        for (const auto &page : result.pages) {
+            const auto image = LocalMetadata::prepareOcrImage(page.image, LocalMetadata::OcrOptions());
+            const QString name = QString("page-%1.png").arg(index++);
+            if (image.isNull() || !image.save(QDir(output.absoluteFilePath()).filePath(name)))
+                return 3;
+            pages.append(QJsonObject { { "number", page.number }, { "sourceEntry", page.name }, { "image", name }, { "size", QJsonArray { image.width(), image.height() } } });
+        }
+        QSaveFile destination(QDir(output.absoluteFilePath()).filePath("pages.json"));
+        const auto bytes = QJsonDocument(QJsonObject { { "version", 1 }, { "pageCount", result.pageCount }, { "pages", pages } }).toJson();
+        return destination.open(QIODevice::WriteOnly) && destination.write(bytes) == bytes.size() && destination.commit() ? 0 : 3;
+    }
+    if (args.at(1) != "--local-ocr-candidates" || !input.isFile())
+        return 2;
+    QFile manifest(input.absoluteFilePath());
+    if (!manifest.open(QIODevice::ReadOnly) || manifest.size() > 1024 * 1024)
+        return 2;
+    QJsonParseError parseError;
+    const auto document = QJsonDocument::fromJson(manifest.readAll(), &parseError);
+    const auto entries = document.object().value("pages").toArray();
+    if (parseError.error != QJsonParseError::NoError || document.object().value("version").toInt() != 1 || entries.isEmpty() || entries.size() > 12)
+        return 2;
+    QVector<LocalMetadata::Page> pages;
+    for (const auto &entry : entries) {
+        const auto object = entry.toObject();
+        const auto dimensions = object.value("size").toArray();
+        const int width = dimensions.size() == 2 ? dimensions.at(0).toInt() : 0;
+        const int height = dimensions.size() == 2 ? dimensions.at(1).toInt() : 0;
+        if (width <= 0 || height <= 0 || qint64(width) * height > 17000000 || object.value("number").toInt() < 1)
+            return 2;
+        QFile readingFile(object.value("result").toString());
+        if (!readingFile.open(QIODevice::ReadOnly) || readingFile.size() > 4 * 1024 * 1024)
+            return 2;
+        LocalMetadata::Page page;
+        page.number = object.value("number").toInt();
+        page.reading = LocalMetadata::parseNeuralReading(readingFile.readAll(), QSize(width, height));
+        if (!page.reading.error.isEmpty())
+            return 3;
+        page.text = page.reading.text;
+        page.image = QImage(width, height, QImage::Format_Mono);
+        page.image.fill(0);
+        page.kind = LocalMetadata::classifyPage(page.text, page.number);
+        pages.append(page);
+    }
+    QJsonArray candidates;
+    for (const auto &item : LocalMetadata::suggest(pages, QString())) {
+        QJsonArray evidence;
+        for (const auto &source : item.evidence)
+            evidence.append(QJsonObject { { "page", source.page }, { "labelled", source.labelled }, { "confidence", source.confidence } });
+        candidates.append(QJsonObject { { "field", item.field == LocalMetadata::Suggestion::Title ? "title" : item.field == LocalMetadata::Suggestion::Author ? "author"
+                                                                                                                                                              : "publisher" },
+                                        { "value", item.value },
+                                        { "labelled", item.labelled },
+                                        { "reason", item.reason },
+                                        { "evidence", evidence } });
+    }
+    QSaveFile destination(output.absoluteFilePath());
+    const auto bytes = QJsonDocument(QJsonObject { { "version", 1 }, { "pathHintsUsed", false }, { "candidates", candidates } }).toJson();
+    return destination.open(QIODevice::WriteOnly) && destination.write(bytes) == bytes.size() && destination.commit() ? 0 : 3;
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 2 && QByteArray(argv[1]) == "page.png") {
@@ -1073,6 +1191,8 @@ int main(int argc, char **argv)
         qputenv("QT_QPA_FONTDIR", qEnvironmentVariable("SystemRoot").toUtf8() + "/Fonts");
 #endif
     QApplication app(argc, argv);
+    if (app.arguments().value(1).startsWith("--local-ocr-"))
+        return localOcrProbe(app.arguments());
     LocalMetadataTest test;
     return QTest::qExec(&test, argc, argv);
 }
