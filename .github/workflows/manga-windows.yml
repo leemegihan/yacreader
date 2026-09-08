@@ -229,6 +229,7 @@ jobs:
           $package = Join-Path $env:RUNNER_TEMP 'manga installed 한글'
           $installers = @(Get-ChildItem 'ci/win/Output/YACReader*.exe')
           if ($installers.Count -ne 1) { throw 'Expected exactly one installer' }
+          $env:YACREADER_DATA_DIR = Join-Path $env:RUNNER_TEMP 'manga-smoke/data'
           $env:APPDATA = Join-Path $env:RUNNER_TEMP 'manga-smoke/roaming'
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'manga-smoke/local'
           New-Item -ItemType Directory -Force $env:APPDATA, $env:LOCALAPPDATA | Out-Null
@@ -294,7 +295,7 @@ jobs:
           $env:YACREADER_REQUIRE_NEURAL_OCR = '1'
           Copy-Item 'build/bin/ocr-colophon-*.png' $package
           $env:YACREADER_TEST_CJK_FIXTURES = $package
-          & "$package/local_metadata_test.exe" realOcr croppedCreditOcr realMultilingualColophon neuralResponseAndReview coverTitlesAndCombinedEvidence coverLayoutRejectsUnrelatedText nameHintsExcludeLibraryRoots neuralCandidatesOpenReviewBeforeSearch conflictingCandidatesRequireSelection creditSuffixAndCompoundLabels creditGeometryAndDialogue realNeuralOcr realNeuralWorkReuse -o "$env:GITHUB_WORKSPACE/build/installed-ocr.txt,txt"
+          & "$package/local_metadata_test.exe" realOcr croppedCreditOcr realMultilingualColophon neuralResponseAndReview coverTitlesAndCombinedEvidence coverLayoutRejectsUnrelatedText nameHintsExcludeLibraryRoots neuralCandidatesOpenReviewBeforeSearch conflictingCandidatesRequireSelection creditSuffixAndCompoundLabels creditGeometryAndDialogue sharedAuthorCircleNeedsReview localProbePreservesInputs isolatedSettingsPaths realNeuralOcr realNeuralWorkReuse -o "$env:GITHUB_WORKSPACE/build/installed-ocr.txt,txt"
           $ocrTestExit = $LASTEXITCODE
           Get-Content "$env:GITHUB_WORKSPACE/build/installed-ocr.txt"
           New-Item -ItemType Directory -Force 'build/installed-cjk' | Out-Null
@@ -314,6 +315,18 @@ jobs:
           if ($installers.Count -eq 0) { throw 'No installer generated' }
           $installers | Get-FileHash -Algorithm SHA256 | Format-List | Out-File 'ci/win/Output/SHA256.txt'
           "Source commit: $env:GITHUB_SHA" | Out-File 'ci/win/Output/BUILD.txt'
+
+      # Publish the already-installed and hash-checked files for safe local
+      # validation without running the installer's upgrade/uninstall hooks.
+      - name: Upload validated runtime for isolated local checks
+        uses: actions/upload-artifact@v6
+        with:
+          name: manga-validated-runtime-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/manga installed 한글/**
+            !${{ runner.temp }}/manga installed 한글/unins*
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload local-only OCR diagnostic executable
         uses: actions/upload-artifact@v6

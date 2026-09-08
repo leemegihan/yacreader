@@ -108,10 +108,13 @@ def merge_lines(lines, additions):
 
 
 class Engine:
-    def __init__(self, root, language, threads, device, progress=lambda stage: None):
+    def __init__(self, root, language, threads, device, progress=lambda stage: None, diagnostics=False):
         from paddleocr import TextDetection, TextRecognition
         import paddle
         self.progress = progress
+        self.diagnostics_enabled = diagnostics
+        self.diagnostics = []
+        self.diagnostic_pass = None
         self.language = language
         self.device = device
         self.warning = ''
@@ -161,6 +164,12 @@ class Engine:
                     text, score = result['rec_text'].strip(), float(result['rec_score'])
                     if not math.isfinite(score) or not 0 <= score <= 1:
                         raise ValueError('Invalid recognition confidence')
+                    audit = getattr(self, 'diagnostic_pass', None)
+                    if audit is not None:
+                        audit['recognitions'].append({'region': owners[i], 'language': language,
+                                                      'variant': variants[i], 'text': text[:160],
+                                                      'textTruncated': len(text) > 160,
+                                                      'confidence': score * 100})
                     if not text or len(text) > 1000:
                         continue
                     if variants[i] == 'upright-kor' and (score < .65 or sum('\uac00' <= c <= '\ud7a3' for c in text) < len(text.replace(' ', '')) * .7):
@@ -171,9 +180,23 @@ class Engine:
         return [best for options in choices if options for best in [max(options, key=lambda r: r['confidence'])]
                 if best['confidence'] >= 35]
 
+    def read_pass(self, image, origin=(0, 0), scale=(1., 1.)):
+        regions = self.regions(image)
+        audit = None
+        if getattr(self, 'diagnostics_enabled', False):
+            audit = {'origin': list(origin), 'scale': list(scale),
+                     'detectedRegions': [region[0] for region in regions], 'recognitions': []}
+            self.diagnostics.append(audit)
+        self.diagnostic_pass = audit
+        try:
+            return self.read_regions(image, regions)
+        finally:
+            self.diagnostic_pass = None
+
     def read(self, image):
         self.progress('detect')
-        lines = self.read_regions(image, self.regions(image))
+        self.diagnostics = []
+        lines = self.read_pass(image)
         # A small credit label is a useful local hint. Re-detect just the area
         # below it at higher resolution instead of repeatedly scaling a page.
         label = re.compile(r'^(?:発行[／/]?著者|著者|作者|誌名|タイトル|저자|작가|지음)[:：\s]*$')
@@ -190,8 +213,8 @@ class Engine:
             if scale <= 1:
                 continue
             enlarged = crop.resize((round(crop.width * scale), round(crop.height * scale)))
-            additions = self.read_regions(enlarged, self.regions(enlarged))
             sx, sy = enlarged.width / crop.width, enlarged.height / crop.height
+            additions = self.read_pass(enlarged, roi[:2], (sx, sy))
             for line in additions:
                 a, b, c, d = line['box']
                 line['box'] = [max(0, math.floor(a / sx + roi[0])), max(0, math.floor(b / sy + roi[1])),
@@ -211,6 +234,7 @@ def main():
     parser.add_argument('--language', required=True, choices=['auto', 'jpn', 'kor'])
     parser.add_argument('--threads', type=int, default=8)
     parser.add_argument('--device', choices=['cpu', 'gpu:0'], default='cpu')
+    parser.add_argument('--diagnostics', action='store_true', help='Include local detection/recognition evidence for error triage')
     args = parser.parse_args()
     threads = max(1, min(args.threads, os.cpu_count() or 1, 16))
     os.environ.update(PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK='True', HF_HUB_OFFLINE='1',
@@ -245,13 +269,14 @@ def main():
     start = time.perf_counter()
     progress('models')
     # Relative model paths preserve Paddle's Windows Unicode-path workaround.
-    engine = Engine(Path('.'), args.language, threads, args.device, progress)
+    engine = Engine(Path('.'), args.language, threads, args.device, progress, args.diagnostics)
     initialization_ms = round((time.perf_counter() - start) * 1000)
     for index, (image_path, output_path) in enumerate(pages):
         started = time.perf_counter()
         result = {'version': 1, 'engine': 'paddle-regions', 'language': args.language,
                   'device': engine.device, 'cpuThreads': threads, 'warning': engine.warning,
                   'initializationMs': initialization_ms if index == 0 else 0, 'lines': []}
+        engine.diagnostics = []
         try:
             with Image.open(image_path) as source:
                 if source.width * source.height > 17000000:
@@ -260,6 +285,8 @@ def main():
             result['lines'] = engine.read(image)
         except Exception as error:
             result['error'] = str(error)[:1500]
+        if args.diagnostics:
+            result['diagnostics'] = {'version': 1, 'passes': engine.diagnostics}
         result['elapsedMs'] = round((time.perf_counter() - started) * 1000)
         write_json(output_path, result)
     index = len(pages)

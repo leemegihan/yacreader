@@ -24,6 +24,7 @@ enum class Role { None,
                   Author,
                   Publisher,
                   PublisherAuthor,
+                  AuthorOrCircle,
                   Date,
                   Contact,
                   Printer,
@@ -46,8 +47,10 @@ Role role(const QString &text)
         return Role::Author;
     if (QStringList { "発行著者", "発行作者", "발행저자", "발행작가" }.contains(normalized))
         return Role::PublisherAuthor;
+    if (QStringList { "作者サークル名", "著者サークル名" }.contains(normalized))
+        return Role::AuthorOrCircle;
     static const QMap<QString, Role> roles {
-        { "タイトル", Role::Title }, { "作品名", Role::Title }, { "書名", Role::Title }, { "제목", Role::Title }, { "작품명", Role::Title }, { "title", Role::Title }, { "著者", Role::Author }, { "作者", Role::Author }, { "著作", Role::Author }, { "原作", Role::Author }, { "作画", Role::Author }, { "漫画", Role::Author }, { "작가", Role::Author }, { "저자", Role::Author }, { "글그림", Role::Author }, { "글", Role::Author }, { "그림", Role::Author }, { "author", Role::Author }, { "writer", Role::Author }, { "artist", Role::Author }, { "story&art", Role::Author }, { "storyandart", Role::Author }, { "発行者", Role::Publisher }, { "発行所", Role::Publisher }, { "発行", Role::Publisher }, { "サークル", Role::Publisher }, { "발행인", Role::Publisher }, { "발행자", Role::Publisher }, { "출판사", Role::Publisher }, { "publisher", Role::Publisher }, { "circle", Role::Publisher }, { "発行日", Role::Date }, { "発行年月日", Role::Date }, { "발행일", Role::Date }, { "publicationdate", Role::Date }, { "連絡先", Role::Contact }, { "연락처", Role::Contact }, { "contact", Role::Contact }, { "印刷所", Role::Printer }, { "印刷", Role::Printer }, { "인쇄소", Role::Printer }, { "printer", Role::Printer }, { "specialthanks", Role::Thanks }, { "thanks", Role::Thanks }, { "謝辞", Role::Thanks }, { "翻訳", Role::Translator }, { "번역", Role::Translator }, { "식자", Role::Translator }, { "translator", Role::Translator }, { "奥付", Role::Colophon }, { "판권", Role::Colophon }, { "colophon", Role::Colophon }, { "あとがき", Role::Afterword }, { "後書き", Role::Afterword }, { "후기", Role::Afterword }, { "afterword", Role::Afterword }
+        { "タイトル", Role::Title }, { "作品名", Role::Title }, { "書名", Role::Title }, { "제목", Role::Title }, { "작품명", Role::Title }, { "title", Role::Title }, { "著者", Role::Author }, { "作者", Role::Author }, { "著作", Role::Author }, { "原作", Role::Author }, { "作画", Role::Author }, { "漫画", Role::Author }, { "작가", Role::Author }, { "저자", Role::Author }, { "글그림", Role::Author }, { "글", Role::Author }, { "그림", Role::Author }, { "author", Role::Author }, { "writer", Role::Author }, { "artist", Role::Author }, { "story&art", Role::Author }, { "storyandart", Role::Author }, { "発行者", Role::Publisher }, { "発行所", Role::Publisher }, { "発行", Role::Publisher }, { "サークル", Role::Publisher }, { "発行サークル", Role::Publisher }, { "발행인", Role::Publisher }, { "발행자", Role::Publisher }, { "출판사", Role::Publisher }, { "publisher", Role::Publisher }, { "circle", Role::Publisher }, { "発行日", Role::Date }, { "発行年月日", Role::Date }, { "발행일", Role::Date }, { "publicationdate", Role::Date }, { "連絡先", Role::Contact }, { "연락처", Role::Contact }, { "contact", Role::Contact }, { "印刷所", Role::Printer }, { "印刷", Role::Printer }, { "인쇄소", Role::Printer }, { "printer", Role::Printer }, { "specialthanks", Role::Thanks }, { "thanks", Role::Thanks }, { "謝辞", Role::Thanks }, { "翻訳", Role::Translator }, { "번역", Role::Translator }, { "식자", Role::Translator }, { "translator", Role::Translator }, { "奥付", Role::Colophon }, { "판권", Role::Colophon }, { "colophon", Role::Colophon }, { "あとがき", Role::Afterword }, { "後書き", Role::Afterword }, { "후기", Role::Afterword }, { "afterword", Role::Afterword }
     };
     return roles.value(key(text), Role::None);
 }
@@ -101,6 +104,7 @@ struct Credit {
     QRect bounds;
     double confidence = -1;
     QString layoutText;
+    bool roleUncertain = false;
 };
 
 QVector<Credit> credits(const Page &page)
@@ -125,7 +129,7 @@ QVector<Credit> credits(const Page &page)
     QVector<Credit> result;
     for (int i = 0; i < text.size(); ++i) {
         auto marked = label(text.at(i));
-        if (marked.role != Role::Title && marked.role != Role::Author && marked.role != Role::Publisher && marked.role != Role::PublisherAuthor)
+        if (marked.role != Role::Title && marked.role != Role::Author && marked.role != Role::Publisher && marked.role != Role::PublisherAuthor && marked.role != Role::AuthorOrCircle)
             continue;
         const auto anchor = lineFor(i);
         QRect bounds = anchor.bounds;
@@ -157,7 +161,14 @@ QVector<Credit> credits(const Page &page)
                 }
             }
         }
-        if (marked.role == Role::PublisherAuthor) {
+        if (marked.role == Role::AuthorOrCircle) {
+            // A shared form field does not establish whether a readable name
+            // denotes a person or a circle. Offer alternatives for review only.
+            if (usableCredit(marked.value, Role::Author) && !marked.value.contains(QRegularExpression(QStringLiteral("[/／]")))) {
+                result.append({ Role::Author, marked.value, bounds, confidence, layoutText, true });
+                result.append({ Role::Publisher, marked.value, bounds, confidence, layoutText, true });
+            }
+        } else if (marked.role == Role::PublisherAuthor) {
             // Order follows the two labels. One missing side must not turn
             // the publisher into an author (or vice versa).
             const auto names = marked.value.split(QRegularExpression(QStringLiteral("[/／]")), Qt::KeepEmptyParts);
@@ -193,7 +204,7 @@ QVector<TextLine> coverTitleLines(const Page &page)
         return { };
     int creditSize = 0;
     for (const auto &credit : credits(page)) {
-        if (credit.role == Role::Author && credit.confidence >= 70 && !credit.bounds.isEmpty()) {
+        if (credit.role == Role::Author && !credit.roleUncertain && credit.confidence >= 70 && !credit.bounds.isEmpty()) {
             // A slanted credit has an inflated bounding-box height. Estimate
             // its glyph size from the advance as well, so it cannot dwarf the
             // actual cover lettering merely because it is on an angle.
@@ -335,8 +346,9 @@ QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePat
         for (const auto &credit : credits(page)) {
             const auto field = credit.role == Role::Title ? Suggestion::Title : credit.role == Role::Author ? Suggestion::Author
                                                                                                             : Suggestion::Publisher;
-            const QString reason = field == Suggestion::Publisher ? tr("발행자·서클 라벨 — 개인 작가로 확정하지 않습니다.") : tr("명시된 제목·작가 라벨과 연결된 글자입니다. 원본과 대조해 주세요.");
-            append(field, credit.value, reason, page.number, true, credit.confidence);
+            const QString reason = credit.roleUncertain ? tr("작가/서클 공용 표기입니다. 개인 작가인지 서클인지 직접 확인해 주세요.") : field == Suggestion::Publisher ? tr("발행자·서클 라벨 — 개인 작가로 확정하지 않습니다.")
+                                                                                                                                                                       : tr("명시된 제목·작가 라벨과 연결된 글자입니다. 원본과 대조해 주세요.");
+            append(field, credit.value, reason, page.number, !credit.roleUncertain, credit.confidence);
         }
         const auto titleLines = coverTitleLines(page);
         if (!titleLines.isEmpty()) {

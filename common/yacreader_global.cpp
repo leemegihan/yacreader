@@ -7,13 +7,29 @@
 
 using namespace YACReader;
 
+namespace {
+QString isolatedDataRoot()
+{
+    const auto path = qEnvironmentVariable("YACREADER_DATA_DIR");
+    if (!path.isEmpty() && !QDir::isAbsolutePath(path))
+        qFatal("YACREADER_DATA_DIR must be an absolute path.");
+    return path;
+}
+}
+
 QString YACReader::getSettingsPath()
 {
+    const auto isolated = isolatedDataRoot();
+    if (!isolated.isEmpty())
+        return QDir(isolated).filePath(QCoreApplication::applicationName());
     return QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
 }
 
 QString YACReader::getCommonSettingsPath()
 {
+    const auto isolated = isolatedDataRoot();
+    if (!isolated.isEmpty())
+        return QDir(isolated).filePath("shared");
     const auto organizationName = QCoreApplication::organizationName().trimmed();
     const auto basePath = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
 

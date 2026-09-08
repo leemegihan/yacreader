@@ -26,6 +26,7 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QScopeGuard>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QSqlDatabase>
@@ -110,6 +111,7 @@ class LocalMetadataTest : public QObject
     Q_OBJECT
 private slots:
     void localProbePreservesInputs();
+    void isolatedSettingsPaths();
     void sampling();
     void folderAndArchiveUseSamePageOrder();
     void collectionFolderIsNotAComic();
@@ -132,7 +134,9 @@ private slots:
     void conflictingCandidatesRequireSelection();
     void creditSuffixAndCompoundLabels();
     void creditGeometryAndDialogue();
+    void sharedAuthorCircleNeedsReview();
     void realNeuralWorkReuse();
+    void localNeuralDevice();
     void realNeuralOcr_data();
     void realNeuralOcr();
     void folderScanAndMetadataPreservation();
@@ -140,6 +144,25 @@ private slots:
     void closingAndSwitchingCancelWorkers();
     void missingSourceDoesNotCreateDatabase();
 };
+
+void LocalMetadataTest::isolatedSettingsPaths()
+{
+    const bool wasSet = qEnvironmentVariableIsSet("YACREADER_DATA_DIR");
+    const auto previous = qgetenv("YACREADER_DATA_DIR");
+    const auto restore = qScopeGuard([&] {
+        if (wasSet)
+            qputenv("YACREADER_DATA_DIR", previous);
+        else
+            qunsetenv("YACREADER_DATA_DIR");
+    });
+    QTemporaryDir directory;
+    qputenv("YACREADER_DATA_DIR", directory.path().toUtf8());
+    QCOMPARE(YACReader::getSettingsPath(), directory.filePath(QCoreApplication::applicationName()));
+    QCOMPARE(YACReader::getCommonSettingsPath(), directory.filePath("shared"));
+    QCOMPARE(YACReader::getPluginsPath(), directory.filePath("shared/plugins"));
+    qunsetenv("YACREADER_DATA_DIR");
+    QCOMPARE(YACReader::getSettingsPath(), QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation));
+}
 
 void LocalMetadataTest::localProbePreservesInputs()
 {
@@ -852,6 +875,41 @@ void LocalMetadataTest::creditSuffixAndCompoundLabels()
     QCOMPARE(LocalMetadata::suggest({ page }, QString()).first().value, QString("김하늘"));
 }
 
+void LocalMetadataTest::sharedAuthorCircleNeedsReview()
+{
+    LocalMetadata::Page page;
+    page.number = 1;
+    page.reading.lines = { { "雨の図書館", 96, QRect(10, 10, 400, 90) }, { "作者・サークル名:青木そら", 96, QRect(10, 300, 300, 30) } };
+    page.text = "雨の図書館\n作者・サークル名:青木そら";
+    const auto candidates = LocalMetadata::suggest({ page }, QString());
+    QCOMPARE(candidates.size(), 2); // No cover-title inference from an ambiguous role.
+    QCOMPARE(candidates[0].field, LocalMetadata::Suggestion::Author);
+    QCOMPARE(candidates[1].field, LocalMetadata::Suggestion::Publisher);
+    for (const auto &candidate : candidates) {
+        QCOMPARE(candidate.value, QString("青木そら"));
+        QVERIFY(!candidate.labelled);
+        QVERIFY(!candidate.evidence.first().labelled);
+    }
+    LocalMetadata::Result result;
+    result.pages = { page };
+    result.suggestions = candidates;
+    YACReaderArchiveInspectorDialog dialog;
+    QSignalSpy requests(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    dialog.showResult(result);
+    QVERIFY(dialog.authorEdit->text().isEmpty());
+    dialog.requestSearch(true);
+    QCOMPARE(requests.count(), 0);
+    page.reading.lines.clear();
+    page.text = "発行サークル:月の工房";
+    const auto publisher = LocalMetadata::suggest({ page }, QString());
+    QCOMPARE(publisher.size(), 1);
+    QCOMPARE(publisher.first().field, LocalMetadata::Suggestion::Publisher);
+    page.text = "作者・サークル名:青木そら / 月の工房";
+    QVERIFY(LocalMetadata::suggest({ page }, QString()).isEmpty());
+    page.text = "作者・サークル名:ここで待とう。";
+    QVERIFY(LocalMetadata::suggest({ page }, QString()).isEmpty());
+}
+
 void LocalMetadataTest::creditGeometryAndDialogue()
 {
     LocalMetadata::Page page;
@@ -866,6 +924,37 @@ void LocalMetadataTest::creditGeometryAndDialogue()
     page.text = "그림\n홍길동";
     page.reading.lines.clear();
     QVERIFY(LocalMetadata::suggest({ page }, QString()).isEmpty());
+}
+
+void LocalMetadataTest::localNeuralDevice()
+{
+    const auto expected = qEnvironmentVariable("YACREADER_EXPECT_NEURAL_DEVICE");
+    if (expected.isEmpty())
+        QSKIP("Explicit local CPU-fallback / physical-GPU verification only.");
+    QVERIFY(expected == "cpu" || expected == "gpu:0");
+    auto options = LocalMetadata::defaultOcrOptions();
+    options.neural = true;
+    options.gpu = true;
+    options.language = "auto";
+    QVector<QImage> images;
+    for (const auto &language : { "kor", "jpn" }) {
+        images.append(QImage(QCoreApplication::applicationDirPath() + QString("/ocr-colophon-%1.png").arg(language)));
+        QVERIFY(!images.last().isNull());
+    }
+    const auto readings = LocalMetadata::recognizePages(images, options, std::make_shared<std::atomic_bool>(false));
+    QCOMPARE(readings.size(), 2);
+    for (int i = 0; i < readings.size(); ++i) {
+        const auto &reading = readings.at(i);
+        QVERIFY2(reading.error.isEmpty(), qPrintable(reading.error));
+        QCOMPARE(reading.device, expected);
+        QCOMPARE(reading.warning.isEmpty(), expected == "gpu:0");
+        QString text = reading.text;
+        text.remove(QRegularExpression(QStringLiteral("\\s+")));
+        QVERIFY2(text.contains(i ? QString("見本太郎") : QString("홍길동")), qPrintable(reading.text));
+        QVERIFY(reading.reviewRequired);
+        qInfo("Local requested GPU: actual=%s page=%d reading=%lld ms initialization=%lld ms",
+              qPrintable(reading.device), i + 1, reading.elapsedMs, reading.initializationMs);
+    }
 }
 
 void LocalMetadataTest::realNeuralWorkReuse()

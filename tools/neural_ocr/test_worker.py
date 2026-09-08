@@ -78,6 +78,58 @@ class WorkerTest(unittest.TestCase):
                                    {'text': 'Title', 'confidence': 95, 'box': [10, 80, 200, 100]}])
         self.assertEqual([line['text'] for line in lines], ['A lice', 'Title'])
 
+    def test_diagnostics_distinguish_detection_from_rejected_text(self):
+        engine = worker.Engine.__new__(worker.Engine)
+        engine.readers = {'jpn': Reader('uncertain', .2)}
+        engine.progress = lambda stage: None
+        engine.diagnostics_enabled = True
+        engine.diagnostics = []
+        image = Image.new('RGB', (200, 100), 'white')
+        regions = worker.regions_from([[(5, 5), (150, 5), (150, 20), (5, 20)]], 200, 100)
+        with patch.object(engine, 'regions', return_value=regions):
+            self.assertEqual(engine.read(image), [])
+        audit = engine.diagnostics[0]
+        self.assertEqual(len(audit['detectedRegions']), 1)
+        self.assertEqual(audit['recognitions'][0]['text'], 'uncertain')
+        self.assertEqual(audit['recognitions'][0]['confidence'], 20)
+        self.assertIsNone(engine.diagnostic_pass)
+        with patch.object(engine, 'regions', return_value=[]):
+            self.assertEqual(engine.read(image), [])
+        self.assertEqual(engine.diagnostics[0]['detectedRegions'], [])
+        engine.diagnostics_enabled = False
+        with patch.object(engine, 'regions', return_value=regions):
+            self.assertEqual(engine.read(image), [])
+        self.assertEqual(engine.diagnostics, [])
+
+    def test_diagnostic_retry_coordinates_are_explicit(self):
+        engine = worker.Engine.__new__(worker.Engine)
+        engine.readers = {'jpn': Reader()}
+        engine.progress = lambda stage: None
+        engine.diagnostics_enabled = True
+        engine.diagnostics = []
+        image = Image.new('RGB', (200, 100), 'white')
+        regions = worker.regions_from([[(5, 5), (150, 5), (150, 20), (5, 20)]], 200, 100)
+        with patch.object(engine, 'regions', return_value=regions):
+            lines = engine.read_pass(image, (40, 80), (2., 1.5))
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(engine.diagnostics[0]['origin'], [40, 80])
+        self.assertEqual(engine.diagnostics[0]['scale'], [2., 1.5])
+
+    def test_diagnostic_cap_does_not_truncate_actual_reading(self):
+        engine = worker.Engine.__new__(worker.Engine)
+        engine.readers = {'jpn': Reader('A' * 200)}
+        engine.progress = lambda stage: None
+        engine.diagnostics_enabled = True
+        engine.diagnostics = []
+        image = Image.new('RGB', (200, 100), 'white')
+        regions = worker.regions_from([[(5, 5), (150, 5), (150, 20), (5, 20)]], 200, 100)
+        with patch.object(engine, 'regions', return_value=regions):
+            reading = engine.read(image)
+        self.assertEqual(reading[0]['text'], 'A' * 200)
+        audit = engine.diagnostics[0]['recognitions'][0]
+        self.assertEqual(len(audit['text']), 160)
+        self.assertTrue(audit['textTruncated'])
+
     def test_atomic_unicode_output(self):
         with tempfile.TemporaryDirectory(prefix='OCR 한글 ') as folder:
             path = Path(folder) / 'result.json'
