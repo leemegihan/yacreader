@@ -229,3 +229,13 @@ descendant on both job-handle close and wrapper crash. It used synthetic input
 and did not connect Job Objects to application cancellation. The isolated GUI
 startup retry passed; an earlier normal exit before the check remains an
 unreproduced observation, not a proven fix.
+
+Windows OCR invocations now own their descendants through creation-time Job
+Object assignment. Cancellation and timeout confirm cleanup before a CPU retry.
+Progress JSON remains atomic: transient Windows replacement-sharing failures are
+retried within a bounded interval, and the C++ reader releases its handle before
+callbacks. Tests include real Windows delete-sharing contention and owner crash.
+Local actual-GPU ownership verification used the new CI diagnostic executable
+with a pinned worker and a prior verified dependency archive after the complete
+new runtime transfer timed out. Keep that composition distinct from CI's new
+installer/runtime checks and from real-library accuracy or timing measurements.

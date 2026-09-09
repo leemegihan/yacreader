@@ -773,3 +773,32 @@ All 21 worker tests passed locally. A private prototype with the patched worker
 passed three consecutive actual-GPU synthetic checks and then restored the prior
 worker bytes. This is prototype evidence; the new packaged build and GPU cleanup
 verification remain pending. Original media and library data were not involved.
+
+### Verified Windows process ownership and progress sharing
+
+Code b22a43878c58af0aef2775be834ccbf78cf64955 passed
+[Windows validation](https://github.com/leemegihan/yacreader/actions/runs/34366717799):
+13 CTest suites, 21 worker tests, staged neural checks (8), installed OCR checks
+(21), downloaded OCR/process checks (13) and job-store checks (15). Required
+packaged checks had no skips; prerequisite-stage skips remain separate.
+
+The complete new runtime download timed out twice at the connector. Local
+verification therefore used a separately composed deployment: the new CI probe
+with its published archive digest verified, the worker from the tested source
+commit, and the independently verified prior dependency archive. This is not a
+byte-for-byte validation of the complete new runtime artifact. The new packaged
+GUI startup and installation checks passed in CI; new local GUI startup was not
+claimed from this composed deployment.
+
+That deployment passed 33 targeted native metadata/cache/process checks,
+missing-addon CPU fallback and actual GPU inference on synthetic pages. Killing
+its Qt controller, without an external Job Object wrapper, also terminated its
+observed CUDA descendant and removed it from NVIDIA's process listing. No
+emergency child cleanup was needed. This verifies application-code process
+ownership, not a new real-work speed or accuracy benchmark.
+
+Keep the prior GPU failure and the patched-worker prototype as separate records.
+Current app and review hashes remain preserved. The queue and automatic cache
+lookup are still not wired into the inspector. Next, reconcile completed GPU
+pages with CPU retries, persist recoverable settings and publish validated page
+completion payloads before adding resume UI.
