@@ -257,7 +257,7 @@ QVector<TextLine> joinedCircleBannerReviewLines(const Page &page)
         if (!visible.contains(line.text) || line.confidence < 85 || box.isEmpty() || box.width() < 4 * box.height() || box.top() < 0 || box.top() > 2 * box.height())
             continue;
         const auto match = joined.match(line.text.normalized(QString::NormalizationForm_KC).trimmed());
-        if (!match.hasMatch())
+        if (!match.hasMatch() || match.captured(1).count(QChar(0x30fb)) != 1)
             continue;
         auto proposal = line;
         proposal.text = match.captured(1);

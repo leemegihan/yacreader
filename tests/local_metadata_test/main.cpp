@@ -1469,7 +1469,16 @@ void LocalMetadataTest::conflictingCandidatesRequireSelection()
     dialog.titleEdit->setText("星降る夜の図書館");
     dialog.requestSearch(false);
     QCOMPARE(requests.count(), 1);
-    QVERIFY(requests.first().at(7).toBool()); // Explicit values can be queried.
+    QVERIFY(!requests.first().at(7).toBool()); // The neural publisher hint still needs review.
+    result.suggestions.erase(std::remove_if(result.suggestions.begin(), result.suggestions.end(), [](const LocalMetadata::Suggestion &candidate) { return candidate.field == LocalMetadata::Suggestion::Publisher; }), result.suggestions.end());
+    YACReaderArchiveInspectorDialog identitiesOnly;
+    QSignalSpy directRequests(&identitiesOnly, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    identitiesOnly.showResult(result);
+    identitiesOnly.authorEdit->setText("青木そら");
+    identitiesOnly.titleEdit->setText("星降る夜の図書館");
+    identitiesOnly.requestSearch(false);
+    QCOMPARE(directRequests.count(), 1);
+    QVERIFY(directRequests.first().at(7).toBool()); // Explicit identity values alone can be queried.
 }
 
 void LocalMetadataTest::folderScanAndMetadataPreservation()
