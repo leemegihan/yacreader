@@ -191,3 +191,41 @@ Keep failed/unfinished OCR separate from absent page candidates. Synthetic UI te
 filename proposals open review rather than triggering HTTP, do not prefill confirmed fields,
 preserve user edits and cannot replace existing page evidence. Actual filename-derived queries
 and results remain private; having a usable search lead is not a catalog identity match.
+
+## Durable storage validation
+
+At code 9e41aa08a655d93c10ae546ee93cc4f18bdea31e,
+[Windows validation](https://github.com/leemegihan/yacreader/actions/runs/34352707801)
+passed all 13 CTest suites and retained the existing 17 worker, 8 staged-neural
+and 21 installed-OCR checks. Downloaded-artifact validation now additionally covers
+the cache and job store: 8 OCR/cache and 15 job-store passes, without skips.
+Prerequisite runs (44 passed/9 skipped, then 47 passed/6 skipped) are not substitutes
+for those required package checks.
+
+[General validation](https://github.com/leemegihan/yacreader/actions/runs/34352712223)
+passed all build targets and Windows x64's 13 CTest suites. An earlier revision's
+ARM64 dependency download/extraction failed before compilation; the final ARM64
+job succeeded. Fork signing/notarization/publishing skips do not constitute a
+signed release.
+
+The new store/cache tests use synthetic data only. They exercise independent
+processes, abrupt exit with an uncommitted SQLite write, stale ownership, clock
+changes, damaged records, locked writes and competing immutable-cache writes.
+The private extracted runtime also passed the storage/cache regressions, bounded
+input rejection and repeated process scheduling checks. Actual saved-response
+round trips and candidate replay are distinct from OCR inference benchmarks.
+Separate synthetic device checks distinguished real GPU execution from CPU fallback.
+
+The job store does not execute OCR, validate the truth of identity candidates,
+stop OS processes or authorize library writes. Its receipts are not a substitute
+for revalidating cached artifacts. Full setting/transform snapshots, an executor,
+explicit invalidation and UI recovery remain integration work. Continue using an
+independent test library root; app-settings isolation alone does not relocate
+library.ydb or covers. See [ocr-job-store.md](ocr-job-store.md).
+
+The personal development target is Windows x64. A subsequent external launcher
+pilot verified termination of an owned Qt OCR controller and its observed CUDA
+descendant on both job-handle close and wrapper crash. It used synthetic input
+and did not connect Job Objects to application cancellation. The isolated GUI
+startup retry passed; an earlier normal exit before the check remains an
+unreproduced observation, not a proven fix.

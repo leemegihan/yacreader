@@ -111,3 +111,18 @@ Each page supplies an absolute result path and a complete identity object using
 the cache envelope field names. The report and its new .cache directory must not
 exist. This probe validates and round-trips existing results; it never runs OCR
 or establishes that the caller's claimed engine fingerprints are true.
+
+## Executor integration prerequisites
+
+The current job specification stores a settings fingerprint, not a recoverable
+OcrOptions/environment snapshot. Persist that snapshot before offering application
+restart/resume. The cache records prepared dimensions and a preprocessing fingerprint;
+full original-to-prepared transforms must accompany completion payloads before
+drawing cached regions over an original page.
+
+The current GPU wrapper retries the complete input on CPU after a GPU failure.
+A durable completion callback must first define how already committed GPU pages
+and later CPU retries are reconciled. Preserve validated completed pages and
+reprocess remaining pages in the intended integration; do not overwrite receipts
+or relabel CPU execution as GPU. Cache elapsedMs is historical inference data,
+not a fresh cache-hit duration.

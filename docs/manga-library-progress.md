@@ -672,3 +672,64 @@ A separate local SQLite design pilot exercised idempotent registration, committe
 A Windows Job Object pilot verified normal handle-close and controller-crash cleanup using only private dummy children. These experiments are not a shipped queue, Qt lifecycle integration, actual OCR/GPU process cleanup or a power-loss guarantee. Their data and scripts remain outside the repository. The next implementation starts with an isolated Qt SQL job store and synthetic fault tests before connecting OCR callbacks or enabling broader execution.
 
 The validation guide now explicitly distinguishes app-settings isolation from library-data isolation. YACREADER_DATA_DIR does not relocate library.ydb or covers; save/import validation needs a separate test library root. App code and the completed Windows/GPU validation baseline are unchanged by this design record.
+
+## 2026-09-09 — durable OCR storage foundations
+
+- Add an independent Qt Core/Sql job store with an owned, versioned SQLite file,
+  bounded front/back-three-page plans, idempotent registration, lease fencing,
+  immutable page receipts and explicit pause/cancel/resume states. Expired work
+  becomes interrupted; it is not automatically queued or treated as candidate-free.
+- Validate job identity and receipt shape before reuse. Reject foreign/future
+  databases and damaged duplicate records. A failed locked write leaves state intact.
+- Add a separate immutable neural-response cache keyed by prepared-image/transform,
+  worker/model/package fingerprints, language, threads and requested/actual device.
+  Loading verifies size, identity, raw hash and the existing OCR geometry/error parser.
+  Failed responses and conflicting existing evidence cannot be silently replaced.
+- Synthetic process tests recover three committed receipts after an abrupt exit
+  inside a fourth-page transaction, reject a stale process and allow only one job
+  claimant. Two synchronized cache writers cannot replace one another's evidence.
+- Tested code 9e41aa08a655d93c10ae546ee93cc4f18bdea31e passed
+  [Windows validation](https://github.com/leemegihan/yacreader/actions/runs/34352707801):
+  13 CTest suites, 17 worker tests, staged neural checks (8), installed OCR checks
+  (21), downloaded OCR/cache checks (8) and downloaded job-store checks (15).
+  [General builds](https://github.com/leemegihan/yacreader/actions/runs/34352712223)
+  passed Windows x64/ARM64, both Linux backends, macOS Universal and both Docker
+  architectures. Required package checks have no skips; prerequisite and fork
+  signing/publishing skips are separate.
+- An independently extracted runtime passed 15 job-store and 28 metadata/cache
+  checks. Ten local scheduling rounds passed the new process-race/recovery tests.
+  Frozen real responses round-tripped byte-identically and reproduced prior
+  candidate records across configurations. This was cache/candidate replay, not
+  a new real-input speed or accuracy benchmark.
+- Separate synthetic tests confirmed missing-addon CPU fallback and actual GPU
+  inference in the private deployment. The OCR worker, parser and wrapper were
+  unchanged from the prior tested engine. Current installed apps, original media,
+  operating libraries and private review answers were preserved.
+
+These are storage primitives, not an inspector-integrated queue or automatic
+cache reuse. The next integration must persist full option/environment snapshots
+and image transforms, connect validated page-completion payloads, provide explicit
+cache invalidation and coordinate real worker termination/device ownership before
+adding the job-list/recovery UI. No full-library execution or unreviewed save was
+enabled. API contracts and limitations are in [ocr-job-store.md](ocr-job-store.md).
+Real media, paths, OCR, identity leads, review answers and timings remain private.
+
+
+### Windows-only follow-up and local lifecycle evidence
+
+This personal fork now prioritizes Windows 11 x64 and the current NVIDIA machine.
+Cross-platform compatibility is not a development goal. Preserve existing shared
+code where useful; future validation should emphasize Windows build/installer,
+actual device behavior and data recovery.
+
+A separately launched Qt OCR test was assigned to a Windows kill-on-close Job
+Object while suspended. Its descendant CUDA process was observed in NVIDIA's
+compute-process list and verified as a member of that job before interruption.
+Normal job-handle close and abrupt controller exit both terminated the Qt/GPU
+process tree. This is an external synthetic lifecycle pilot, not an integrated
+application cancellation feature or a new real-work accuracy/speed measurement.
+
+A local GUI check initially saw the library app exit with code zero before its
+startup deadline. A single retry with fresh isolated settings and trace logging
+passed for both applications. The original exit was not reproduced and its cause
+remains unconfirmed; retain the failed record rather than claiming a code fix.
