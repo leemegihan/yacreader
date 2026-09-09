@@ -663,3 +663,12 @@ Review the fixed sample's unresolved person/circle roles and candidate-free cove
 Review filename title/name hints and supported catalog references within the fixed sample. Mixed-language titles, numerical decorations and unexplained trailing names may still need search-text edits. A filename lead does not establish artist identity or a catalog match; unresolved person/circle roles and cross-language aliases stay in review.
 
 Once individual review/save behavior is stable, implement the durable queue, cancellation/restart and a content/settings/version-keyed OCR cache against a separate test DB and a small frozen sample. Successful candidate-free work must transition to filename review; failed or cancelled work must retain its own state. Wider automatic page reads, bulk save and full-library execution are not part of this completed change.
+
+
+### Follow-up queue design audit
+
+A separate local SQLite design pilot exercised idempotent registration, committed-page recovery after abrupt process exit, stale-owner fencing, pause/cancel boundaries, bounded recovery attempts and cache integrity. Independent processes also competed for the same job and rejected an expired owner's late result. Candidate derivation must include page numbers/count, source kind, filename/library-root context and parser version separately from image/engine/device cache keys.
+
+A Windows Job Object pilot verified normal handle-close and controller-crash cleanup using only private dummy children. These experiments are not a shipped queue, Qt lifecycle integration, actual OCR/GPU process cleanup or a power-loss guarantee. Their data and scripts remain outside the repository. The next implementation starts with an isolated Qt SQL job store and synthetic fault tests before connecting OCR callbacks or enabling broader execution.
+
+The validation guide now explicitly distinguishes app-settings isolation from library-data isolation. YACREADER_DATA_DIR does not relocate library.ydb or covers; save/import validation needs a separate test library root. App code and the completed Windows/GPU validation baseline are unchanged by this design record.

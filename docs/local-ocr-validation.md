@@ -85,6 +85,13 @@ Shared `作者・サークル名`/`著者・サークル名` credits produce unc
 
 Set `YACREADER_DATA_DIR` to an absolute, dedicated validation directory before launching the unpacked validation apps. Per-application settings/logs and shared settings/plugins then stay below that directory. With the variable unset, normal settings locations are unchanged. Relative override paths fail explicitly rather than falling back to the user's active settings. Never point this directory at original media or an operating library.
 
+This override does not redirect a library database: `LibraryPaths` still resolves
+`<library-root>/.yacreaderlibrary/library.ydb` and its covers below the selected
+library root. For save/import tests, use a separate test library root with
+synthetic or independently copied fixtures. Do not add the operating library to
+an isolated-settings GUI and assume its database has also been isolated. The
+read-only page/candidate probes do not need a library database.
+
 For the explicitly local `localNeuralDevice` test, set `YACREADER_EXPECT_NEURAL_DEVICE` to `cpu` in a validation package without the optional GPU runtime, then to `gpu:0` after staging the isolated NVIDIA runtime. Both invocations request GPU through the application's C++ wrapper and require actual synthetic JP/KR text plus the expected returned device/warning. An absent variable skips this optional physical-device check in ordinary CI; mandatory packaged CPU and GPU-less fallback checks remain separate.
 
 
