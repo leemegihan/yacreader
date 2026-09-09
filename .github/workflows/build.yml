@@ -1,6 +1,7 @@
 name: Build
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - master
@@ -17,6 +18,8 @@ env:
 jobs:
   # Build number generation
   initialization:
+    # The personal Windows branch is covered by manga-windows.yml.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.repository != 'leemegihan/yacreader' || github.head_ref != 'manga-library-v01' }}
     name: Initialization
     runs-on: windows-latest
     outputs:

@@ -25,6 +25,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Check C++ formatting
+        run: |
+          python -m pip install clang-format==22.1.8
+          if ($LASTEXITCODE -ne 0) { throw 'clang-format installation failed' }
+          ./scripts/clang-format-windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'clang-format failed' }
+          git diff --exit-code
+          if ($LASTEXITCODE -ne 0) { throw 'C++ formatting differs' }
+
       - uses: jurplel/install-qt-action@v4
         with:
           version: '6.9.3'
@@ -348,7 +357,7 @@ jobs:
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
           $env:YACREADER_DATA_DIR = Join-Path $env:RUNNER_TEMP 'artifact settings 한글'
           $env:YACREADER_EXPECT_NEURAL_DEVICE = 'cpu'
-          & "$package/local_metadata_test.exe" localNeuralDevice isolatedSettingsPaths neuralCacheCompetingWriters neuralCacheIdentity neuralCachePreservesReviewAndDevices neuralCacheRejectsCorruption -o "$env:GITHUB_WORKSPACE/build/artifact-ocr.txt,txt"
+          & "$package/local_metadata_test.exe" ocrProcessAndCancellation ocrProcessTreeCleanup localNeuralDevice isolatedSettingsPaths neuralCacheCompetingWriters neuralCacheIdentity neuralCachePreservesReviewAndDevices neuralCacheRejectsCorruption -o "$env:GITHUB_WORKSPACE/build/artifact-ocr.txt,txt"
           $testExit = $LASTEXITCODE
           Remove-Item Env:YACREADER_EXPECT_NEURAL_DEVICE
           Get-Content "$env:GITHUB_WORKSPACE/build/artifact-ocr.txt"

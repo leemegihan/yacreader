@@ -733,3 +733,23 @@ A local GUI check initially saw the library app exit with code zero before its
 startup deadline. A single retry with fresh isolated settings and trace logging
 passed for both applications. The original exit was not reproduced and its cause
 remains unconfirmed; retain the failed record rather than claiming a code fix.
+
+
+## Windows OCR process ownership
+
+Both Tesseract and neural OCR now use an invocation-owned Windows Job Object.
+The worker joins its job atomically through the process-creation job-list
+attribute; the job handle is not inherited. Cancel, timeout, normal worker exit
+and owner destruction reap remaining descendants. A failed cleanup blocks CPU
+retry. This changes process lifetime, not OCR input, models or candidate rules.
+
+Synthetic native tests cover explicit stop, wrapper destruction, a worker that
+exits leaving a child, and abrupt owner exit. An unrelated test-owned process
+must remain running. These tests complement real-device validation; they do not
+establish real-work accuracy. Queue resume and cross-instance GPU scheduling
+remain future integration work.
+
+The personal branch's automatic validation is Windows x64 build/tests/installer
+plus C++ formatting. The pre-existing general OS matrix remains manually callable.
+This implementation is awaiting its new Windows run and local artifact checks;
+the successful storage-foundation results above refer to the earlier code.

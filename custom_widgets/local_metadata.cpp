@@ -4,6 +4,7 @@
 #include "comic_image_folder.h"
 #include "compressed_archive.h"
 #include "library_maintenance_lock.h"
+#include "local_ocr_process.h"
 #include "qnaturalsorting.h"
 #include "yacreader_global.h"
 
@@ -56,26 +57,25 @@ QImage decode(const QByteArray &bytes)
     return reader.read();
 }
 
-bool run(QProcess &process, const QString &program, const QStringList &arguments,
+bool run(LocalOcrProcess &process, const QString &program, const QStringList &arguments,
          int timeout, const Cancellation &cancel, QString *error)
 {
     if (cancelled(cancel))
         return false;
-    process.start(program, arguments, QIODevice::ReadOnly);
-    if (!process.waitForStarted(5000)) {
-        *error = tr("Could not start local OCR: %1").arg(process.errorString());
+    if (!process.startOcr(program, arguments, error))
         return false;
-    }
     QElapsedTimer timer;
     timer.start();
     while (!process.waitForFinished(100)) {
         if (cancelled(cancel) || timer.elapsed() > timeout) {
-            process.kill();
-            process.waitForFinished(5000);
+            if (!process.finishTree(error))
+                return false;
             *error = cancelled(cancel) ? tr("Cancelled") : tr("OCR timed out for this page.");
             return false;
         }
     }
+    if (!process.finishTree(error))
+        return false;
     if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
         *error = tr("Local OCR failed: %1").arg(QString::fromUtf8(process.readAllStandardError()).left(1500));
         return false;
@@ -215,7 +215,7 @@ static QByteArray runOcrTsv(const QImage &image, const OcrOptions &options, cons
     }
     // Relative ASCII filenames also work with Windows executables that cannot
     // open a Unicode image filename. No command shell and no URL input.
-    QProcess process;
+    LocalOcrProcess process;
     process.setWorkingDirectory(temporary.path());
     auto environment = QProcessEnvironment::systemEnvironment();
     environment.insert(QStringLiteral("OMP_THREAD_LIMIT"), QStringLiteral("2"));
@@ -316,7 +316,7 @@ static QVector<Reading> recognizeNeuralPages(const QVector<QImage> &images, cons
     if (!manifest.open(QIODevice::WriteOnly) || manifest.write(bytes) != bytes.size())
         return fail(tr("OCR 작업 목록을 만들지 못했습니다."));
     manifest.close();
-    QProcess process;
+    LocalOcrProcess process;
     process.setWorkingDirectory(root.path());
     auto environment = QProcessEnvironment::systemEnvironment();
     environment.remove(QStringLiteral("PYTHONHOME"));
@@ -327,9 +327,9 @@ static QVector<Reading> recognizeNeuralPages(const QVector<QImage> &images, cons
                                                                                                       : "jpn";
     const QStringList arguments { "-I", "-X", "utf8", root.filePath("worker.py"), "--manifest", manifest.fileName(), "--language", language,
                                   "--threads", QString::number(qBound(1, options.cpuThreads, 16)), "--device", gpu ? "gpu:0" : "cpu" };
-    process.start(python, arguments, QIODevice::ReadOnly);
-    if (!process.waitForStarted(5000))
-        return fail(tr("Could not start local OCR: %1").arg(process.errorString()));
+    QString startError;
+    if (!process.startOcr(python, arguments, &startError))
+        return fail(startError);
     QElapsedTimer timer;
     timer.start();
     int completed = 0;
@@ -370,12 +370,16 @@ static QVector<Reading> recognizeNeuralPages(const QVector<QImage> &images, cons
         collect();
         if (cancelled(cancel) || timer.elapsed() > qMax(options.timeoutMs, 180000)) {
             error = cancelled(cancel) ? tr("Cancelled") : tr("OCR timed out for this page.");
-            process.kill();
-            process.waitForFinished(5000);
+            QString cleanupError;
+            if (!process.finishTree(&cleanupError))
+                return fail(cleanupError);
             break;
         }
     }
     collect();
+    QString cleanupError;
+    if (!process.finishTree(&cleanupError))
+        return fail(cleanupError); // Never launch CPU retry while the GPU tree may remain.
     if (error.isEmpty() && (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0))
         error = tr("Local OCR failed: %1").arg(QString::fromUtf8(diagnostics).right(1500));
     if (gpu && !cancelled(cancel) && (!error.isEmpty() || std::any_of(readings.cbegin(), readings.cend(), [](const Reading &r) { return !r.error.isEmpty(); }))) {

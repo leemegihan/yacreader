@@ -5,6 +5,7 @@
 #include "library_maintenance_lock.h"
 #include "local_metadata.h"
 #include "local_ocr_cache.h"
+#include "local_ocr_process.h"
 #include "ocr_page_view.h"
 #include "yacreader_archive_inspector_dialog.h"
 #include "yacreader_global.h"
@@ -43,6 +44,9 @@
 
 #include <algorithm>
 #include <cstdlib>
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#endif
 
 namespace {
 QByteArray tsvFor(const QStringList &lines, int confidence = 90)
@@ -125,6 +129,8 @@ private slots:
     void collectionFolderIsNotAComic();
     void labelledCandidatesAreNotTranslators();
     void ocrProcessAndCancellation();
+    void ocrProcessTreeCleanup_data();
+    void ocrProcessTreeCleanup();
     void realOcr();
     void croppedCreditOcr();
     void preprocessingPreservesSource();
@@ -402,6 +408,122 @@ void LocalMetadataTest::ocrProcessAndCancellation()
     options.executable = "/missing-ocr-tool";
     QVERIFY(LocalMetadata::recognize(sampleImage(), options, flag, &error).isEmpty());
     QVERIFY(!error.isEmpty());
+}
+
+namespace {
+int processTreeHelper(const QStringList &args)
+{
+    if (args.value(1) == "--ocr-tree-leaf") {
+        QThread::sleep(60);
+        return 0;
+    }
+    const QString root = args.value(2);
+    const QString mode = args.value(3);
+    if (args.value(1) == "--ocr-tree-worker") {
+        QProcess leaf;
+        leaf.setStandardOutputFile(QProcess::nullDevice());
+        leaf.setStandardErrorFile(QProcess::nullDevice());
+#ifdef Q_OS_WIN
+        leaf.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *a) { a->flags |= CREATE_NO_WINDOW; });
+#endif
+        leaf.start(QCoreApplication::applicationFilePath(), { "--ocr-tree-leaf" });
+        if (!leaf.waitForStarted(5000))
+            return 41;
+        QSaveFile ready(root + "/ready.json");
+        const auto bytes = QJsonDocument(QJsonObject {
+                                                 { "worker", QCoreApplication::applicationPid() }, { "leaf", leaf.processId() } })
+                                   .toJson();
+        if (!ready.open(QIODevice::WriteOnly) || ready.write(bytes) != bytes.size() || !ready.commit())
+            return 42;
+        if (mode == "worker-exit")
+            std::_Exit(0);
+        QThread::sleep(60);
+        return 0;
+    }
+    LocalOcrProcess worker;
+    QString error;
+    if (!worker.startOcr(QCoreApplication::applicationFilePath(), { "--ocr-tree-worker", root, mode }, &error))
+        return 43;
+    if (mode == "worker-exit" && !worker.waitForFinished(5000))
+        return 46;
+    QElapsedTimer timer;
+    timer.start();
+    while (!QFileInfo::exists(root + "/act")) {
+        if (timer.elapsed() > 10000)
+            return 44;
+        QThread::msleep(10);
+    }
+    if (mode == "owner-crash")
+        std::_Exit(73);
+    if (mode == "scope")
+        return 0;
+    return worker.finishTree(&error) ? 0 : 45;
+}
+}
+
+void LocalMetadataTest::ocrProcessTreeCleanup_data()
+{
+    QTest::addColumn<QString>("mode");
+    for (const auto &mode : { "stop", "scope", "worker-exit", "owner-crash" })
+        QTest::newRow(mode) << QString::fromLatin1(mode);
+}
+
+void LocalMetadataTest::ocrProcessTreeCleanup()
+{
+#ifndef Q_OS_WIN
+    QSKIP("Windows process-tree ownership test");
+#else
+    QFETCH(QString, mode);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    // Another process we own must survive this job's cleanup.
+    QProcess unrelated;
+    unrelated.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *a) { a->flags |= CREATE_NO_WINDOW; });
+    unrelated.start(QCoreApplication::applicationFilePath(), { "--ocr-tree-leaf" });
+    QVERIFY(unrelated.waitForStarted(5000));
+    auto unrelatedCleanup = qScopeGuard([&] { unrelated.kill(); unrelated.waitForFinished(5000); });
+    QProcess controller;
+    controller.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *a) { a->flags |= CREATE_NO_WINDOW; });
+    controller.start(QCoreApplication::applicationFilePath(), { "--ocr-tree-controller", directory.path(), mode });
+    QVERIFY(controller.waitForStarted(5000));
+    auto cleanup = qScopeGuard([&] {
+        if (controller.state() != QProcess::NotRunning) {
+            controller.kill();
+            controller.waitForFinished(5000);
+        }
+    });
+    QElapsedTimer timer;
+    timer.start();
+    const auto readyPath = directory.filePath("ready.json");
+    while (!QFileInfo::exists(readyPath) && timer.elapsed() < 5000) {
+        QVERIFY(controller.state() != QProcess::NotRunning);
+        QTest::qWait(10);
+    }
+    QFile ready(readyPath);
+    QVERIFY(ready.open(QIODevice::ReadOnly));
+    const auto object = QJsonDocument::fromJson(ready.readAll()).object();
+    HANDLE leaf = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, object.value("leaf").toInteger());
+    QVERIFY(leaf != nullptr);
+    auto closeLeaf = qScopeGuard([&] { CloseHandle(leaf); });
+    QCOMPARE(WaitForSingleObject(leaf, 0), DWORD(WAIT_TIMEOUT));
+    HANDLE worker = nullptr;
+    auto closeWorker = qScopeGuard([&] { if (worker) CloseHandle(worker); });
+    if (mode != "worker-exit") {
+        worker = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, object.value("worker").toInteger());
+        QVERIFY(worker != nullptr);
+        QCOMPARE(WaitForSingleObject(worker, 0), DWORD(WAIT_TIMEOUT));
+    }
+    QFile action(directory.filePath("act"));
+    QVERIFY(action.open(QIODevice::WriteOnly));
+    action.close();
+    QVERIFY(controller.waitForFinished(10000));
+    QCOMPARE(controller.exitCode(), mode == "owner-crash" ? 73 : 0);
+    QCOMPARE(WaitForSingleObject(leaf, 5000), DWORD(WAIT_OBJECT_0));
+    if (worker)
+        QCOMPARE(WaitForSingleObject(worker, 5000), DWORD(WAIT_OBJECT_0));
+    QVERIFY(!unrelated.waitForFinished(50));
+    QCOMPARE(unrelated.state(), QProcess::Running);
+#endif
 }
 
 void LocalMetadataTest::realOcr()
@@ -2227,6 +2349,11 @@ int localOcrCacheProbe(const QStringList &args)
 
 int main(int argc, char **argv)
 {
+    if (argc > 1 && QByteArray(argv[1]).startsWith("--ocr-tree-")) {
+        QCoreApplication app(argc, argv);
+        return processTreeHelper(app.arguments());
+    }
+
     if (argc > 2 && QByteArray(argv[1]) == "page.png") {
         if (qEnvironmentVariable("YACREADER_FAKE_OCR_MODE") == "timeout")
             QThread::sleep(10);
