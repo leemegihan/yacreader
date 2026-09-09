@@ -301,7 +301,7 @@ bool genericPathName(QString value)
     value.remove(QRegularExpression(QStringLiteral("[\\s_.\\-]+")));
     value.remove(QRegularExpression(QStringLiteral("^[0-9]+|[0-9]+$")));
     static const QSet<QString> generic { "", "downloads", "download", "comics", "comic", "manga", "images", "image", "pictures", "library", "testlibrary", "test", "tests", "sample", "samples", "archive", "archives", "folder", "books", "book", "temp", "tmp", "unidentified", "unknown", "desktop", "documents", "만화", "다운로드", "미분류", "테스트", "새폴더", "라이브러리", "자료", "漫画", "未分類" };
-    if (generic.contains(value) || QStringList { "japanese", "korean", "english", "한국어", "일본어", "영어", "日本語", "翻訳" }.contains(value))
+    if (generic.contains(value) || QStringList { "japanese", "korean", "english", "한국어", "일본어", "영어", "日本語", "翻訳", "미번", "미번역", "번역", "한글", "한글판", "히토미펌", "repost", "reupload", "転載" }.contains(value))
         return true;
     // Number/language/storage labels are organizational names, not artists.
     return QRegularExpression(QStringLiteral("^(?:ko|kr|jp|ja|en|zh|mixed)(?:archive|folder|comic|manga|sample|test)$")).match(value).hasMatch();

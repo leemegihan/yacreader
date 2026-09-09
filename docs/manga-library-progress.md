@@ -606,3 +606,5 @@ macOS 임시 디스크 해제 오류는 해당 작업 재시도에서 해결됐�
 - Add synthetic worker and C++ regressions for delimiter limits, role order, adjacent-name geometry, incomplete/ambiguous pairs and explicit review. Fixed-input actual CPU/GPU comparison and Windows validation are pending for this revision. Real text and review answers remain private.
 
 - The local page probe now accepts an optional bounded 1–6 pages per end and records the sampling setting. Default front/back-three behavior is unchanged; archive/folder synthetic tests cover ordering, short-work deduplication, invalid limits and output/source preservation. This enables a separately recorded expanded-window audit within fixed works without changing a frozen OCR comparison corpus.
+
+- Exclude common translation/language and repost markers from bracketed or parent-folder author hints. Preserve the remaining title and ordinary creator hints; these path hints remain separate from OCR identity evidence. Synthetic tests cover both marker positions and a normal creator name.

@@ -1558,6 +1558,21 @@ void LocalMetadataTest::nameHintsExcludeLibraryRoots()
     const auto languageMarker = LocalMetadata::suggest({ }, "/downloads/[Japanese] Evening.cbz");
     QCOMPARE(languageMarker.size(), 1);
     QCOMPARE(languageMarker.first().field, LocalMetadata::Suggestion::Title);
+    for (const auto &marker : QStringList { "미번", "미번역", "번역", "한글", "한글판", "히토미펌", "Repost", "Reupload", "転載" }) {
+        const auto tagged = LocalMetadata::suggest({ }, QString("/library/[%1] Example Book.cbz").arg(marker), "/library");
+        QCOMPARE(tagged.size(), 1);
+        QCOMPARE(tagged.first().field, LocalMetadata::Suggestion::Title);
+        QCOMPARE(tagged.first().value, QString("Example Book"));
+        QVERIFY(!tagged.first().labelled);
+        const auto parent = LocalMetadata::suggest({ }, QString("/library/%1/Example Book.cbz").arg(marker), "/library");
+        QCOMPARE(parent.size(), 1);
+        QCOMPARE(parent.first().field, LocalMetadata::Suggestion::Title);
+    }
+    const auto creator = LocalMetadata::suggest({ }, "/library/[Alice Example] Example Book.cbz", "/library");
+    QCOMPARE(creator.size(), 2);
+    QCOMPARE(creator.first().field, LocalMetadata::Suggestion::Author);
+    QCOMPARE(creator.first().value, QString("Alice Example"));
+    QVERIFY(!creator.first().labelled);
     QTemporaryDir temporary;
     QVERIFY(QDir().mkpath(temporary.filePath("My collection/01_KO_Folder")));
     QVERIFY(LocalMetadata::suggest({ }, temporary.filePath("My collection/01_KO_Folder"), temporary.filePath("My collection")).isEmpty());
