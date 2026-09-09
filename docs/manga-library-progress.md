@@ -579,3 +579,10 @@ macOS 임시 디스크 해제 오류는 해당 작업 재시도에서 해결됐�
 - A freshly downloaded independent runtime passed 12 targeted local tests plus initialization/cleanup. Its artifact hash and hidden PaddleX metadata were verified; worker and all nine model files match the previous validation runtime. The download service returned a transient HTTP 520 once; retry succeeded and the ZIP matched its published digest.
 - Replay of saved real-input CPU/GPU outputs preserved existing candidates and kept both device candidate sets equal. A reviewed missing author became an unconfirmed proposal. This parser-only change did not repeat inference or speed measurements; earlier physical-GPU verification, current synthetic installation/CPU-fallback checks and candidate replay are separate evidence.
 - Narrow-text review identified remaining cross-language selection errors; CJK disagreements need a separate worker experiment. Real text, paths, candidates, measurements and review answers remain local. No whole-library processing, operating database writes or current-app installation changes were made.
+
+## 2026-09-09 — preserve disputed CJK readings for explicit review
+
+- Extend alternative retention to different CJK readings of the same region when both models score at least 85 and the gap is at most 8. Preserve the primary winner and its score, deduplicate normalized text and retain at most two alternatives. This is a review-volume heuristic, not score calibration or automatic language correction.
+- Existing ASCII-extension review behavior remains available. No additional inference call, model, schema version or automatic metadata action is introduced. Candidate explanations now also describe disagreement rather than only extra text.
+- Add synthetic worker tests for both language directions, ties, boundaries, duplicate/unsupported readings, region equality, limits and unchanged inference-call count. A C++ inspector regression verifies disputed CJK titles remain unconfirmed and require an explicit review action.
+- Validation pending. Real inputs, review truths, candidate outputs and timings remain private; no whole-library processing or operating-app/database changes.

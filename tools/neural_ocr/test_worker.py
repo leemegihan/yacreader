@@ -150,6 +150,51 @@ class WorkerTest(unittest.TestCase):
         latin = dict(full, text='PC-90', confidence=98)
         self.assertEqual(worker.select_reading([latin, korean])['alternatives'], [korean])
 
+    def test_cjk_disagreement_retains_both_directions_and_score_ties(self):
+        japanese = {'text': '雨', 'confidence': 96, 'language': 'jpn', 'box': [0, 0, 100, 20]}
+        korean = dict(japanese, text='가상의 글', confidence=94, language='kor')
+        for options in ([japanese, korean], [dict(korean, confidence=98), japanese],
+                        [dict(korean, confidence=96), japanese], [japanese, dict(korean, confidence=96)]):
+            winner = max(options, key=lambda x: x['confidence'])
+            result = worker.select_reading(options)
+            self.assertEqual({k: v for k, v in result.items() if k != 'alternatives'}, winner)
+            self.assertEqual(result['alternatives'], [x for x in options if x is not winner])
+            self.assertTrue(all('alternatives' not in x for x in options))
+
+    def test_cjk_disagreement_filters_low_scores_gaps_scripts_and_duplicate_text(self):
+        japanese = {'text': '雨', 'confidence': 96, 'language': 'jpn', 'box': [0, 0, 100, 20]}
+        korean = dict(japanese, text='가상의 글', confidence=88, language='kor')
+        self.assertEqual(worker.select_reading([japanese, korean])['alternatives'], [korean])
+        for other in [dict(korean, confidence=87.99), dict(korean, confidence=84.99),
+                      dict(korean, text='Latin words'), dict(korean, text='雨'),
+                      dict(korean, language='jpn'), dict(korean, box=[1, 0, 100, 20])]:
+            self.assertNotIn('alternatives', worker.select_reading([japanese, other]))
+        self.assertNotIn('alternatives', worker.select_reading([dict(japanese, confidence=84.99), dict(korean, confidence=84)]))
+        self.assertEqual(len(worker.select_reading([dict(japanese, confidence=85), dict(korean, confidence=85)])['alternatives']), 1)
+        same = dict(korean, text='가 상 의 글')
+        another = dict(korean, text='검토 문구')
+        third = dict(korean, text='세 번째 대안')
+        result = worker.select_reading([japanese, korean, same, another, third])
+        self.assertEqual(result['alternatives'], [korean, another])
+        mixed = dict(japanese, text='雨가상의글')
+        identical = dict(korean, text='雨 가상의 글')
+        self.assertNotIn('alternatives', worker.select_reading([mixed, identical]))
+
+    def test_batched_reader_preserves_disputed_cjk_without_extra_inference(self):
+        engine = worker.Engine.__new__(worker.Engine)
+        engine.readers = {'jpn': Reader('雨', .96), 'kor': Reader('가상의 글', .94)}
+        engine.progress = lambda stage: None
+        image = Image.new('RGB', (200, 100), 'white')
+        regions = worker.regions_from([[(5, 5), (150, 5), (150, 20), (5, 20)]], 200, 100)
+        with patch.object(engine.readers['jpn'], 'predict', wraps=engine.readers['jpn'].predict) as jpn, \
+                patch.object(engine.readers['kor'], 'predict', wraps=engine.readers['kor'].predict) as kor:
+            result = engine.read_regions(image, regions)
+        self.assertEqual(jpn.call_count, 1)
+        self.assertEqual(kor.call_count, 1)
+        self.assertEqual(result[0]['text'], '雨')
+        self.assertEqual(result[0]['alternatives'][0]['text'], '가상의 글')
+        self.assertEqual(result[0]['box'], result[0]['alternatives'][0]['box'])
+
     def test_batched_reader_exposes_partial_alternative(self):
         engine = worker.Engine.__new__(worker.Engine)
         engine.readers = {'jpn': Reader('[Author]青木そら', .93), 'kor': Reader('[Author]', .97)}

@@ -132,6 +132,7 @@ private slots:
     void realMultilingualColophon();
     void neuralResponseAndReview();
     void neuralAlternativesRequireReview();
+    void neuralCjkDisagreementRequiresReview();
     void coverTitlesAndCombinedEvidence();
     void coverLayoutRejectsUnrelatedText();
     void nameHintsExcludeLibraryRoots();
@@ -793,6 +794,50 @@ void LocalMetadataTest::neuralAlternativesRequireReview()
     response["lines"] = QJsonArray { line };
     QVERIFY(read().error.isEmpty());
     QVERIFY(read().alternatives.isEmpty());
+}
+
+void LocalMetadataTest::neuralCjkDisagreementRequiresReview()
+{
+    const QJsonArray box { 10, 10, 180, 30 };
+    const QJsonObject alternate { { "text", "제목: 가상의 책" }, { "language", "kor" }, { "confidence", 94 }, { "box", box } };
+    const QJsonObject line { { "text", "雨" }, { "language", "jpn" }, { "confidence", 96 }, { "box", box }, { "alternatives", QJsonArray { alternate } } };
+    const QJsonObject response { { "version", 1 }, { "engine", "paddle-regions" }, { "language", "auto" }, { "lines", QJsonArray { line } } };
+    const auto reading = LocalMetadata::parseNeuralReading(QJsonDocument(response).toJson(), QSize(200, 200));
+    QVERIFY(reading.error.isEmpty());
+    QCOMPARE(reading.text, QString("雨"));
+    QCOMPARE(reading.confidence, 96.0);
+    QCOMPARE(reading.lines.size(), 1);
+    QCOMPARE(reading.alternatives.size(), 1);
+    LocalMetadata::Page page;
+    page.number = 20;
+    page.kind = LocalMetadata::PageKind::Colophon;
+    page.text = reading.text;
+    page.reading = reading;
+    page.reading.reviewRequired = false; // Exercise the unlabelled gate independently.
+    LocalMetadata::Result result;
+    result.pages = { page };
+    result.suggestions = LocalMetadata::suggest(result.pages, QString());
+    QCOMPARE(result.suggestions.size(), 1);
+    const auto candidate = result.suggestions.first();
+    QCOMPARE(candidate.field, LocalMetadata::Suggestion::Title);
+    QCOMPARE(candidate.value, QString("가상의 책"));
+    QVERIFY(!candidate.labelled);
+    QVERIFY(!candidate.evidence.first().labelled);
+    QVERIFY(candidate.reason.contains("다르게 읽은"));
+    YACReaderArchiveInspectorDialog dialog;
+    QSignalSpy requests(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    dialog.autoSearch->setChecked(true);
+    dialog.showResult(result);
+    QVERIFY(dialog.titleEdit->text().isEmpty());
+    QVERIFY(dialog.pageText->toPlainText().contains("雨"));
+    QVERIFY(dialog.pageText->toPlainText().contains("제목: 가상의 책"));
+    dialog.requestSearch(true);
+    QCOMPARE(requests.count(), 0);
+    dialog.requestSearch(false);
+    QCOMPARE(requests.count(), 1);
+    QCOMPARE(requests.first().at(2).toString(), QString("가상의 책"));
+    QVERIFY(!requests.first().at(7).toBool());
+    QVERIFY(requests.first().at(8).toString().contains("미확정"));
 }
 
 void LocalMetadataTest::realNeuralOcr()

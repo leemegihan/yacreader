@@ -420,7 +420,7 @@ QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePat
             for (const auto &credit : credits(review)) {
                 const auto field = credit.role == Role::Title ? Suggestion::Title : credit.role == Role::Author ? Suggestion::Author
                                                                                                                 : Suggestion::Publisher;
-                append(field, credit.value, tr("다른 언어 판독에서 추가로 읽힌 글자입니다. 기본 판독과 원본을 대조해 직접 선택해 주세요."), page.number, false, credit.confidence);
+                append(field, credit.value, tr("다른 언어 모델에서 다르게 읽은 글자입니다. 기본 판독과 원본을 대조해 직접 선택해 주세요."), page.number, false, credit.confidence);
             }
         }
         const auto titleLines = coverTitleLines(page);

@@ -109,7 +109,7 @@ def merge_lines(lines, additions):
 
 
 def select_reading(options):
-    """Keep the score winner; expose possible cross-language truncation for review."""
+    """Keep the score winner; expose cross-language ambiguity for review only."""
     if not options:
         return None
     best = max(options, key=lambda item: item['confidence'])
@@ -117,21 +117,30 @@ def select_reading(options):
         return None
     result = dict(best)
     compact = lambda text: ''.join(unicodedata.normalize('NFKC', text).split())
-    short = compact(best['text'])
-    if not short or not short.isascii() or not any(ch.isalnum() for ch in short):
-        return result
+
+    def has_script(text, language):
+        if language == 'jpn':
+            return any('\u3040' <= ch <= '\u30ff' or '\u3400' <= ch <= '\u9fff' for ch in text)
+        return language == 'kor' and any('\uac00' <= ch <= '\ud7a3' for ch in text)
+
+    primary = compact(best['text'])
+    ascii_fragment = primary.isascii() and any(ch.isalnum() for ch in primary)
     alternatives, seen = [], set()
     for option in sorted(options, key=lambda item: item['confidence'], reverse=True):
-        if option['language'] == best['language'] or option['confidence'] < 85:
+        if option['language'] == best['language'] or option['confidence'] < 85 or option['box'] != best['box']:
             continue
-        longer = compact(option['text'])
-        if short not in longer or len(longer) < len(short) + 2:
+        alternate = compact(option['text'])
+        identity = (option['language'], alternate)
+        if not alternate or alternate == primary or identity in seen:
             continue
-        extra = longer.replace(short, '', 1)
-        script = (any('\u3040' <= ch <= '\u30ff' or '\u3400' <= ch <= '\u9fff' for ch in extra)
-                  if option['language'] == 'jpn' else any('\uac00' <= ch <= '\ud7a3' for ch in extra))
-        identity = (option['language'], longer)
-        if not script or identity in seen:
+        extended = (ascii_fragment and primary in alternate and len(alternate) >= len(primary) + 2
+                    and has_script(alternate.replace(primary, '', 1), option['language']))
+        # Scores from different models are not calibrated correctness probabilities.
+        # A small gap only controls review volume; it never changes primary text.
+        disputed = (best['confidence'] - option['confidence'] <= 8
+                    and has_script(primary, best['language'])
+                    and has_script(alternate, option['language']))
+        if not (extended or disputed):
             continue
         alternatives.append(dict(option))
         seen.add(identity)
