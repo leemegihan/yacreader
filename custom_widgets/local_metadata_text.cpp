@@ -68,6 +68,11 @@ Label label(const QString &raw)
     const auto suffix = QRegularExpression(QStringLiteral("^(.+?)\\s+(지음|글[·/]그림|著)$")).match(line);
     if (suffix.hasMatch())
         return { Role::Author, suffix.captured(1), true };
+    // Bracketed credits need an inline value. A standalone "[Circle]"
+    // must not attach to the next OCR line, which may be a social-media label.
+    const auto bracketed = QRegularExpression(QStringLiteral(R"(^\[([^\[\]]+)\]\s*(.+)$)")).match(line);
+    if (bracketed.hasMatch() && role(bracketed.captured(1)) != Role::None && !bracketed.captured(2).trimmed().isEmpty())
+        return { role(bracketed.captured(1)), bracketed.captured(2).trimmed() };
     // Colophons also separate a role and its value with a filled circle.
     // Match the complete role before the first delimiter; punctuation in a
     // name or a role word inside dialogue must not create another field.

@@ -119,3 +119,10 @@ Publisher and printer roles remain separate from authors, and shared
 person/circle labels remain unconfirmed alternatives. Separators inside values
 are preserved. A role word embedded in dialogue or concatenated directly with
 a name does not become a labelled identity candidate.
+
+Bracketed roles such as `[Circle] Example Studio` require a value on the same
+OCR line. A standalone bracketed label is not linked to the following line;
+that line may be a social-media heading rather than a name. Automatic language
+selection can still prefer an incomplete transcription. Inspect both model
+readings in private diagnostics or rerun with an explicitly chosen language;
+recognition confidence alone does not establish complete or correct text.

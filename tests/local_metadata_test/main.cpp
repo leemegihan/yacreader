@@ -137,6 +137,7 @@ private slots:
     void creditSuffixAndCompoundLabels();
     void creditGeometryAndDialogue();
     void bulletSeparatedCredits();
+    void bracketedInlineCredits();
     void sharedAuthorCircleNeedsReview();
     void realNeuralWorkReuse();
     void localNeuralDevice();
@@ -886,6 +887,30 @@ void LocalMetadataTest::creditSuffixAndCompoundLabels()
     QVERIFY(LocalMetadata::suggest({ page }, QString()).isEmpty());
     page.text = "김하늘 지음";
     QCOMPARE(LocalMetadata::suggest({ page }, QString()).first().value, QString("김하늘"));
+}
+
+void LocalMetadataTest::bracketedInlineCredits()
+{
+    LocalMetadata::Page page;
+    page.number = 20;
+    page.text = "[Circle]月の工房\n[Author] Alice Example\n[Translator] Wrong Person";
+    const auto candidates = LocalMetadata::suggest({ page }, QString());
+    QCOMPARE(candidates.size(), 2);
+    QCOMPARE(candidates[0].field, LocalMetadata::Suggestion::Publisher);
+    QCOMPARE(candidates[0].value, QString("月の工房"));
+    QCOMPARE(candidates[1].field, LocalMetadata::Suggestion::Author);
+    QCOMPARE(candidates[1].value, QString("Alice Example"));
+    for (const auto &candidate : candidates)
+        QVERIFY(candidate.labelled);
+    page.text = "［作者・サークル名］青木そら";
+    const auto ambiguous = LocalMetadata::suggest({ page }, QString());
+    QCOMPARE(ambiguous.size(), 2);
+    for (const auto &candidate : ambiguous)
+        QVERIFY(!candidate.labelled);
+    for (const auto &text : QStringList { "[Circle]\nTwitter", "[Circle]   \nTwitter", "[Translator] Wrong Person", "Unknown [Author] Wrong Person", "[Author] ここで待とう。", "[Unknown] Author: Wrong Person", "[Author Alice Example" }) {
+        page.text = text;
+        QVERIFY2(LocalMetadata::suggest({ page }, QString()).isEmpty(), qPrintable(text));
+    }
 }
 
 void LocalMetadataTest::bulletSeparatedCredits()
