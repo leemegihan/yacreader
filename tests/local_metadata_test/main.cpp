@@ -769,6 +769,7 @@ void LocalMetadataTest::neuralAlternativesRequireReview()
     QCOMPARE(titleRequests.count(), 1);
     QCOMPARE(titleRequests.first().at(2).toString(), QString("雨の図書館"));
     QVERIFY(!titleRequests.first().at(7).toBool());
+    QVERIFY(titleRequests.first().at(8).toString().contains("미확정"));
     // An incomplete alternative must not borrow the primary reading's next line.
     page.reading.alternatives.first().text = "[Author]";
     page.text += "\nWrong Person";

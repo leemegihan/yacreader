@@ -523,7 +523,7 @@ void YACReaderArchiveInspectorDialog::requestSearch(bool automatic)
         const auto selected = candidate.field == LocalMetadata::Suggestion::Title ? title : candidate.field == LocalMetadata::Suggestion::Author ? author
                                                                                                                                                  : QString();
         if (!selected.isEmpty() && candidate.value.compare(selected, Qt::CaseInsensitive) == 0 && candidate.page > 0)
-            summary.append(tr("%1: %2 (%3%4)").arg(candidate.field == LocalMetadata::Suggestion::Title ? tr("제목") : tr("작가"), candidate.value, LocalMetadata::suggestionSource(candidate), candidate.labelled ? QString() : tr(" · 배치로 추정")));
+            summary.append(tr("%1: %2 (%3%4)").arg(candidate.field == LocalMetadata::Suggestion::Title ? tr("제목") : tr("작가"), candidate.value, LocalMetadata::suggestionSource(candidate), candidate.labelled ? QString() : tr(" · 미확정")));
     }
     const int pages = result.pageCount;
     reject();
