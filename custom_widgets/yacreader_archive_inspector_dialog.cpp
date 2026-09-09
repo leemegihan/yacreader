@@ -505,10 +505,15 @@ void YACReaderArchiveInspectorDialog::requestSearch(bool automatic)
     for (const auto &candidate : result.suggestions) {
         if (candidate.field == LocalMetadata::Suggestion::Author && candidate.page == 0 && !hints.contains(candidate.value))
             hints.append(candidate.value);
-        if (candidate.field == LocalMetadata::Suggestion::Publisher && usableEvidence(candidate, result, false, 50) && !publishers.contains(candidate.value))
+        if (candidate.field == LocalMetadata::Suggestion::Publisher && usableEvidence(candidate, result, automatic, 50) && !publishers.contains(candidate.value)) {
             publishers.append(candidate.value);
+            // Tentative publisher/circle hints also need review, even when a
+            // title was already filled from independent explicit evidence.
+            if (!usableEvidence(candidate, result, true, 50))
+                proposed = true;
+        }
     }
-    if (!publisherEdit->text().trimmed().isEmpty() && !publishers.contains(publisherEdit->text().trimmed()))
+    if (!automatic && !publisherEdit->text().trimmed().isEmpty() && !publishers.contains(publisherEdit->text().trimmed()))
         publishers.prepend(publisherEdit->text().trimmed());
     if (title.isEmpty() && author.isEmpty() && hints.isEmpty()) {
         if (!automatic)

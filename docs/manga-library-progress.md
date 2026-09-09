@@ -591,3 +591,10 @@ macOS 임시 디스크 해제 오류는 해당 작업 재시도에서 해결됐�
 - The fixed real-input GPU/CPU matrix retained each device's primary readings, existing alternatives and metadata candidates. Reviewed language-selection errors are now available as alternatives; candidate agreement and synthetic success are not whole-work accuracy measurements. Alternative counts can differ by device because the other model's reading or score differs.
 - Separate physical-GPU checks observed the actual worker PID in the NVIDIA process list, including a check using the exact packaged worker bytes. A targeted CPU diagnostic explained a device-dependent alternative threshold result. These additional checks were excluded from the paired timing matrix.
 - Real inputs, text/role truths, candidate outputs, paths and timings remain private. No whole-library processing or operating-app/database changes were made. Further work prioritizes unresolved identity roles and candidate-free works within the existing fixed sample.
+
+## 2026-09-09 — preserve joined circle banners for review
+
+- Preserve a compact, high-scoring two-part circle banner near the top of an opening page as one unconfirmed publisher/circle proposal when OCR loses the label boundary. Do not split its parts into people/circles or use it as author/title evidence. Plain text, body-page and unrelated-layout cases retain strict parsing.
+- Automatic lookup now excludes publisher/circle hints without strong independent evidence. Explicit lookup carrying tentative publishing hints opens review even when the title was already filled. Publisher-only proposals do not initiate title/author search.
+- Synthetic regressions cover proposal boundaries, missing layout, dialogue, role isolation, unchanged explicit labels, autofill and both automatic/manual lookup paths. Worker/models and inference scheduling are unchanged; real candidate validation replays saved fixed CPU/GPU outputs.
+- Validation pending for this code revision. Real text, paths, candidates and measurements remain local; no original media, operating DB or current installation changes.

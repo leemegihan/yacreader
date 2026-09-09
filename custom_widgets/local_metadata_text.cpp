@@ -242,6 +242,30 @@ QVector<TextLine> joinedAuthorReviewLines(const Page &page)
     return result;
 }
 
+QVector<TextLine> joinedCircleBannerReviewLines(const Page &page)
+{
+    // A compact header may lose the boundary after the circle label. Keep the
+    // whole two-part value: a middle dot does not assign person/circle roles.
+    // Header geometry only limits review proposals; it is not identity proof.
+    if (page.number < 1 || page.number > 3 || !page.error.isEmpty() || page.reading.uncertainLanguage)
+        return { };
+    const auto visible = page.text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    static const QRegularExpression joined(QStringLiteral(R"(^サークル([\p{Han}\p{Hiragana}\p{Katakana}ーA-Za-z0-9]{2,24}・[\p{Han}\p{Hiragana}\p{Katakana}ーA-Za-z0-9]{2,24})$)"));
+    QVector<TextLine> result;
+    for (const auto &line : page.reading.lines) {
+        const auto &box = line.bounds;
+        if (!visible.contains(line.text) || line.confidence < 85 || box.isEmpty() || box.width() < 4 * box.height() || box.top() < 0 || box.top() > 2 * box.height())
+            continue;
+        const auto match = joined.match(line.text.normalized(QString::NormalizationForm_KC).trimmed());
+        if (!match.hasMatch())
+            continue;
+        auto proposal = line;
+        proposal.text = match.captured(1);
+        result.append(proposal);
+    }
+    return result;
+}
+
 bool genericPathName(QString value)
 {
     value = value.normalized(QString::NormalizationForm_KC).toCaseFolded();
@@ -410,6 +434,8 @@ QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePat
         }
         for (const auto &line : joinedAuthorReviewLines(page))
             append(Suggestion::Author, line.text, tr("작가 표기와 이름 사이의 구분자가 보이지 않습니다. 주변 발행·인쇄 행의 배치를 근거로 제안하므로 원본과 대조해 직접 선택해 주세요."), page.number, false, line.confidence);
+        for (const auto &line : joinedCircleBannerReviewLines(page))
+            append(Suggestion::Publisher, line.text, tr("서클 표기 뒤의 구분자가 보이지 않는 배너입니다. 두 부분을 한 이름으로 확정하거나 개인 작가와 서클로 나누지 않았습니다. 원본과 대조해 직접 편집해 주세요."), page.number, false, line.confidence);
         for (const auto &alternative : page.reading.alternatives) {
             Page review;
             review.number = page.number;

@@ -142,6 +142,8 @@ private slots:
     void creditGeometryAndDialogue();
     void bulletSeparatedCredits();
     void joinedAuthorRequiresPublishingLayout();
+    void joinedCircleBannerNeedsReview();
+    void publisherHintsRespectReviewBoundary();
     void bracketedInlineCredits();
     void sharedAuthorCircleNeedsReview();
     void realNeuralWorkReuse();
@@ -1150,6 +1152,120 @@ void LocalMetadataTest::joinedAuthorRequiresPublishingLayout()
     cover.reading.lines.prepend({ "雨の図書館", 96, QRect(100, 10, 600, 80) });
     for (const auto &candidate : suggestions(cover))
         QVERIFY(candidate.field != LocalMetadata::Suggestion::Title);
+}
+
+void LocalMetadataTest::joinedCircleBannerNeedsReview()
+{
+    LocalMetadata::Page base;
+    base.number = 2;
+    base.reading.lines = { { "サークル架空工房・月野ソラ", 91, QRect(100, 40, 650, 70), "jpn" } };
+    auto suggestions = [](LocalMetadata::Page page) {
+        page.text.clear();
+        for (const auto &line : page.reading.lines)
+            page.text += line.text + QLatin1Char('\n');
+        return LocalMetadata::suggest({ page }, QString());
+    };
+    const auto candidates = suggestions(base);
+    QCOMPARE(candidates.size(), 1);
+    QCOMPARE(candidates.first().field, LocalMetadata::Suggestion::Publisher);
+    QCOMPARE(candidates.first().value, QString("架空工房・月野ソラ"));
+    QVERIFY(!candidates.first().labelled);
+    QVERIFY(!candidates.first().evidence.first().labelled);
+    QVERIFY(candidates.first().reason.contains("나누지"));
+    LocalMetadata::Result result;
+    result.pages = { base };
+    result.suggestions = candidates;
+    YACReaderArchiveInspectorDialog dialog;
+    QSignalSpy requests(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    dialog.showResult(result);
+    QVERIFY(dialog.titleEdit->text().isEmpty());
+    QVERIFY(dialog.authorEdit->text().isEmpty());
+    QVERIFY(dialog.publisherEdit->text().isEmpty());
+    dialog.autoSearch->setChecked(true);
+    dialog.requestSearch(true);
+    dialog.requestSearch(false); // A publisher alone is not a title/author query.
+    QCOMPARE(requests.count(), 0);
+    QCOMPARE(dialog.candidateList->count(), 1);
+    for (const auto &box : { QRect(), QRect(100, 500, 650, 70), QRect(100, 40, 200, 70), QRect(100, -1, 650, 70) }) {
+        auto unrelated = base;
+        unrelated.reading.lines.first().bounds = box;
+        QVERIFY(suggestions(unrelated).isEmpty());
+    }
+    for (const auto &text : QStringList { "サークル活動を楽しもう", "ここはサークル架空工房・月野ソラ", "サークル架空工房・月野ソラ。", "サークル架空工房・月野ソラ・別の名前", "サークル架空工房・", "サークル架空工房・https://example.test", "ただ自分としては、この本の作者として、皆さん" }) {
+        auto unrelated = base;
+        unrelated.reading.lines.first().text = text;
+        QVERIFY2(suggestions(unrelated).isEmpty(), qPrintable(text));
+    }
+    auto low = base;
+    low.reading.lines.first().confidence = 84;
+    QVERIFY(suggestions(low).isEmpty());
+    auto body = base;
+    body.number = 4;
+    QVERIFY(suggestions(body).isEmpty());
+    auto failed = base;
+    failed.error = "failed";
+    QVERIFY(suggestions(failed).isEmpty());
+    auto uncertain = base;
+    uncertain.reading.uncertainLanguage = true;
+    QVERIFY(suggestions(uncertain).isEmpty());
+    auto plain = base;
+    plain.text = base.reading.lines.first().text;
+    plain.reading.lines.clear();
+    QVERIFY(LocalMetadata::suggest({ plain }, QString()).isEmpty());
+    auto explicitCredit = base;
+    explicitCredit.reading.lines.first().text = "サークル: 架空工房・月野ソラ";
+    const auto explicitValues = suggestions(explicitCredit);
+    QCOMPARE(explicitValues.size(), 1);
+    QVERIFY(explicitValues.first().labelled); // Existing explicit parsing is unchanged.
+    auto cover = base;
+    cover.number = 1;
+    cover.reading.lines.append({ "雨の図書館", 96, QRect(100, 400, 900, 180) });
+    QCOMPARE(suggestions(cover).size(), 1); // No title or author inferred from the banner.
+}
+
+void LocalMetadataTest::publisherHintsRespectReviewBoundary()
+{
+    LocalMetadata::Page titlePage;
+    titlePage.number = 20;
+    titlePage.kind = LocalMetadata::PageKind::Colophon;
+    titlePage.reading = LocalMetadata::parseTsv(tsvFor({ "作品名: 雨の図書館", "発行日: 2026年1月1日" }), "jpn+eng");
+    titlePage.text = titlePage.reading.text;
+    LocalMetadata::Page banner;
+    banner.number = 2;
+    banner.reading.lines = { { "サークル架空工房・月野ソラ", 91, QRect(100, 40, 650, 70), "jpn" } };
+    banner.text = banner.reading.lines.first().text;
+    LocalMetadata::Result result;
+    result.pages = { titlePage, banner };
+    result.suggestions = LocalMetadata::suggest(result.pages, QString());
+    for (bool automatic : { true, false }) {
+        YACReaderArchiveInspectorDialog dialog;
+        QSignalSpy requests(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+        dialog.showResult(result);
+        QCOMPARE(dialog.titleEdit->text(), QString("雨の図書館"));
+        dialog.autoSearch->setChecked(true);
+        dialog.requestSearch(automatic);
+        QCOMPARE(requests.count(), 1);
+        QCOMPARE(requests.first().at(7).toBool(), automatic);
+        QCOMPARE(requests.first().at(6).toStringList(), automatic ? QStringList() : QStringList { "架空工房・月野ソラ" });
+    }
+    // Explicit labels from a neural/uncertain page still need review. A filled
+    // publisher edit must not reintroduce them into the automatic request.
+    for (bool neural : { false, true }) {
+        auto review = result;
+        review.pages[1].kind = LocalMetadata::PageKind::Colophon;
+        review.pages[1].reading.reviewRequired = neural;
+        review.pages[1].reading.uncertainLanguage = !neural;
+        review.suggestions.last().labelled = true;
+        review.suggestions.last().evidence.first().labelled = true;
+        YACReaderArchiveInspectorDialog dialog;
+        QSignalSpy requests(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+        dialog.showResult(review);
+        dialog.publisherEdit->setText("架空工房・月野ソラ");
+        dialog.autoSearch->setChecked(true);
+        dialog.requestSearch(true);
+        QCOMPARE(requests.count(), 1);
+        QVERIFY(requests.first().at(6).toStringList().isEmpty());
+    }
 }
 
 void LocalMetadataTest::sharedAuthorCircleNeedsReview()
