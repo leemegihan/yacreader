@@ -95,6 +95,7 @@ private:
     QLabel *ocrEvidenceLabel;
     QLineEdit *searchEdit;
     QLineEdit *authorEdit;
+    QVector<QLineEdit *> nameHintEdits;
     QComboBox *providerChoice;
     int sourcePageCount = 0;
     QPushButton *searchButton;

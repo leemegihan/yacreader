@@ -86,6 +86,25 @@ YACReaderMetadataLookupDialog::YACReaderMetadataLookupDialog(QWidget *parent)
     authorEdit = new QLineEdit(this);
     authorEdit->setMaxLength(160);
     authorEdit->setPlaceholderText(tr("작가 (선택 사항 · 대조용)"));
+    auto *hintLayout = new QHBoxLayout;
+    for (int i = 0; i < 3; ++i) {
+        auto *edit = new QLineEdit(this);
+        edit->setMaxLength(180);
+        edit->setClearButtonEnabled(true);
+        edit->setPlaceholderText(tr("미확정 이름 힌트 %1").arg(i + 1));
+        edit->setToolTip(tr("파일명·폴더명에서 얻은 검색 단서입니다. 작가가 아니면 수정하거나 지워 주세요."));
+        nameHintEdits.append(edit);
+        hintLayout->addWidget(edit);
+        connect(edit, &QLineEdit::textChanged, this, [this] {
+            nameHints.clear();
+            for (const auto *field : nameHintEdits) {
+                const auto value = field->text().trimmed();
+                if (!value.isEmpty() && !nameHints.contains(value, Qt::CaseInsensitive))
+                    nameHints.append(value);
+            }
+            clearResults(); // Previous matches used a different set of hints.
+        });
+    }
     providerChoice = new QComboBox(this);
     providerChoice->addItem("AniList");
     providerChoice->addItem("E-Hentai");
@@ -133,8 +152,10 @@ YACReaderMetadataLookupDialog::YACReaderMetadataLookupDialog(QWidget *parent)
     layout->addSpacing(6);
     layout->addLayout(searchLayout);
     layout->addWidget(authorEdit);
+    layout->addWidget(new QLabel(tr("파일명 이름 힌트 (미확정 · 필요하면 수정 또는 삭제)"), this));
+    layout->addLayout(hintLayout);
     layout->addWidget(ocrEvidenceLabel);
-    auto *privacyLabel = new QLabel(tr("조회하면 제목·작가 또는 입력한 작품 링크를 선택한 서비스에 전송합니다. 페이지 이미지는 전송하지 않습니다."), this);
+    auto *privacyLabel = new QLabel(tr("조회하면 제목·작가·이름 힌트 또는 입력한 작품 링크를 선택한 서비스에 전송합니다. 페이지 이미지는 전송하지 않습니다."), this);
     privacyLabel->setWordWrap(true);
     layout->addWidget(privacyLabel);
     layout->addWidget(statusLabel);
@@ -176,6 +197,8 @@ void YACReaderMetadataLookupDialog::setComic(const QString &libraryPath,
     authorEdit->setText(existingWriter);
     sourcePageCount = 0;
     nameHints.clear();
+    for (auto *edit : nameHintEdits)
+        edit->clear();
     publisherHints.clear();
     ocrEvidenceLabel->clear();
     ocrEvidenceLabel->hide();
@@ -305,6 +328,8 @@ void YACReaderMetadataLookupDialog::setBusy(bool busy, const QString &status)
 {
     searchEdit->setEnabled(!busy);
     authorEdit->setEnabled(!busy);
+    for (auto *edit : nameHintEdits)
+        edit->setEnabled(!busy);
     providerChoice->setEnabled(!busy);
     searchButton->setEnabled(!busy);
     resultsList->setEnabled(!busy);
@@ -343,7 +368,9 @@ void YACReaderMetadataLookupDialog::prepareOcrSearch(const QString &title, const
     searchEdit->setText(title);
     authorEdit->setText(author);
     sourcePageCount = qMax(0, pageCount);
-    nameHints = hints.mid(0, 3);
+    const auto importedHints = hints.mid(0, 3);
+    for (int i = 0; i < nameHintEdits.size(); ++i)
+        nameHintEdits[i]->setText(importedHints.value(i));
     publisherHints = publishers.mid(0, 3);
     ocrEvidenceLabel->setText(evidenceSummary.isEmpty() ? QString() : tr("조회 단서의 원본 (입력값을 수정하면 아래 근거와 다를 수 있습니다)\n%1").arg(evidenceSummary));
     ocrEvidenceLabel->setVisible(!evidenceSummary.isEmpty());

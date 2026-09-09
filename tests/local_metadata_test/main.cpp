@@ -25,6 +25,7 @@
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QProcess>
+#include <QPushButton>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QScopeGuard>

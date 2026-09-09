@@ -642,3 +642,5 @@ Review the fixed sample's unresolved person/circle roles and candidate-free cove
 - Windows/package validation and fixed-output filename replay are pending for this revision.
   Real names, paths, OCR and lookup results stay outside Git/CI. No operating DB, current app or
   original-media changes are authorized by this workflow; full-library execution remains out of scope.
+
+- Expose the three filename name hints as editable review fields. Changing them clears stale matches, busy searches disable editing, and switching works clears the fields. A synthetic workflow test covers import, edits, deduplication, reset and unchanged DB values.

@@ -70,6 +70,7 @@ private slots:
     void hintQueriesAndRetryCancellation();
     void automaticSelectionRequiresAgreement();
     void ocrReviewCarriesEvidenceAndResets();
+    void filenameHintsAreEditableBeforeLookup();
 
 private:
     PendingReply *attachReply(YACReaderMetadataLookupDialog &dialog);
@@ -96,6 +97,38 @@ void MetadataWorkflowTest::ocrReviewCarriesEvidenceAndResets()
     QVERIFY(dialog.ocrEvidenceLabel->isHidden());
     QVERIFY(dialog.nameHints.isEmpty());
     QVERIFY(dialog.publisherHints.isEmpty());
+}
+
+void MetadataWorkflowTest::filenameHintsAreEditableBeforeLookup()
+{
+    YACReaderMetadataLookupDialog dialog;
+    dialog.setComic(directory.path(), 1, "Evening Garden.cbz", "", "", "");
+    dialog.prepareOcrSearch("Evening Garden", "", 24, { "First Hint", "Second Hint", "Third Hint", "Ignored Fourth" }, { }, false, "Filename hint; unconfirmed");
+    QCOMPARE(dialog.nameHintEdits.size(), 3);
+    QCOMPARE(dialog.nameHintEdits[0]->text(), QString("First Hint"));
+    QCOMPARE(dialog.nameHintEdits[1]->text(), QString("Second Hint"));
+    QCOMPARE(dialog.nameHintEdits[2]->text(), QString("Third Hint"));
+    QCOMPARE(dialog.nameHints, QStringList({ "First Hint", "Second Hint", "Third Hint" }));
+    QVERIFY(dialog.activeReply == nullptr);
+    dialog.nameHintEdits[0]->setText("Reviewed Artist");
+    dialog.nameHintEdits[1]->clear();
+    dialog.nameHintEdits[2]->setText("reviewed artist");
+    QCOMPARE(dialog.nameHints, QStringList { "Reviewed Artist" });
+    QCOMPARE(YACReaderMetadataLookupDialog::galleryQueries("Evening Garden", "", dialog.nameHints), QStringList({ "title:\"Evening Garden\"", "artist:\"Reviewed Artist$\"" }));
+    QVERIFY(dialog.activeReply == nullptr);
+    QVERIFY(!dialog.buttonBox->button(QDialogButtonBox::Apply)->isEnabled());
+    dialog.setBusy(true);
+    for (auto *edit : dialog.nameHintEdits)
+        QVERIFY(!edit->isEnabled());
+    dialog.setBusy(false);
+    dialog.setComic(directory.path(), 2, "Next Garden.cbz", "", "", "");
+    QVERIFY(dialog.nameHints.isEmpty());
+    for (auto *edit : dialog.nameHintEdits)
+        QVERIFY(edit->text().isEmpty());
+    QSqlQuery query(database);
+    QVERIFY(query.exec("SELECT title FROM comic_info WHERE id=1"));
+    QVERIFY(query.next());
+    QCOMPARE(query.value(0).toString(), QString("My title"));
 }
 
 void MetadataWorkflowTest::galleryMetadataKeepsNamespaces()
