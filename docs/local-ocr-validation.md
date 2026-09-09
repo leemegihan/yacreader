@@ -166,3 +166,20 @@ one unconfirmed publishing proposal. The complete two-part value is preserved;
 the delimiter does not establish which part is a person or a circle. Automatic
 lookup excludes publisher hints without strong evidence. Explicit lookup
 carrying tentative publishing hints opens review even with a filled title.
+
+## Filename fallback replay
+
+The inspector now defaults to, and is bounded at, three pages per end. The explicit local page
+diagnostic can still reproduce historical 1–6-page audits; it does not change the product fallback
+policy. Do not automatically widen the fixed sample when no page identity candidate is found.
+
+The explicit --local-ocr-fallback mode accepts the same private result manifest as
+--local-ocr-candidates, with additional sourcePath and optional libraryRoot strings. It returns
+page and filename suggestions plus a filenameFallback flag, without reading additional comic
+pages, accessing a library DB or making a network request. Use a fresh output path. The original
+OCR-only probe continues to exclude filename hints.
+
+Keep failed/unfinished OCR separate from absent page candidates. Synthetic UI tests verify that
+filename proposals open review rather than triggering HTTP, do not prefill confirmed fields,
+preserve user edits and cannot replace existing page evidence. Actual filename-derived queries
+and results remain private; having a usable search lead is not a catalog identity match.

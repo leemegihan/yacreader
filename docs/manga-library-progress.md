@@ -625,3 +625,20 @@ macOS 임시 디스크 해제 오류는 해당 작업 재시도에서 해결됐�
 ### Next work
 
 Review the fixed sample's unresolved person/circle roles and candidate-free cover or colophon regions before broadening extraction rules. Establish independently checked text/role references and classify missing detection, transcription/selection errors and role-linking failures separately. Test cross-work model reuse only after individual-work behavior is stable; durable queues, pause/resume, cache and bulk save remain later work.
+
+## 2026-09-09 — bounded page OCR with reviewed filename fallback
+
+- Adopt the requested route: inspect at most the first/last three pages; when completed OCR has
+  no page identity candidates, proceed to filename/catalog review instead of expanding pages.
+  Missing candidates are a routing decision, not proof that the whole work contains no credits.
+- Add a clear filename-lookup action and carry the cleaned filename title to the review form
+  with low-confidence provenance. Preserve manually entered values and require an explicit
+  lookup action before HTTP. No confirmed-field autofill or automatic DB save is added.
+- Process consecutive filename brackets and ignore common translation/format markers.
+  A single remaining bracket is a tentative name hint; multiple unexplained brackets are not
+  silently assigned as artists. The original filename remains visible.
+- Keep previews, cancellation, read errors and existing page candidates distinct from successful
+  no-candidate OCR. Add synthetic regressions and an offline, private filename-fallback probe.
+- Windows/package validation and fixed-output filename replay are pending for this revision.
+  Real names, paths, OCR and lookup results stay outside Git/CI. No operating DB, current app or
+  original-media changes are authorized by this workflow; full-library execution remains out of scope.

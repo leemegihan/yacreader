@@ -52,9 +52,10 @@ YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent
     statusLabel->setTextFormat(Qt::PlainText);
     statusLabel->setWordWrap(true);
     pageLimit = new QSpinBox(this);
-    pageLimit->setRange(1, 6);
+    pageLimit->setRange(1, 3);
     pageLimit->setValue(3);
     pageLimit->setSuffix(tr("장씩 (앞 / 뒤)"));
+    pageLimit->setToolTip(tr("앞뒤 최대 3장에서 후보를 찾고, 없으면 파일명·외부 메타데이터 대조로 이어갑니다."));
     language = new QComboBox(this);
     language->addItem(tr("자동 · 페이지마다 일본어/한국어 비교"), "auto");
     language->addItem(tr("일본어 + 영어"), "jpn+eng");
@@ -238,6 +239,8 @@ void YACReaderArchiveInspectorDialog::inspectComic(const QString &path, qulonglo
     publisherEdit->clear();
     pageInfo->clear();
     automaticSearchDone = false;
+    filenameFallback = false;
+    searchButton->setText(tr("메타데이터 대조…"));
     overwrite->setChecked(false);
     result = { };
     pageList->clear();
@@ -296,7 +299,7 @@ void YACReaderArchiveInspectorDialog::start(bool ocr)
     connect(thread, &QThread::finished, this, [this, flag, output, ocr, elapsed] {
         if (flag->load() || flag != cancellation)
             return;
-        showResult(*output);
+        showResult(*output, ocr);
         if (ocr)
             statusLabel->setText(statusLabel->text() + tr(" · 총 %1초").arg(elapsed.elapsed() / 1000));
         setBusy(false);
@@ -309,15 +312,15 @@ void YACReaderArchiveInspectorDialog::start(bool ocr)
     thread->start();
 }
 
-void YACReaderArchiveInspectorDialog::showResult(const LocalMetadata::Result &value)
+void YACReaderArchiveInspectorDialog::showResult(const LocalMetadata::Result &value, bool ocrComplete)
 {
     result = value;
     pageList->clear();
     candidateList->clear();
     int failures = 0;
     for (const auto &page : result.pages) {
-        pageList->addItem(tr("%1 / %2 · %3%4").arg(page.number).arg(result.pageCount).arg(LocalMetadata::pageKindName(page.kind), page.error.isEmpty() ? QString() : tr(" (오류)")));
-        if (!page.error.isEmpty())
+        pageList->addItem(tr("%1 / %2 · %3%4").arg(page.number).arg(result.pageCount).arg(LocalMetadata::pageKindName(page.kind), page.error.isEmpty() && page.reading.error.isEmpty() ? QString() : tr(" (오류)")));
+        if (!page.error.isEmpty() || !page.reading.error.isEmpty())
             ++failures;
     }
     for (const auto &candidate : result.suggestions) {
@@ -345,7 +348,12 @@ void YACReaderArchiveInspectorDialog::showResult(const LocalMetadata::Result &va
         if (edit->text().isEmpty() && values.size() == 1)
             edit->setText(values.first());
     }
-    statusLabel->setText(!result.error.isEmpty() ? result.error : tr("%1장 확인, %2장 오류. 후보가 없거나 부정확하면 페이지 글자를 확인해 직접 입력해 주세요.").arg(result.pages.size()).arg(failures));
+    const bool pageCandidate = std::any_of(result.suggestions.cbegin(), result.suggestions.cend(), [](const LocalMetadata::Suggestion &candidate) { return candidate.page > 0; });
+    const bool readingFailure = std::any_of(result.pages.cbegin(), result.pages.cend(), [](const LocalMetadata::Page &page) { return !page.reading.error.isEmpty(); });
+    filenameFallback = ocrComplete && !result.pages.isEmpty() && result.error.isEmpty() && failures == 0 && !readingFailure && !pageCandidate;
+    searchButton->setText(filenameFallback ? tr("파일명으로 메타데이터 대조…") : tr("메타데이터 대조…"));
+    statusLabel->setText(!result.error.isEmpty() ? result.error : filenameFallback ? tr("선택한 앞뒤 페이지에서 식별 후보를 찾지 못했습니다. 페이지를 더 늘리지 않고 파일명·이름 힌트로 메타데이터를 대조해 주세요.")
+                                                                                   : tr("%1장 확인, %2장 오류. 후보와 원본을 대조해 사용할 정보를 선택해 주세요.").arg(result.pages.size()).arg(failures));
     int preferred = 0;
     for (int i = 0; i < result.pages.size(); ++i) {
         if (result.pages.at(i).kind == LocalMetadata::PageKind::Colophon) {
@@ -501,6 +509,21 @@ void YACReaderArchiveInspectorDialog::requestSearch(bool automatic)
         statusLabel->setText(tr("서로 다른 제목 또는 작가 후보가 있습니다. 사용할 후보를 두 번 클릭하거나 직접 입력한 뒤 대조해 주세요."));
         return;
     }
+    // Filename candidates are a separate, explicitly reviewed search route.
+    // Never turn missing/failed OCR into confirmed evidence or an HTTP request.
+    const bool pageCandidate = std::any_of(result.suggestions.cbegin(), result.suggestions.cend(), [](const LocalMetadata::Suggestion &candidate) { return candidate.page > 0; });
+    if (!automatic && !pageCandidate) {
+        QStringList filenameTitles;
+        for (const auto &candidate : result.suggestions)
+            if (candidate.field == LocalMetadata::Suggestion::Title && candidate.page == 0 && !filenameTitles.contains(candidate.value, Qt::CaseInsensitive))
+                filenameTitles.append(candidate.value);
+        if (title.isEmpty() && filenameTitles.size() == 1) {
+            title = filenameTitles.first();
+            proposed = true;
+        }
+        if (filenameFallback)
+            proposed = true;
+    }
     QStringList hints, publishers;
     for (const auto &candidate : result.suggestions) {
         if (candidate.field == LocalMetadata::Suggestion::Author && candidate.page == 0 && !hints.contains(candidate.value))
@@ -527,7 +550,7 @@ void YACReaderArchiveInspectorDialog::requestSearch(bool automatic)
     for (const auto &candidate : result.suggestions) {
         const auto selected = candidate.field == LocalMetadata::Suggestion::Title ? title : candidate.field == LocalMetadata::Suggestion::Author ? author
                                                                                                                                                  : QString();
-        if (!selected.isEmpty() && candidate.value.compare(selected, Qt::CaseInsensitive) == 0 && candidate.page > 0)
+        if (!selected.isEmpty() && candidate.value.compare(selected, Qt::CaseInsensitive) == 0)
             summary.append(tr("%1: %2 (%3%4)").arg(candidate.field == LocalMetadata::Suggestion::Title ? tr("제목") : tr("작가"), candidate.value, LocalMetadata::suggestionSource(candidate), candidate.labelled ? QString() : tr(" · 미확정")));
     }
     const int pages = result.pageCount;

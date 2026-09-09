@@ -347,7 +347,7 @@ void YACReaderMetadataLookupDialog::prepareOcrSearch(const QString &title, const
     publisherHints = publishers.mid(0, 3);
     ocrEvidenceLabel->setText(evidenceSummary.isEmpty() ? QString() : tr("조회 단서의 원본 (입력값을 수정하면 아래 근거와 다를 수 있습니다)\n%1").arg(evidenceSummary));
     ocrEvidenceLabel->setVisible(!evidenceSummary.isEmpty());
-    statusLabel->setText(tr("OCR 후보를 가져왔습니다. 제목·작가를 확인하고 조회를 눌러 주세요."));
+    statusLabel->setText(tr("조회 후보를 가져왔습니다. OCR·파일명 근거와 제목·작가를 확인하고 조회를 눌러 주세요."));
     if (runSearch)
         startSearch();
 }

@@ -301,7 +301,7 @@ bool genericPathName(QString value)
     value.remove(QRegularExpression(QStringLiteral("[\\s_.\\-]+")));
     value.remove(QRegularExpression(QStringLiteral("^[0-9]+|[0-9]+$")));
     static const QSet<QString> generic { "", "downloads", "download", "comics", "comic", "manga", "images", "image", "pictures", "library", "testlibrary", "test", "tests", "sample", "samples", "archive", "archives", "folder", "books", "book", "temp", "tmp", "unidentified", "unknown", "desktop", "documents", "만화", "다운로드", "미분류", "테스트", "새폴더", "라이브러리", "자료", "漫画", "未分類" };
-    if (generic.contains(value) || QStringList { "japanese", "korean", "english", "한국어", "일본어", "영어", "日本語", "翻訳", "미번", "미번역", "번역", "한글", "한글판", "히토미펌", "repost", "reupload", "転載" }.contains(value))
+    if (generic.contains(value) || QStringList { "japanese", "korean", "english", "한국어", "일본어", "영어", "日本語", "翻訳", "미번", "미번역", "번역", "한글", "한글판", "히토미펌", "repost", "reupload", "転載", "ai번역", "ai번역본", "풀컬러", "fullcolor", "fullcolour", "translated", "translation", "digital", "uncensored", "scanlation" }.contains(value))
         return true;
     // Number/language/storage labels are organizational names, not artists.
     return QRegularExpression(QStringLiteral("^(?:ko|kr|jp|ja|en|zh|mixed)(?:archive|folder|comic|manga|sample|test)$")).match(value).hasMatch();
@@ -504,12 +504,23 @@ QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePat
     const QRegularExpression decoration(QStringLiteral("^\\s*(?:\\([^)]*\\)|【[^】]*】)\\s*"));
     while (decoration.match(base).hasMatch())
         base.remove(decoration);
-    const auto bracket = QRegularExpression(QStringLiteral(R"(^\[([^\]]+)\]\s*(.+)$)")).match(base);
-    if (bracket.hasMatch()) {
-        if (!genericPathName(bracket.captured(1)))
-            append(Suggestion::Author, bracket.captured(1), tr("파일명 이름 힌트 — 외부 artist 태그와 일치하는지 확인합니다."), 0);
-        base = bracket.captured(2);
+    QStringList bracketNames;
+    const QRegularExpression bracket(QStringLiteral(R"(^\[([^\]]+)\]\s*(.*)$)"));
+    while (true) {
+        const auto match = bracket.match(base);
+        if (!match.hasMatch())
+            break;
+        const auto name = match.captured(1).trimmed();
+        if (!genericPathName(name) && !bracketNames.contains(name, Qt::CaseInsensitive))
+            bracketNames.append(name);
+        base = match.captured(2);
+        while (decoration.match(base).hasMatch())
+            base.remove(decoration);
     }
+    // Several unexplained brackets may be categories, groups or names. Do not
+    // guess which one is the artist; the original filename stays visible.
+    if (bracketNames.size() == 1)
+        append(Suggestion::Author, bracketNames.first(), tr("파일명 이름 힌트 — 외부 artist 태그와 일치하는지 확인합니다."), 0);
     if (!genericPathName(base))
         append(Suggestion::Title, base, tr("파일명·폴더명 힌트 — OCR로 확인한 제목이 아닙니다."), 0);
     const QString parent = info.dir().dirName();

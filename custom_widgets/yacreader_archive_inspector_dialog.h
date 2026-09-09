@@ -44,7 +44,7 @@ private:
     LocalMetadata::OcrOptions ocrOptions() const;
     void cancel();
     void showPage(int row);
-    void showResult(const LocalMetadata::Result &result);
+    void showResult(const LocalMetadata::Result &result, bool ocrComplete = false);
     void save();
     void setBusy(bool busy);
 
@@ -54,6 +54,7 @@ private:
     LocalMetadata::Cancellation cancellation;
     LocalMetadata::Result result;
     bool automaticSearchDone = false;
+    bool filenameFallback = false;
 
     QLabel *fileLabel;
     QLabel *statusLabel;

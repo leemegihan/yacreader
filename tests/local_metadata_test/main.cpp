@@ -30,6 +30,7 @@
 #include <QScopeGuard>
 #include <QSettings>
 #include <QSignalSpy>
+#include <QSpinBox>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTemporaryDir>
@@ -137,6 +138,9 @@ private slots:
     void coverTitlesAndCombinedEvidence();
     void coverLayoutRejectsUnrelatedText();
     void nameHintsExcludeLibraryRoots();
+    void filenameHintsHandleDecorations();
+    void filenameFallbackRequiresExplicitReview();
+    void filenameFallbackDistinguishesErrorsAndPageEvidence();
     void neuralCandidatesOpenReviewBeforeSearch();
     void conflictingCandidatesRequireSelection();
     void creditSuffixAndCompoundLabels();
@@ -1585,6 +1589,115 @@ void LocalMetadataTest::nameHintsExcludeLibraryRoots()
 #endif
 }
 
+void LocalMetadataTest::filenameHintsHandleDecorations()
+{
+    const QString root = QDir::tempPath() + "/library";
+    struct Example {
+        QString file;
+        QString title;
+        QString author;
+    };
+    const QList<Example> examples {
+        { "[AI번역] [Alice Example] Evening Garden.cbz", "Evening Garden", "Alice Example" },
+        { "[번역][풀컬러] Evening Garden 2.zip", "Evening Garden 2", "" },
+        { "(edition) [translated] (digital) [Alice Example] Evening Garden.cbz", "Evening Garden", "Alice Example" },
+        { "[Category One][Category Two] Evening Garden.zip", "Evening Garden", "" },
+        { "[Alice Example][Alice Example] Evening Garden.zip", "Evening Garden", "Alice Example" },
+        { "[translated]", "", "" },
+        { "[translation] [fullcolor]", "", "" },
+        { "[Alice Example]", "", "Alice Example" },
+    };
+    for (const auto &example : examples) {
+        const auto candidates = LocalMetadata::suggest({ }, root + "/" + example.file, root);
+        QStringList titles, authors;
+        for (const auto &candidate : candidates) {
+            QCOMPARE(candidate.page, 0);
+            QVERIFY(!candidate.labelled);
+            QVERIFY(candidate.evidence.isEmpty());
+            (candidate.field == LocalMetadata::Suggestion::Title ? titles : authors).append(candidate.value);
+        }
+        QCOMPARE(titles, example.title.isEmpty() ? QStringList() : QStringList { example.title });
+        QCOMPARE(authors, example.author.isEmpty() ? QStringList() : QStringList { example.author });
+    }
+    QTemporaryDir temporary;
+    const QString folder = temporary.filePath("[AI번역][Alice Example] Evening Garden.v2");
+    QVERIFY(QDir().mkdir(folder));
+    const auto folderHints = LocalMetadata::suggest({ }, folder, temporary.path());
+    QCOMPARE(folderHints.size(), 2);
+    QCOMPARE(folderHints.last().value, QString("Evening Garden.v2"));
+}
+
+void LocalMetadataTest::filenameFallbackRequiresExplicitReview()
+{
+    LocalMetadata::Page page;
+    page.number = 1;
+    page.reading.reviewRequired = true;
+    page.reading.engine = "PaddleOCR";
+    LocalMetadata::Result result;
+    result.pageCount = 20;
+    result.pages = { page };
+    result.suggestions = LocalMetadata::suggest(result.pages, "/library/[translated][Alice Example] Evening Garden.cbz", "/library");
+    YACReaderArchiveInspectorDialog dialog;
+    QCOMPARE(dialog.pageLimit->maximum(), 3);
+    QCOMPARE(dialog.pageLimit->value(), 3);
+    dialog.showResult(result, true);
+    QVERIFY(dialog.filenameFallback);
+    QVERIFY(dialog.statusLabel->text().contains("파일명"));
+    QVERIFY(dialog.searchButton->text().contains("파일명"));
+    QVERIFY(dialog.titleEdit->text().isEmpty());
+    QVERIFY(dialog.authorEdit->text().isEmpty());
+    QSignalSpy requests(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    dialog.requestSearch(true);
+    QCOMPARE(requests.count(), 0);
+    QVERIFY(!dialog.automaticSearchDone);
+    dialog.requestSearch(false);
+    QCOMPARE(requests.count(), 1);
+    QCOMPARE(requests.first().at(2).toString(), QString("Evening Garden"));
+    QVERIFY(requests.first().at(3).toString().isEmpty());
+    QCOMPARE(requests.first().at(5).toStringList(), QStringList { "Alice Example" });
+    QVERIFY(!requests.first().at(7).toBool()); // Review only, no network or database write.
+    QVERIFY(requests.first().at(8).toString().contains("힌트"));
+}
+
+void LocalMetadataTest::filenameFallbackDistinguishesErrorsAndPageEvidence()
+{
+    LocalMetadata::Page blank;
+    blank.number = 1;
+    LocalMetadata::Result result;
+    result.pages = { blank };
+    result.suggestions = LocalMetadata::suggest(result.pages, "/library/Evening Garden.cbz", "/library");
+    YACReaderArchiveInspectorDialog dialog;
+    dialog.showResult(result);
+    QVERIFY(!dialog.filenameFallback); // Preview is not completed OCR.
+    auto error = result;
+    error.pages[0].error = "Unreadable image";
+    dialog.showResult(error, true);
+    QVERIFY(!dialog.filenameFallback);
+    error = result;
+    error.pages[0].reading.error = "Missing model";
+    dialog.showResult(error, true);
+    QVERIFY(!dialog.filenameFallback);
+    error = result;
+    error.error = "Archive failed";
+    dialog.showResult(error, true);
+    QVERIFY(!dialog.filenameFallback);
+    auto publisher = result;
+    publisher.pages[0].text = "サークル: Example Studio";
+    publisher.suggestions = LocalMetadata::suggest(publisher.pages, "/library/Evening Garden.cbz", "/library");
+    dialog.showResult(publisher, true);
+    QVERIFY(!dialog.filenameFallback); // Even tentative page identity evidence is retained.
+    dialog.showResult(result, true);
+    QVERIFY(dialog.filenameFallback);
+    dialog.titleEdit->setText("User Selected Title");
+    QSignalSpy requests(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    dialog.requestSearch(false);
+    QCOMPARE(requests.count(), 1);
+    QCOMPARE(requests.first().at(2).toString(), QString("User Selected Title"));
+    QVERIFY(!requests.first().at(7).toBool());
+    dialog.showResult({ }, true);
+    QVERIFY(!dialog.filenameFallback);
+}
+
 void LocalMetadataTest::neuralCandidatesOpenReviewBeforeSearch()
 {
     YACReaderArchiveInspectorDialog dialog;
@@ -1782,7 +1895,8 @@ int localOcrProbe(const QStringList &args)
         const auto bytes = QJsonDocument(QJsonObject { { "version", 1 }, { "pageCount", result.pageCount }, { "perEnd", perEnd }, { "pages", pages } }).toJson();
         return destination.open(QIODevice::WriteOnly) && destination.write(bytes) == bytes.size() && destination.commit() ? 0 : 3;
     }
-    if (args.at(1) != "--local-ocr-candidates" || !input.isFile())
+    const bool filenameMode = args.at(1) == "--local-ocr-fallback";
+    if ((args.at(1) != "--local-ocr-candidates" && !filenameMode) || !input.isFile())
         return 2;
     QFile manifest(input.absoluteFilePath());
     if (!manifest.open(QIODevice::ReadOnly) || manifest.size() > 1024 * 1024)
@@ -1814,8 +1928,14 @@ int localOcrProbe(const QStringList &args)
         page.kind = LocalMetadata::classifyPage(page.text, page.number);
         pages.append(page);
     }
+    const QString sourcePath = filenameMode ? document.object().value("sourcePath").toString() : QString();
+    if (filenameMode && sourcePath.trimmed().isEmpty())
+        return 2;
+    const auto suggestions = LocalMetadata::suggest(pages, sourcePath, filenameMode ? document.object().value("libraryRoot").toString() : QString());
+    bool pageCandidate = false;
     QJsonArray candidates;
-    for (const auto &item : LocalMetadata::suggest(pages, QString())) {
+    for (const auto &item : suggestions) {
+        pageCandidate = pageCandidate || item.page > 0;
         QJsonArray evidence;
         for (const auto &source : item.evidence)
             evidence.append(QJsonObject { { "page", source.page }, { "labelled", source.labelled }, { "confidence", source.confidence } });
@@ -1827,7 +1947,7 @@ int localOcrProbe(const QStringList &args)
                                         { "evidence", evidence } });
     }
     QSaveFile destination(output.absoluteFilePath());
-    const auto bytes = QJsonDocument(QJsonObject { { "version", 1 }, { "pathHintsUsed", false }, { "candidates", candidates } }).toJson();
+    const auto bytes = QJsonDocument(QJsonObject { { "version", 1 }, { "pathHintsUsed", filenameMode }, { "filenameFallback", filenameMode && !pageCandidate }, { "candidates", candidates } }).toJson();
     return destination.open(QIODevice::WriteOnly) && destination.write(bytes) == bytes.size() && destination.commit() ? 0 : 3;
 }
 
