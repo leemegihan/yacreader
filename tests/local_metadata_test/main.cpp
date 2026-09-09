@@ -4,6 +4,7 @@
 #include "library_creator.h"
 #include "library_maintenance_lock.h"
 #include "local_metadata.h"
+#include "local_ocr_cache.h"
 #include "ocr_page_view.h"
 #include "yacreader_archive_inspector_dialog.h"
 #include "yacreader_global.h"
@@ -133,6 +134,9 @@ private slots:
     void tsvConfidenceAndLanguageSelection();
     void automaticQueryUsesOnlyStrongCredits();
     void realMultilingualColophon();
+    void neuralCacheIdentity();
+    void neuralCachePreservesReviewAndDevices();
+    void neuralCacheRejectsCorruption();
     void neuralResponseAndReview();
     void neuralAlternativesRequireReview();
     void neuralCjkDisagreementRequiresReview();
@@ -748,6 +752,143 @@ void LocalMetadataTest::realMultilingualColophon()
         QVERIFY2(distance.last() <= 1, "Title/credit OCR exceeds the one-character error bound; inspect the UTF-8 diagnostic.");
         QVERIFY(reading.confidence > 0);
     }
+}
+
+namespace {
+LocalOcrCache::Identity cacheIdentity()
+{
+    return { QString(64, u'a'), QSize(200, 200), QString(64, u'b'), QString(64, u'c'),
+             QString(64, u'd'), QString(64, u'e'), QStringLiteral("kor"), 8, QStringLiteral("gpu:0"), QStringLiteral("gpu:0") };
+}
+QByteArray cacheResponse(const QString &device = QStringLiteral("gpu:0"))
+{
+    const QJsonArray lines { QJsonObject { { "text", "저자: 가상작가" }, { "confidence", 94 }, { "language", "kor" }, { "box", QJsonArray { 10, 10, 180, 30 } } } };
+    return QJsonDocument(QJsonObject { { "version", 1 }, { "engine", "paddle-regions" }, { "language", "kor" }, { "device", device }, { "lines", lines } }).toJson();
+}
+}
+
+void LocalMetadataTest::neuralCacheIdentity()
+{
+    const auto original = cacheIdentity();
+    const auto key = LocalOcrCache::key(original);
+    QCOMPARE(key.size(), 64);
+    for (int change = 0; change < 11; ++change) {
+        auto changed = original;
+        switch (change) {
+        case 0:
+            changed.imageSha256 = QString(64, u'f');
+            break;
+        case 1:
+            changed.preparedSize = QSize(300, 200);
+            break;
+        case 2:
+            changed.preprocessingFingerprint = QString(64, u'f');
+            break;
+        case 3:
+            changed.workerSha256 = QString(64, u'f');
+            break;
+        case 4:
+            changed.modelManifestSha256 = QString(64, u'f');
+            break;
+        case 5:
+            changed.packageManifestSha256 = QString(64, u'f');
+            break;
+        case 6:
+            changed.language = QStringLiteral("jpn");
+            break;
+        case 7:
+            changed.cpuThreads = 4;
+            break;
+        case 8:
+            changed.actualDevice = QStringLiteral("cpu");
+            break;
+        case 9:
+            changed.requestedDevice = QStringLiteral("cpu");
+            changed.actualDevice = QStringLiteral("cpu");
+            break;
+        case 10:
+            changed.cpuThreads = 16;
+            break;
+        }
+        QVERIFY(!LocalOcrCache::key(changed).isEmpty());
+        QVERIFY(LocalOcrCache::key(changed) != key);
+    }
+    auto invalid = original;
+    invalid.imageSha256 = QStringLiteral("unknown");
+    QVERIFY(LocalOcrCache::key(invalid).isEmpty());
+    invalid = original;
+    invalid.requestedDevice = QStringLiteral("cpu"); // CPU request cannot claim GPU execution.
+    QVERIFY(LocalOcrCache::key(invalid).isEmpty());
+    invalid = original;
+    invalid.preparedSize = QSize(100000, 100000);
+    QVERIFY(LocalOcrCache::key(invalid).isEmpty());
+}
+
+void LocalMetadataTest::neuralCachePreservesReviewAndDevices()
+{
+    QTemporaryDir dir;
+    const auto identity = cacheIdentity();
+    const auto bytes = cacheResponse();
+    QString error;
+    QVERIFY2(LocalOcrCache::save(dir.path(), identity, bytes, &error), qPrintable(error));
+    const auto cached = LocalOcrCache::load(dir.path(), identity, &error);
+    QVERIFY2(cached.has_value(), qPrintable(error));
+    QCOMPARE(cached->rawResult, bytes);
+    QCOMPARE(cached->reading.text, QStringLiteral("저자: 가상작가"));
+    QVERIFY(cached->reading.reviewRequired);
+    QCOMPARE(cached->reading.device, QStringLiteral("gpu:0"));
+    QCOMPARE(cached->reading.lines.first().bounds, QRect(10, 10, 170, 20));
+    QVERIFY(LocalOcrCache::save(dir.path(), identity, bytes, &error));
+
+    auto cpuFallback = identity;
+    cpuFallback.actualDevice = QStringLiteral("cpu");
+    QVERIFY(!LocalOcrCache::load(dir.path(), cpuFallback, &error));
+    QVERIFY(!LocalOcrCache::save(dir.path(), cpuFallback, bytes, &error));
+    QVERIFY(LocalOcrCache::save(dir.path(), cpuFallback, cacheResponse(QStringLiteral("cpu")), &error));
+    QCOMPARE(LocalOcrCache::load(dir.path(), cpuFallback, &error)->reading.device, QStringLiteral("cpu"));
+    auto cpuRequest = cpuFallback;
+    cpuRequest.requestedDevice = QStringLiteral("cpu");
+    QVERIFY(!LocalOcrCache::load(dir.path(), cpuRequest, &error));
+    // Valid empty-page OCR is preserved; it is not an engine error.
+    auto emptyPage = identity;
+    emptyPage.imageSha256 = QString(64, u'f');
+    auto empty = QJsonDocument::fromJson(bytes).object();
+    empty["lines"] = QJsonArray();
+    QVERIFY(LocalOcrCache::save(dir.path(), emptyPage, QJsonDocument(empty).toJson(), &error));
+    const auto blank = LocalOcrCache::load(dir.path(), emptyPage, &error);
+    QVERIFY(blank && blank->reading.text.isEmpty() && blank->reading.error.isEmpty());
+}
+
+void LocalMetadataTest::neuralCacheRejectsCorruption()
+{
+    QTemporaryDir dir;
+    const auto identity = cacheIdentity();
+    const auto bytes = cacheResponse();
+    QString error;
+    QVERIFY(!LocalOcrCache::save(dir.path(), identity, "{}", &error));
+    auto failed = QJsonDocument::fromJson(bytes).object();
+    failed["error"] = "Synthetic OCR failure";
+    QVERIFY(!LocalOcrCache::save(dir.path(), identity, QJsonDocument(failed).toJson(), &error));
+    failed = QJsonDocument::fromJson(bytes).object();
+    failed["lines"] = QJsonArray { QJsonObject { { "text", "invalid" }, { "confidence", 99 }, { "language", "kor" }, { "box", QJsonArray { 0, 0, 999, 999 } } } };
+    QVERIFY(!LocalOcrCache::save(dir.path(), identity, QJsonDocument(failed).toJson(), &error));
+    QVERIFY(!LocalOcrCache::save(QStringLiteral("relative-cache"), identity, bytes, &error));
+    QVERIFY(LocalOcrCache::save(dir.path(), identity, bytes, &error));
+    QVERIFY(!LocalOcrCache::save(dir.path(), identity, bytes + '\n', &error)); // Do not replace original bytes.
+    const QString filename = dir.filePath(LocalOcrCache::key(identity) + QStringLiteral(".json"));
+    QFile file(filename);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    auto envelope = QJsonDocument::fromJson(file.readAll()).object();
+    file.close();
+    envelope["resultSha256"] = QString(64, u'0');
+    const auto damaged = QJsonDocument(envelope).toJson();
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(file.write(damaged), damaged.size());
+    file.close();
+    QVERIFY(!LocalOcrCache::load(dir.path(), identity, &error));
+    QVERIFY(!LocalOcrCache::save(dir.path(), identity, bytes, &error));
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), damaged); // Preserve damaged evidence for explicit recovery.
 }
 
 void LocalMetadataTest::neuralResponseAndReview()
@@ -1952,6 +2093,75 @@ int localOcrProbe(const QStringList &args)
     return destination.open(QIODevice::WriteOnly) && destination.write(bytes) == bytes.size() && destination.commit() ? 0 : 3;
 }
 
+// Offline cache round-trip for an explicitly supplied small manifest. It never
+// opens original media, executes OCR, requests a catalog or writes a library DB.
+int localOcrCacheProbe(const QStringList &args)
+{
+    if (args.size() != 4)
+        return 2;
+    const QFileInfo input(args[2]), output(args[3]);
+    const QString cacheRoot = output.absoluteFilePath() + QStringLiteral(".cache");
+    if (!input.isAbsolute() || !input.isFile() || !output.isAbsolute() || output.exists() || QFileInfo(cacheRoot).exists() || !output.dir().exists())
+        return 2;
+    QFile file(input.absoluteFilePath());
+    if (!file.open(QIODevice::ReadOnly) || file.size() > 1024 * 1024)
+        return 2;
+    const auto document = QJsonDocument::fromJson(file.readAll());
+    const auto object = document.object();
+    const auto pages = object.value("pages").toArray();
+    if (!document.isObject() || object.value("version").toInt() != 1 || pages.isEmpty() || pages.size() > 6)
+        return 2;
+    struct Page {
+        LocalOcrCache::Identity identity;
+        QByteArray bytes;
+    };
+    QVector<Page> validated;
+    for (const auto &value : pages) {
+        const auto page = value.toObject();
+        const auto identity = page.value("identity").toObject();
+        LocalOcrCache::Identity i;
+        i.imageSha256 = identity.value("imageSha256").toString();
+        i.preparedSize = QSize(identity.value("width").toInt(), identity.value("height").toInt());
+        i.preprocessingFingerprint = identity.value("preprocessingFingerprint").toString();
+        i.workerSha256 = identity.value("workerSha256").toString();
+        i.modelManifestSha256 = identity.value("modelManifestSha256").toString();
+        i.packageManifestSha256 = identity.value("packageManifestSha256").toString();
+        i.language = identity.value("language").toString();
+        i.cpuThreads = identity.value("cpuThreads").toInt();
+        i.requestedDevice = identity.value("requestedDevice").toString();
+        i.actualDevice = identity.value("actualDevice").toString();
+        if (LocalOcrCache::key(i).isEmpty() || !QFileInfo(page.value("result").toString()).isAbsolute())
+            return 2;
+        QFile result(page.value("result").toString());
+        if (!result.open(QIODevice::ReadOnly) || result.size() > 4 * 1024 * 1024)
+            return 2;
+        const auto bytes = result.readAll();
+        const auto reading = LocalMetadata::parseNeuralReading(bytes, i.preparedSize);
+        if (!reading.error.isEmpty() || reading.device != i.actualDevice || reading.language != i.language)
+            return 3;
+        validated.append({ i, bytes });
+    }
+    if (!QDir().mkdir(cacheRoot))
+        return 3;
+    QJsonArray reports;
+    QString error;
+    for (const auto &page : validated) {
+        if (!LocalOcrCache::save(cacheRoot, page.identity, page.bytes, &error))
+            return 3;
+        const auto cached = LocalOcrCache::load(cacheRoot, page.identity, &error);
+        if (!cached || cached->rawResult != page.bytes || !cached->reading.reviewRequired || !LocalOcrCache::save(cacheRoot, page.identity, page.bytes, &error))
+            return 3;
+        reports.append(QJsonObject { { "key", LocalOcrCache::key(page.identity) },
+                                     { "resultSha256", cached->resultSha256 },
+                                     { "actualDevice", cached->reading.device },
+                                     { "reviewRequired", cached->reading.reviewRequired },
+                                     { "byteIdentical", true } });
+    }
+    const auto bytes = QJsonDocument(QJsonObject { { "version", 1 }, { "pages", reports }, { "ocrExecuted", false } }).toJson();
+    QSaveFile destination(output.absoluteFilePath());
+    return destination.open(QIODevice::WriteOnly) && destination.write(bytes) == bytes.size() && destination.commit() ? 0 : 3;
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 2 && QByteArray(argv[1]) == "page.png") {
@@ -1966,6 +2176,8 @@ int main(int argc, char **argv)
         qputenv("QT_QPA_FONTDIR", qEnvironmentVariable("SystemRoot").toUtf8() + "/Fonts");
 #endif
     QApplication app(argc, argv);
+    if (app.arguments().value(1) == "--local-ocr-cache")
+        return localOcrCacheProbe(app.arguments());
     if (app.arguments().value(1).startsWith("--local-ocr-"))
         return localOcrProbe(app.arguments());
     LocalMetadataTest test;

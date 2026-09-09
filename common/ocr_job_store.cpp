@@ -200,6 +200,18 @@ bool Store::open(const QString &path)
         db.close();
         return false;
     }
+    if (id == applicationId) {
+        for (const QString &sql : {
+                     QStringLiteral("SELECT id,spec,state,attempts,token,owner,lease_start,expires,error FROM jobs LIMIT 0"),
+                     QStringLiteral("SELECT job_id,page,cache_key,result_sha256,actual_device FROM pages LIMIT 0") }) {
+            if (!q.exec(sql)) {
+                error = QStringLiteral("Incomplete OCR job store schema: ") + q.lastError().text();
+                db.close();
+                return false;
+            }
+            q.finish();
+        }
+    }
     if (!execute(QStringLiteral("PRAGMA foreign_keys=ON")) || !begin())
         return false;
     if (id == 0) {
@@ -244,7 +256,8 @@ std::optional<QString> Store::enqueue(const Spec &spec)
         error = q.lastError().text();
         return { };
     }
-    return id;
+    q.finish();
+    return get(id) ? std::optional<QString>(id) : std::nullopt;
 }
 
 std::optional<Job> Store::get(const QString &id)
@@ -323,6 +336,8 @@ std::optional<Lease> Store::claim(const QString &id, const QString &owner, qint6
         error = QStringLiteral("Invalid owner or lease duration.");
         return { };
     }
+    if (!get(id))
+        return { };
     Lease lease { id, QUuid::createUuid().toString(QUuid::WithoutBraces), owner };
     QSqlQuery q(db);
     q.prepare(QStringLiteral("UPDATE jobs SET state=?,attempts=attempts+1,token=?,owner=?,lease_start=?,expires=?,error='' WHERE id=? AND state=?"));

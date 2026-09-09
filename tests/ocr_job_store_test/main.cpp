@@ -122,6 +122,8 @@ private slots:
     void leaseFencingAndClockChanges();
     void receiptsAreImmutable();
     void rejectsForeignAndFutureDatabases();
+    void corruptRecordsAreRejected();
+    void lockedWritesDoNotAdvanceState();
     void wrongThreadIsRejected();
     void competingProcesses();
     void abruptExitAndStaleProcess();
@@ -366,6 +368,80 @@ void OcrJobStoreTest::rejectsForeignAndFutureDatabases()
     Store future;
     QVERIFY(!future.open(database(futureDir)));
     QVERIFY(!future.enqueue(sample()));
+}
+
+void OcrJobStoreTest::corruptRecordsAreRejected()
+{
+    QTemporaryDir dir;
+    Store store;
+    QVERIFY(store.open(database(dir)));
+    const auto id = store.enqueue(sample());
+    QVERIFY(id);
+    auto db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("corrupt-fixture"));
+    db.setDatabaseName(database(dir));
+    QVERIFY(db.open());
+    {
+        QSqlQuery q(db);
+        QVERIFY(q.exec(QStringLiteral("UPDATE jobs SET spec=X'7b7d'")));
+    }
+    QVERIFY(!store.get(*id));
+    QVERIFY(!store.enqueue(sample())); // An existing damaged duplicate is not success.
+    QVERIFY(!store.claim(*id, QStringLiteral("worker"), 1000, 1000));
+    db.close();
+    db = QSqlDatabase();
+    QSqlDatabase::removeDatabase(QStringLiteral("corrupt-fixture"));
+
+    QTemporaryDir receiptDir;
+    Store receipts;
+    QVERIFY(receipts.open(database(receiptDir)));
+    const auto goodId = receipts.enqueue(sample());
+    QVERIFY(goodId);
+    const auto lease = receipts.claim(*goodId, QStringLiteral("worker"), 1000, 1000);
+    QVERIFY(lease);
+    for (int page : sample().pages)
+        QVERIFY(receipts.recordPage(*lease, receipt(page), 1001));
+    db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("corrupt-receipt"));
+    db.setDatabaseName(database(receiptDir));
+    QVERIFY(db.open());
+    {
+        QSqlQuery q(db);
+        QVERIFY(q.exec(QStringLiteral("UPDATE pages SET result_sha256='damaged' WHERE page=1")));
+    }
+    QVERIFY(!receipts.get(*goodId));
+    QVERIFY(!receipts.finish(*lease, false, 1002));
+    db.close();
+    db = QSqlDatabase();
+    QSqlDatabase::removeDatabase(QStringLiteral("corrupt-receipt"));
+}
+
+void OcrJobStoreTest::lockedWritesDoNotAdvanceState()
+{
+    QTemporaryDir dir;
+    Store store;
+    QVERIFY(store.open(database(dir)));
+    const auto id = store.enqueue(sample());
+    QVERIFY(id);
+    const auto lease = store.claim(*id, QStringLiteral("worker"), 1000, 1000);
+    QVERIFY(lease);
+    auto blocker = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("write-blocker"));
+    blocker.setDatabaseName(database(dir));
+    QVERIFY(blocker.open());
+    {
+        QSqlQuery q(blocker);
+        QVERIFY(q.exec(QStringLiteral("BEGIN IMMEDIATE")));
+        // WAL readers still see committed state while another connection owns the writer.
+        QCOMPARE(store.get(*id)->state, State::Running);
+        QVERIFY(!store.pause(*id));
+        QVERIFY(!store.lastError().isEmpty());
+        QCOMPARE(store.get(*id)->state, State::Running);
+        QVERIFY(q.exec(QStringLiteral("ROLLBACK")));
+    }
+    QVERIFY(store.pause(*id));
+    QVERIFY(!store.recordPage(*lease, receipt(1), 1001));
+    QCOMPARE(store.get(*id)->state, State::Paused);
+    blocker.close();
+    blocker = QSqlDatabase();
+    QSqlDatabase::removeDatabase(QStringLiteral("write-blocker"));
 }
 
 void OcrJobStoreTest::wrongThreadIsRejected()
