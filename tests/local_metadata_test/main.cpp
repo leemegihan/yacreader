@@ -749,6 +749,26 @@ void LocalMetadataTest::neuralAlternativesRequireReview()
     QVERIFY(dialog.pageText->toPlainText().contains("[Author]青木そら"));
     dialog.requestSearch(true);
     QCOMPARE(requests.count(), 0);
+    // Isolate the unlabelled-evidence gate with a title that would otherwise
+    // satisfy automatic lookup, even without the neural review-required flag.
+    auto titlePage = page;
+    titlePage.kind = LocalMetadata::PageKind::Colophon;
+    titlePage.reading.reviewRequired = false;
+    titlePage.reading.alternatives.first().text = "[Title]雨の図書館";
+    LocalMetadata::Result titleResult;
+    titleResult.pages = { titlePage };
+    titleResult.suggestions = LocalMetadata::suggest(titleResult.pages, QString());
+    YACReaderArchiveInspectorDialog titleDialog;
+    QSignalSpy titleRequests(&titleDialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    titleDialog.autoSearch->setChecked(true);
+    titleDialog.showResult(titleResult);
+    QVERIFY(titleDialog.titleEdit->text().isEmpty());
+    titleDialog.requestSearch(true);
+    QCOMPARE(titleRequests.count(), 0);
+    titleDialog.requestSearch(false); // Explicit action opens review, not immediate lookup.
+    QCOMPARE(titleRequests.count(), 1);
+    QCOMPARE(titleRequests.first().at(2).toString(), QString("雨の図書館"));
+    QVERIFY(!titleRequests.first().at(7).toBool());
     // An incomplete alternative must not borrow the primary reading's next line.
     page.reading.alternatives.first().text = "[Author]";
     page.text += "\nWrong Person";
