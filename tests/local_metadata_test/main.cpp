@@ -134,6 +134,7 @@ private slots:
     void tsvConfidenceAndLanguageSelection();
     void automaticQueryUsesOnlyStrongCredits();
     void realMultilingualColophon();
+    void neuralCacheCompetingWriters();
     void neuralCacheIdentity();
     void neuralCachePreservesReviewAndDevices();
     void neuralCacheRejectsCorruption();
@@ -765,6 +766,68 @@ QByteArray cacheResponse(const QString &device = QStringLiteral("gpu:0"))
     const QJsonArray lines { QJsonObject { { "text", "저자: 가상작가" }, { "confidence", 94 }, { "language", "kor" }, { "box", QJsonArray { 10, 10, 180, 30 } } } };
     return QJsonDocument(QJsonObject { { "version", 1 }, { "engine", "paddle-regions" }, { "language", "kor" }, { "device", device }, { "lines", lines } }).toJson();
 }
+}
+
+int cacheWriterProbe(const QStringList &args)
+{
+    if (args.size() != 7)
+        return 2;
+    QFile ready(args[3]);
+    if (!ready.open(QIODevice::WriteOnly | QIODevice::NewOnly) || ready.write("ready") != 5)
+        return 2;
+    ready.close();
+    QElapsedTimer timer;
+    timer.start();
+    while (!QFileInfo::exists(args[4]) && timer.elapsed() < 10000)
+        QThread::msleep(10);
+    if (!QFileInfo::exists(args[4]))
+        return 2;
+    const auto bytes = cacheResponse() + (args[6] == "second" ? QByteArray("\n") : QByteArray());
+    QString error;
+    const bool saved = LocalOcrCache::save(args[2], cacheIdentity(), bytes, &error);
+    QFile result(args[5]);
+    const QByteArray outcome = saved ? "saved" : "refused";
+    return result.open(QIODevice::WriteOnly | QIODevice::NewOnly) && result.write(outcome) == outcome.size() ? 0 : 3;
+}
+
+void LocalMetadataTest::neuralCacheCompetingWriters()
+{
+    QTemporaryDir dir;
+    const auto root = dir.filePath(QStringLiteral("cache"));
+    QVERIFY(QDir().mkdir(root));
+    const auto gate = dir.filePath(QStringLiteral("gate"));
+    const auto ready1 = dir.filePath(QStringLiteral("ready-1"));
+    const auto ready2 = dir.filePath(QStringLiteral("ready-2"));
+    const auto result1 = dir.filePath(QStringLiteral("result-1"));
+    const auto result2 = dir.filePath(QStringLiteral("result-2"));
+    QProcess first, second;
+#ifdef Q_OS_WIN
+    for (auto *process : { &first, &second })
+        process->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *args) { args->flags |= 0x08000000; });
+#endif
+    first.start(QCoreApplication::applicationFilePath(), { "--cache-writer", root, ready1, gate, result1, "first" });
+    second.start(QCoreApplication::applicationFilePath(), { "--cache-writer", root, ready2, gate, result2, "second" });
+    QVERIFY(first.waitForStarted());
+    QVERIFY(second.waitForStarted());
+    QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(ready1) && QFileInfo::exists(ready2), 10000);
+    QFile release(gate);
+    QVERIFY(release.open(QIODevice::WriteOnly | QIODevice::NewOnly));
+    QCOMPARE(release.write("go"), 2);
+    release.close();
+    QVERIFY(first.state() == QProcess::NotRunning || first.waitForFinished(15000));
+    QVERIFY(second.state() == QProcess::NotRunning || second.waitForFinished(15000));
+    QCOMPARE(first.exitCode(), 0);
+    QCOMPARE(second.exitCode(), 0);
+    QFile a(result1), b(result2);
+    QVERIFY(a.open(QIODevice::ReadOnly));
+    QVERIFY(b.open(QIODevice::ReadOnly));
+    const auto resultA = a.readAll(), resultB = b.readAll();
+    QVERIFY((resultA == "saved" && resultB == "refused") || (resultB == "saved" && resultA == "refused"));
+    QString error;
+    const auto cached = LocalOcrCache::load(root, cacheIdentity(), &error);
+    QVERIFY2(cached.has_value(), qPrintable(error));
+    QCOMPARE(cached->rawResult, cacheResponse() + (resultB == "saved" ? QByteArray("\n") : QByteArray()));
+    QCOMPARE(QDir(root).entryList({ "*.lock" }, QDir::Files).size(), 0);
 }
 
 void LocalMetadataTest::neuralCacheIdentity()
@@ -2176,6 +2239,8 @@ int main(int argc, char **argv)
         qputenv("QT_QPA_FONTDIR", qEnvironmentVariable("SystemRoot").toUtf8() + "/Fonts");
 #endif
     QApplication app(argc, argv);
+    if (app.arguments().value(1) == "--cache-writer")
+        return cacheWriterProbe(app.arguments());
     if (app.arguments().value(1) == "--local-ocr-cache")
         return localOcrCacheProbe(app.arguments());
     if (app.arguments().value(1).startsWith("--local-ocr-"))

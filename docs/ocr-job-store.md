@@ -103,6 +103,8 @@ and must be recomputed after retrieval.
 
 Synthetic tests cover identity separation, geometry/error/corruption refusal,
 immutable bytes, empty-page success, review preservation and CPU/GPU distinction.
+Two synchronized child processes also race different valid bytes for the same
+cache identity; exactly one writer commits and the other cannot replace it.
 The private diagnostic executable additionally accepts
 `--local-ocr-cache manifest.json NEWreport.json` for at most six saved responses.
 Each page supplies an absolute result path and a complete identity object using
