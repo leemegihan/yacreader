@@ -551,3 +551,13 @@ macOS 임시 디스크 해제 오류는 해당 작업 재시도에서 해결됐�
 다음 단계는 로컬 검토 목록의 제목·작가·출판/서클 정답과 난이도를 확인하고
 개별 작품의 후보 확보 범위를 개선하는 것이다. 영구 일괄 큐, 중단·재개, OCR 캐시,
 일괄 저장과 전체 라이브러리 실행은 이번 작업에서 진행하지 않았다.
+
+## 2026-09-09 — explicit credit separators and inline brackets
+
+- Filled-circle separators (●/◉) now connect complete explicit role labels to values. Publisher and printer credits remain separate from authors; ambiguous author/circle credits still require review.
+- Bracketed labels require a name on the same OCR line. Standalone bracket labels do not borrow a following social-media heading as an identity.
+- Added synthetic regressions for publishing roles, dialogue rejection, value punctuation, ambiguous roles, and standalone bracket labels. The worker and models are unchanged; automatic language selection can still discard a more complete alternative, so inspect local diagnostics or choose a language explicitly.
+- Code `703ce1c5d0bccda77948fb402d4c9904e7f834ab`: [Windows validation](https://github.com/leemegihan/yacreader/actions/runs/34293714653) passed all 12 CTest suites, 10 Python worker tests, required staged OCR (8 passed), installed OCR/candidate checks (21 passed), GUI startup, and downloaded-artifact OCR/path checks (4 passed). Prerequisite-stage skips remain distinct from required packaged checks.
+- [General platform build](https://github.com/leemegihan/yacreader/actions/runs/34293718414) passed formatting, Windows x64/ARM64, both Linux backends, macOS Universal and Docker amd64/arm64 without a retry.
+- The freshly downloaded validation runtime passed 8 targeted local tests plus initialization/cleanup, with unchanged worker/model hashes. Real input evidence and fixed-result comparisons remain local. No real media or private OCR output belongs in Git.
+- This entry records verification only. Full-library processing and unreviewed metadata writes remain out of scope.
