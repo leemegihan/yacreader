@@ -79,7 +79,7 @@ bool validSettings(const QJsonObject &snapshot)
         return false;
     const bool neural = o["neural"].toBool();
     const QString language = o["language"].toString();
-    const QStringList languages = neural ? QStringList { "auto", "kor", "jpn" }
+    const QStringList languages = neural ? QStringList { "auto", "kor+eng", "jpn+eng", "jpn_vert+eng" }
                                          : QStringList { "auto", "kor", "jpn", "eng", "kor+eng", "jpn+eng", "jpn_vert+eng" };
     if (!languages.contains(language) || (!neural && o["gpu"].toBool()))
         return false;

@@ -154,7 +154,7 @@ void OcrJobStoreTest::settingsSnapshotsSurviveRestart()
     QString id;
     auto expected = sample();
     auto options = expected.settingsSnapshot["options"].toObject();
-    options["language"] = "jpn";
+    options["language"] = "jpn+eng";
     options["cpuThreads"] = 16;
     options["rotation"] = 270;
     options["invert"] = true;
@@ -245,7 +245,7 @@ void OcrJobStoreTest::settingsRejectIncompleteAndChangedEvidence()
     value = snapshot();
     value["unexpected"] = true;
     QVERIFY(reject(value));
-    const QJsonObject invalidOptions { { "gpu", 1 }, { "rotation", 45 }, { "timeoutMs", 0 }, { "segmentation", 12 }, { "language", "unsupported" }, { "executable", "relative.exe" } };
+    const QJsonObject invalidOptions { { "gpu", 1 }, { "rotation", 45 }, { "timeoutMs", 0 }, { "segmentation", 12 }, { "language", "jpn" }, { "executable", "relative.exe" } };
     for (auto entry = invalidOptions.begin(); entry != invalidOptions.end(); ++entry) {
         value = snapshot();
         auto options = value["options"].toObject();
