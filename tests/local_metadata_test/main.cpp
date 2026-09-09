@@ -38,6 +38,7 @@
 #include <QThread>
 #include <QUuid>
 
+#include <algorithm>
 #include <cstdlib>
 
 namespace {
@@ -139,6 +140,7 @@ private slots:
     void creditSuffixAndCompoundLabels();
     void creditGeometryAndDialogue();
     void bulletSeparatedCredits();
+    void joinedAuthorRequiresPublishingLayout();
     void bracketedInlineCredits();
     void sharedAuthorCircleNeedsReview();
     void realNeuralWorkReuse();
@@ -1022,6 +1024,87 @@ void LocalMetadataTest::bulletSeparatedCredits()
         page.text = text;
         QVERIFY2(LocalMetadata::suggest({ page }, QString()).isEmpty(), qPrintable(text));
     }
+}
+
+void LocalMetadataTest::joinedAuthorRequiresPublishingLayout()
+{
+    LocalMetadata::Page base;
+    base.number = 20;
+    base.reading.lines = { { "著者ツキノソラAT", 91, QRect(100, 100, 300, 40) }, { "発行者●青木そら", 96, QRect(100, 145, 280, 40) }, { "印刷所●架空印刷会社", 96, QRect(100, 190, 360, 40) } };
+    auto suggestions = [](LocalMetadata::Page page) {
+        page.text.clear();
+        for (const auto &line : page.reading.lines)
+            page.text += line.text + QLatin1Char('\n');
+        return LocalMetadata::suggest({ page }, QString());
+    };
+    auto authors = [&](const LocalMetadata::Page &page) {
+        auto values = suggestions(page);
+        values.erase(std::remove_if(values.begin(), values.end(), [](const LocalMetadata::Suggestion &value) { return value.field != LocalMetadata::Suggestion::Author; }), values.end());
+        return values;
+    };
+    const auto candidates = authors(base);
+    QCOMPARE(candidates.size(), 1);
+    QCOMPARE(candidates.first().value, QString("ツキノソラAT"));
+    QVERIFY(!candidates.first().labelled);
+    QVERIFY(!candidates.first().evidence.first().labelled);
+    QVERIFY(candidates.first().reason.contains("구분자"));
+    LocalMetadata::Result result;
+    result.pages = { base };
+    result.suggestions = suggestions(base);
+    YACReaderArchiveInspectorDialog dialog;
+    QSignalSpy requests(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    dialog.showResult(result);
+    QVERIFY(dialog.authorEdit->text().isEmpty());
+    dialog.requestSearch(true);
+    QCOMPARE(requests.count(), 0);
+    dialog.requestSearch(false);
+    QCOMPARE(requests.count(), 1);
+    QCOMPARE(requests.first().at(3).toString(), QString("ツキノソラAT"));
+    QVERIFY(!requests.first().at(7).toBool());
+    // No role boundary relaxation in plain text, even with colophon labels.
+    auto plain = base;
+    plain.text = "著者ツキノソラAT\n発行者●青木そら\n印刷所●架空印刷会社";
+    plain.reading.lines.clear();
+    const auto plainValues = LocalMetadata::suggest({ plain }, QString());
+    QCOMPARE(plainValues.size(), 1);
+    QCOMPARE(plainValues.first().field, LocalMetadata::Suggestion::Publisher);
+    for (int index = 0; index < 3; ++index) {
+        auto missing = base;
+        missing.reading.lines[index].bounds = QRect();
+        QVERIFY(authors(missing).isEmpty());
+        auto low = base;
+        low.reading.lines[index].confidence = 84;
+        QVERIFY(authors(low).isEmpty());
+    }
+    for (int index = 1; index < 3; ++index) {
+        auto missing = base;
+        missing.reading.lines.removeAt(index);
+        QVERIFY(authors(missing).isEmpty());
+        for (const auto &bounds : { QRect(600, 145, 300, 40), QRect(100, 900, 300, 40), QRect(100, 145, 30, 100), QRect(100, 145, 300, 10), QRect(100, 100, 300, 40) }) {
+            auto unrelated = base;
+            unrelated.reading.lines[index].bounds = bounds;
+            QVERIFY(authors(unrelated).isEmpty());
+        }
+    }
+    for (const auto &text : QStringList { "著者はここで待とう", "著者ツキノソラです", "著者ツキノソラ。", "著者ABC", "著者サークル名", "作者ツキノソラ", "翻訳ツキノソラ", "ここでは著者ツキノソラ", "著者ツキノソラ@example.com" }) {
+        auto unrelated = base;
+        unrelated.reading.lines.first().text = text;
+        QVERIFY2(authors(unrelated).isEmpty(), qPrintable(text));
+    }
+    auto sameRole = base;
+    sameRole.reading.lines[2].text = "発行所●月の工房";
+    QVERIFY(authors(sameRole).isEmpty());
+    auto independent = base;
+    independent.reading.lines.append({ "著者: ツキノソラAT", 95, QRect(100, 900, 300, 40) });
+    const auto supported = authors(independent);
+    QCOMPARE(supported.size(), 1);
+    QVERIFY(supported.first().labelled);
+    // The tentative author must not make a large cover line a title candidate.
+    auto cover = base;
+    cover.number = 1;
+    cover.reading.lines.prepend({ "雨の図書館", 96, QRect(100, 10, 600, 80) });
+    for (const auto &candidate : suggestions(cover))
+        QVERIFY(candidate.field != LocalMetadata::Suggestion::Title);
 }
 
 void LocalMetadataTest::sharedAuthorCircleNeedsReview()

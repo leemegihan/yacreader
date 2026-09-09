@@ -192,6 +192,56 @@ QVector<Credit> credits(const Page &page)
     return result;
 }
 
+QVector<TextLine> joinedAuthorReviewLines(const Page &page)
+{
+    // A missing separator is not an explicit credit. Limit review proposals to
+    // a short katakana pen name beside both publishing and printing rows.
+    // Keep this outside credits(): it must not support cover-title inference.
+    if (classifyPage(page.text, page.number) != PageKind::Colophon)
+        return { };
+    const auto visible = page.text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    static const QRegularExpression joined(QStringLiteral(R"(^著者([\x{30a1}-\x{30fa}\x{30fc}A-Za-z0-9・]{2,24})$)"));
+    QVector<TextLine> result;
+    for (const auto &line : page.reading.lines) {
+        if (!visible.contains(line.text) || line.confidence < 85 || line.bounds.isEmpty() || line.bounds.width() < 2 * line.bounds.height())
+            continue;
+        const auto match = joined.match(line.text.normalized(QString::NormalizationForm_KC).trimmed());
+        if (!match.hasMatch())
+            continue;
+        const auto value = match.captured(1);
+        int kana = 0;
+        for (const auto ch : value)
+            kana += ch.unicode() >= 0x30a1 && ch.unicode() <= 0x30fa;
+        if (kana < 2)
+            continue;
+        bool publisher = false, printer = false;
+        for (const auto &neighbor : page.reading.lines) {
+            if (!visible.contains(neighbor.text) || neighbor.confidence < 85 || neighbor.bounds.isEmpty())
+                continue;
+            const auto marked = label(neighbor.text);
+            if ((marked.role != Role::Publisher && marked.role != Role::Printer) || !usableCredit(marked.value, marked.role))
+                continue;
+            const auto &a = line.bounds;
+            const auto &b = neighbor.bounds;
+            const int unit = qMax(a.height(), b.height());
+            // Similar horizontal rows, aligned at the left, with a small gap.
+            if (b.width() < 2 * b.height() || unit > 2 * qMin(a.height(), b.height()) || std::abs(a.left() - b.left()) > unit / 2)
+                continue;
+            const int gap = qMax(a.top(), b.top()) - qMin(a.bottom(), b.bottom());
+            if (gap < -unit / 4 || gap > 3 * unit)
+                continue;
+            publisher |= marked.role == Role::Publisher;
+            printer |= marked.role == Role::Printer;
+        }
+        if (publisher && printer) {
+            auto proposal = line;
+            proposal.text = value;
+            result.append(proposal);
+        }
+    }
+    return result;
+}
+
 bool genericPathName(QString value)
 {
     value = value.normalized(QString::NormalizationForm_KC).toCaseFolded();
@@ -358,6 +408,8 @@ QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePat
                                                                                                                                                                        : tr("명시된 제목·작가 라벨과 연결된 글자입니다. 원본과 대조해 주세요.");
             append(field, credit.value, reason, page.number, !credit.roleUncertain, credit.confidence);
         }
+        for (const auto &line : joinedAuthorReviewLines(page))
+            append(Suggestion::Author, line.text, tr("작가 표기와 이름 사이의 구분자가 보이지 않습니다. 주변 발행·인쇄 행의 배치를 근거로 제안하므로 원본과 대조해 직접 선택해 주세요."), page.number, false, line.confidence);
         for (const auto &alternative : page.reading.alternatives) {
             Page review;
             review.number = page.number;

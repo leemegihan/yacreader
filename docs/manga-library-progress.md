@@ -570,3 +570,8 @@ macOS 임시 디스크 해제 오류는 해당 작업 재시도에서 해결됐�
 - [General build](https://github.com/leemegihan/yacreader/actions/runs/34297246604) passed Windows x64/ARM64, both Linux backends, macOS Universal, Docker amd64/arm64 and formatting.
 - A fresh independent runtime passed 11 targeted local tests plus initialization/cleanup. Its worker matched the local real-input test version and all nine model files remained unchanged. Missing-addon CPU fallback and actual NVIDIA inference then passed separately through the C++ wrapper with synthetic JP/KR fixtures in that new validation directory.
 - Fixed-input comparisons, real transcriptions, reviewed regions, candidates and timings remain outside Git. Original media, the operating database and the currently installed app were preserved; whole-library processing remains out of scope.
+## 2026-09-09 — review joined author text in publishing rows
+
+- Add a conservative review proposal for a short katakana pen name joined to the Japanese author label when high-scoring, aligned publishing and printing rows support the layout. Missing delimiters remain uncertain; ordinary credit parsing and automatic evidence are unchanged.
+- Synthetic regressions cover missing/low-quality geometry, unrelated rows, duplicate roles, dialogue, review UI, independent explicit evidence and cover-title isolation. Worker and models are unchanged; compare saved fixed CPU/GPU outputs without repeating inference.
+- Validation is pending for this change. Real text, paths, candidates and review answers remain local; no whole-library processing or operating database writes.
