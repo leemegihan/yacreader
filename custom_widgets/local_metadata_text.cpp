@@ -250,7 +250,7 @@ QVector<TextLine> joinedCircleBannerReviewLines(const Page &page)
     if (page.number < 1 || page.number > 3 || !page.error.isEmpty() || page.reading.uncertainLanguage)
         return { };
     const auto visible = page.text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-    static const QRegularExpression joined(QStringLiteral(R"(^サークル([\p{Han}\p{Hiragana}\p{Katakana}ーA-Za-z0-9]{2,24}・[\p{Han}\p{Hiragana}\p{Katakana}ーA-Za-z0-9]{2,24})$)"));
+    static const QRegularExpression joined(QStringLiteral(R"(^サークル([\x{3400}-\x{9fff}\x{3041}-\x{3096}\x{30a1}-\x{30fa}ーA-Za-z0-9]{2,24}・[\x{3400}-\x{9fff}\x{3041}-\x{3096}\x{30a1}-\x{30fa}ーA-Za-z0-9]{2,24})$)"));
     QVector<TextLine> result;
     for (const auto &line : page.reading.lines) {
         const auto &box = line.bounds;
@@ -264,6 +264,35 @@ QVector<TextLine> joinedCircleBannerReviewLines(const Page &page)
         result.append(proposal);
     }
     return result;
+}
+
+QVector<Credit> alternativePairedReviewCredits(const Page &page, const TextLine &alternative)
+{
+    const auto marked = label(alternative.text);
+    if (marked.role != Role::PublisherAuthor || !marked.value.isEmpty() || alternative.confidence < 85 || alternative.bounds.isEmpty() || !page.error.isEmpty() || page.reading.uncertainLanguage || classifyPage(page.text, page.number) != PageKind::Colophon)
+        return { };
+    const auto visible = page.text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (int i = 0; i + 1 < page.reading.lines.size(); ++i) {
+        const auto &primary = page.reading.lines.at(i);
+        if (primary.bounds != alternative.bounds || primary.text.normalized(QString::NormalizationForm_KC).trimmed() != QStringLiteral("/") || primary.language == alternative.language || !visible.contains(primary.text))
+            continue;
+        // Only the immediately following primary row can supply names. Do not
+        // borrow distant text or infer roles from an unordered/shared label.
+        const auto &value = page.reading.lines.at(i + 1);
+        const auto &a = alternative.bounds;
+        const auto &b = value.bounds;
+        const int unit = qMax(a.height(), b.height());
+        if (!visible.contains(value.text) || value.language != alternative.language || value.confidence < 85 || b.isEmpty() || a.width() < 2 * a.height() || b.width() < 2 * b.height() || unit > 2 * qMin(a.height(), b.height()) || b.top() < a.top() + a.height() / 2 || b.top() - a.bottom() < -unit / 4 || b.top() - a.bottom() > unit || std::abs(a.center().x() - b.center().x()) > unit || label(value.text).role != Role::None)
+            continue;
+        const auto names = value.text.normalized(QString::NormalizationForm_KC).split(QLatin1Char('/'), Qt::KeepEmptyParts);
+        if (names.size() != 2 || !usableCredit(names[0].trimmed(), Role::Publisher) || !usableCredit(names[1].trimmed(), Role::Author))
+            continue;
+        const auto bounds = a.united(b);
+        const auto confidence = qMin(alternative.confidence, value.confidence);
+        return { { Role::Publisher, names[0].trimmed(), bounds, confidence, value.text, true },
+                 { Role::Author, names[1].trimmed(), bounds, confidence, value.text, true } };
+    }
+    return { };
 }
 
 bool genericPathName(QString value)
@@ -449,6 +478,11 @@ QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePat
                 append(field, credit.value, tr("다른 언어 모델에서 다르게 읽은 글자입니다. 기본 판독과 원본을 대조해 직접 선택해 주세요."), page.number, false, credit.confidence);
             }
         }
+        // A separate, constrained path may join an alternate ordered role label
+        // to the next primary name row. These proposals always remain unconfirmed.
+        for (const auto &alternative : page.reading.alternatives)
+            for (const auto &credit : alternativePairedReviewCredits(page, alternative))
+                append(credit.role == Role::Author ? Suggestion::Author : Suggestion::Publisher, credit.value, tr("다른 언어 판독의 발행/저자 라벨과 바로 아래 두 이름의 배치를 연결한 미확정 후보입니다. 라벨의 순서와 이름을 원본에서 확인해 직접 선택해 주세요."), page.number, false, credit.confidence);
         const auto titleLines = coverTitleLines(page);
         if (!titleLines.isEmpty()) {
             QStringList parts;

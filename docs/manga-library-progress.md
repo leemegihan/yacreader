@@ -598,3 +598,9 @@ macOS 임시 디스크 해제 오류는 해당 작업 재시도에서 해결됐�
 - Automatic lookup now excludes publisher/circle hints without strong independent evidence. Explicit lookup carrying tentative publishing hints opens review even when the title was already filled. Publisher-only proposals do not initiate title/author search.
 - Synthetic regressions cover proposal boundaries, missing layout, dialogue, role isolation, unchanged explicit labels, autofill and both automatic/manual lookup paths. Worker/models and inference scheduling are unchanged; real candidate validation replays saved fixed CPU/GPU outputs.
 - Validation pending for this code revision. Real text, paths, candidates and measurements remain local; no original media, operating DB or current installation changes.
+
+## 2026-09-09 — review a paired credit label hidden by punctuation
+
+- Retain a CJK expansion of a slash, colon or middle-dot-only primary reading when the existing alternative score/gap limits are met. Keep the primary text and inference calls unchanged.
+- In independently identified colophon context, an alternate ordered publisher/author label may propose the two names from the immediately following aligned same-language row. Require strong geometry and scores; shared labels, intervening rows and incomplete pairs remain excluded. These candidates are always unconfirmed and cannot autofill or trigger lookup.
+- Add synthetic worker and C++ regressions for delimiter limits, role order, adjacent-name geometry, incomplete/ambiguous pairs and explicit review. Fixed-input actual CPU/GPU comparison and Windows validation are pending for this revision. Real text and review answers remain private.

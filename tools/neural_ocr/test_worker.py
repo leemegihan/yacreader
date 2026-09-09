@@ -150,6 +150,29 @@ class WorkerTest(unittest.TestCase):
         latin = dict(full, text='PC-90', confidence=98)
         self.assertEqual(worker.select_reading([latin, korean])['alternatives'], [korean])
 
+    def test_delimiter_fragment_retains_cjk_expansion_for_review(self):
+        short = {'text': '/', 'confidence': 99, 'language': 'kor', 'box': [0, 0, 100, 20]}
+        label = dict(short, text='発行/著者', confidence=94, language='jpn')
+        result = worker.select_reading([short, label])
+        self.assertEqual({k: v for k, v in result.items() if k != 'alternatives'}, short)
+        self.assertEqual(result['alternatives'], [label])
+        for text in [':', '・']:
+            primary = dict(short, text=text)
+            alternate = dict(label, text='著者' + text)
+            self.assertEqual(worker.select_reading([primary, alternate])['alternatives'], [alternate])
+        for other in [dict(label, confidence=90.99), dict(label, confidence=84),
+                      dict(label, language='kor'), dict(label, text='Publisher/Author'),
+                      dict(label, text='発行著者'), dict(label, text='/著'),
+                      dict(label, box=[1, 0, 100, 20])]:
+            self.assertNotIn('alternatives', worker.select_reading([short, other]))
+        for text in ['!', '?', '[]', '//', '']:
+            primary = dict(short, text=text)
+            alternate = dict(label, text=text + '発行著者')
+            self.assertNotIn('alternatives', worker.select_reading([primary, alternate]))
+        self.assertEqual(worker.select_reading([short, dict(label, confidence=91)])['alternatives'][0]['confidence'], 91)
+        korean = dict(short, text='발행/저자', confidence=94)
+        self.assertEqual(worker.select_reading([dict(label, text='/', confidence=99), korean])['alternatives'], [korean])
+
     def test_cjk_disagreement_retains_both_directions_and_score_ties(self):
         japanese = {'text': '雨', 'confidence': 96, 'language': 'jpn', 'box': [0, 0, 100, 20]}
         korean = dict(japanese, text='가상의 글', confidence=94, language='kor')

@@ -125,6 +125,7 @@ def select_reading(options):
 
     primary = compact(best['text'])
     ascii_fragment = primary.isascii() and any(ch.isalnum() for ch in primary)
+    delimiter_fragment = primary in {'/', ':', '・'}
     alternatives, seen = [], set()
     for option in sorted(options, key=lambda item: item['confidence'], reverse=True):
         if option['language'] == best['language'] or option['confidence'] < 85 or option['box'] != best['box']:
@@ -133,7 +134,8 @@ def select_reading(options):
         identity = (option['language'], alternate)
         if not alternate or alternate == primary or identity in seen:
             continue
-        extended = (ascii_fragment and primary in alternate and len(alternate) >= len(primary) + 2
+        extended = ((ascii_fragment or (delimiter_fragment and best['confidence'] - option['confidence'] <= 8))
+                    and primary in alternate and len(alternate) >= len(primary) + 2
                     and has_script(alternate.replace(primary, '', 1), option['language']))
         # Scores from different models are not calibrated correctness probabilities.
         # A small gap only controls review volume; it never changes primary text.

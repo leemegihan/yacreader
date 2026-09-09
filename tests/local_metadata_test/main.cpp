@@ -144,6 +144,7 @@ private slots:
     void joinedAuthorRequiresPublishingLayout();
     void joinedCircleBannerNeedsReview();
     void publisherHintsRespectReviewBoundary();
+    void alternatePairedLabelRequiresAdjacentNames();
     void bracketedInlineCredits();
     void sharedAuthorCircleNeedsReview();
     void realNeuralWorkReuse();
@@ -1194,7 +1195,7 @@ void LocalMetadataTest::joinedCircleBannerNeedsReview()
     for (const auto &text : QStringList { "サークル活動を楽しもう", "ここはサークル架空工房・月野ソラ", "サークル架空工房・月野ソラ。", "サークル架空工房・月野ソラ・別の名前", "サークル架空工房・", "サークル架空工房・https://example.test", "ただ自分としては、この本の作者として、皆さん" }) {
         auto unrelated = base;
         unrelated.reading.lines.first().text = text;
-        QVERIFY2(suggestions(unrelated).isEmpty(), qPrintable(text));
+        QVERIFY2(suggestions(unrelated).isEmpty(), text.toUtf8().toHex().constData());
     }
     auto low = base;
     low.reading.lines.first().confidence = 84;
@@ -1266,6 +1267,87 @@ void LocalMetadataTest::publisherHintsRespectReviewBoundary()
         QCOMPARE(requests.count(), 1);
         QVERIFY(requests.first().at(6).toStringList().isEmpty());
     }
+}
+
+void LocalMetadataTest::alternatePairedLabelRequiresAdjacentNames()
+{
+    LocalMetadata::Page base;
+    base.number = 20;
+    base.reading.reviewRequired = true;
+    base.reading.lines = { { "奥付", 99, QRect(230, 10, 80, 40), "jpn" }, { "/", 99, QRect(150, 100, 260, 40), "kor" }, { "架空工房／月野ソラ", 96, QRect(80, 148, 400, 45), "jpn" } };
+    base.reading.alternatives = { { "発行/著者", 94, QRect(150, 100, 260, 40), "jpn" } };
+    auto suggestions = [](LocalMetadata::Page page) {
+        page.text.clear();
+        for (const auto &line : page.reading.lines)
+            page.text += line.text + QLatin1Char('\n');
+        return LocalMetadata::suggest({ page }, QString());
+    };
+    const auto values = suggestions(base);
+    QCOMPARE(values.size(), 2);
+    QCOMPARE(values[0].field, LocalMetadata::Suggestion::Publisher);
+    QCOMPARE(values[0].value, QString("架空工房"));
+    QCOMPARE(values[1].field, LocalMetadata::Suggestion::Author);
+    QCOMPARE(values[1].value, QString("月野ソラ"));
+    for (const auto &value : values) {
+        QVERIFY(!value.labelled);
+        QVERIFY(!value.evidence.first().labelled);
+        QCOMPARE(value.confidence, 94.0);
+    }
+    LocalMetadata::Result result;
+    result.pages = { base };
+    result.suggestions = values;
+    YACReaderArchiveInspectorDialog dialog;
+    QSignalSpy requests(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    dialog.showResult(result);
+    QVERIFY(dialog.authorEdit->text().isEmpty());
+    QVERIFY(dialog.publisherEdit->text().isEmpty());
+    dialog.autoSearch->setChecked(true);
+    dialog.requestSearch(true);
+    QCOMPARE(requests.count(), 0);
+    dialog.requestSearch(false);
+    QCOMPARE(requests.count(), 1);
+    QCOMPARE(requests.first().at(3).toString(), QString("月野ソラ"));
+    QVERIFY(!requests.first().at(7).toBool());
+    auto noContext = base;
+    noContext.reading.lines.removeFirst();
+    QVERIFY(suggestions(noContext).isEmpty());
+    auto intervening = base;
+    intervening.reading.lines.insert(2, { "別の行", 96, QRect(80, 142, 400, 40), "jpn" });
+    QVERIFY(suggestions(intervening).isEmpty());
+    for (const auto &bounds : { QRect(), QRect(80, 300, 400, 45), QRect(80, 100, 400, 45), QRect(800, 148, 400, 45), QRect(80, 148, 400, 10), QRect(80, 148, 40, 100) }) {
+        auto unrelated = base;
+        unrelated.reading.lines.last().bounds = bounds;
+        QVERIFY(suggestions(unrelated).isEmpty());
+    }
+    for (const auto &name : QStringList { "架空工房", "架空工房/", "/月野ソラ", "架空工房/月野ソラ/別の名前", "架空工房/https://example.test", "架空工房/月野ソラです。" }) {
+        auto unrelated = base;
+        unrelated.reading.lines.last().text = name;
+        QVERIFY(suggestions(unrelated).isEmpty());
+    }
+    for (const auto &role : QStringList { "著者", "発行", "作者・サークル名", "翻訳" }) {
+        auto unrelated = base;
+        unrelated.reading.alternatives.first().text = role;
+        QVERIFY(suggestions(unrelated).isEmpty());
+    }
+    auto lowLabel = base;
+    lowLabel.reading.alternatives.first().confidence = 84;
+    QVERIFY(suggestions(lowLabel).isEmpty());
+    auto lowName = base;
+    lowName.reading.lines.last().confidence = 84;
+    QVERIFY(suggestions(lowName).isEmpty());
+    auto otherLanguage = base;
+    otherLanguage.reading.lines.last().language = "kor";
+    QVERIFY(suggestions(otherLanguage).isEmpty());
+    auto wrongBox = base;
+    wrongBox.reading.alternatives.first().bounds.translate(10, 0);
+    QVERIFY(suggestions(wrongBox).isEmpty());
+    auto failed = base;
+    failed.error = "failed";
+    QVERIFY(suggestions(failed).isEmpty());
+    auto plain = base;
+    plain.text = "奥付\n/\n架空工房／月野ソラ";
+    plain.reading.lines.clear();
+    QVERIFY(LocalMetadata::suggest({ plain }, QString()).isEmpty());
 }
 
 void LocalMetadataTest::sharedAuthorCircleNeedsReview()
