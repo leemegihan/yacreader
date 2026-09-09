@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QJsonDocument>
@@ -17,13 +18,28 @@
 using namespace OcrJobs;
 
 namespace {
+QJsonObject snapshot()
+{
+    // Paths refer only to a synthetic namespace; this store never opens them.
+    const QString root = QDir::temp().absoluteFilePath(QStringLiteral("synthetic-ocr-snapshot"));
+    const QJsonObject runtime {
+        { "executable", root + "/python.exe" }, { "dataPath", root + "/models" }, { "executableSha256", QString(64, u'1') }, { "workerSha256", QString(64, u'2') }, { "modelManifestSha256", QString(64, u'3') }, { "packageManifestSha256", QString(64, u'4') }
+    };
+    return {
+        { "version", 1 },
+        { "options", QJsonObject { { "neural", true }, { "gpu", true }, { "cpuThreads", 8 }, { "executable", "" }, { "dataPath", "" }, { "language", "auto" }, { "vertical", false }, { "segmentation", 11 }, { "rotation", 0 }, { "invert", false }, { "adaptiveThreshold", false }, { "timeoutMs", 90000 } } },
+        { "environment", QJsonObject { { "platform", "windows-x64" }, { "applicationSha256", QString(64, u'5') }, { "preprocessingRevision", "synthetic-preprocess-1" }, { "cpu", runtime }, { "gpu", runtime } } }
+    };
+}
+
 Spec sample()
 {
     Spec s;
     s.libraryGeneration = QStringLiteral("synthetic-generation-1");
     s.comicId = QStringLiteral("42");
     s.sourceSnapshot = QString(64, u'a');
-    s.settingsFingerprint = QString(64, u'b');
+    s.settingsSnapshot = snapshot();
+    s.settingsFingerprint = settingsFingerprint(s.settingsSnapshot);
     s.sourceContext = { { "path", "synthetic/book.cbz" }, { "libraryRoot", "synthetic" }, { "sourceKind", "archive" } };
     s.totalPages = 10;
     s.pages = { 1, 2, 3, 8, 9, 10 };
@@ -114,6 +130,9 @@ class OcrJobStoreTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void settingsSnapshotsSurviveRestart();
+    void settingsRejectIncompleteAndChangedEvidence();
+    void legacySchemaIsPreserved();
     void duplicateRegistrationAndContext();
     void boundedPlanValidation();
     void pauseAndResumePersist();
@@ -128,6 +147,173 @@ private slots:
     void competingProcesses();
     void abruptExitAndStaleProcess();
 };
+
+void OcrJobStoreTest::settingsSnapshotsSurviveRestart()
+{
+    QTemporaryDir dir;
+    QString id;
+    auto expected = sample();
+    auto options = expected.settingsSnapshot["options"].toObject();
+    options["language"] = "jpn";
+    options["cpuThreads"] = 16;
+    options["rotation"] = 270;
+    options["invert"] = true;
+    options["adaptiveThreshold"] = true;
+    options["vertical"] = true;
+    options["segmentation"] = 5;
+    options["timeoutMs"] = 123456;
+    expected.settingsSnapshot["options"] = options;
+    expected.settingsFingerprint = settingsFingerprint(expected.settingsSnapshot);
+    QVERIFY(!expected.settingsFingerprint.isEmpty());
+    {
+        Store store;
+        QVERIFY(store.open(database(dir)));
+        const auto added = store.enqueue(expected);
+        QVERIFY(added);
+        id = *added;
+        QVERIFY(store.pause(id));
+    }
+    Store reopened;
+    QVERIFY(reopened.open(database(dir)));
+    auto job = reopened.get(id);
+    QVERIFY(job);
+    QCOMPARE(job->spec.settingsSnapshot, expected.settingsSnapshot);
+    QCOMPARE(job->spec.settingsFingerprint, expected.settingsFingerprint);
+    QCOMPARE(settingsFingerprint(job->spec.settingsSnapshot), expected.settingsFingerprint);
+    QVERIFY(reopened.resume(id));
+    QVERIFY(reopened.claim(id, QStringLiteral("recovered"), 1000, 1000));
+    QCOMPARE(reopened.get(id)->spec.settingsSnapshot, expected.settingsSnapshot);
+
+    // Explicitly absent GPU remains reproducible CPU-fallback intent.
+    auto environment = expected.settingsSnapshot["environment"].toObject();
+    environment["gpu"] = QJsonValue(QJsonValue::Null);
+    expected.settingsSnapshot["environment"] = environment;
+    expected.settingsFingerprint = settingsFingerprint(expected.settingsSnapshot);
+    QVERIFY(!expected.settingsFingerprint.isEmpty());
+    const auto fallback = reopened.enqueue(expected);
+    QVERIFY(fallback && *fallback != id);
+
+    // Tesseract snapshots resolve their actual executable and trained-data path.
+    options["neural"] = false;
+    options["gpu"] = false;
+    options["language"] = "jpn_vert+eng";
+    auto cpu = environment["cpu"].toObject();
+    cpu["workerSha256"] = QJsonValue(QJsonValue::Null);
+    environment["cpu"] = cpu;
+    options["executable"] = cpu["executable"];
+    options["dataPath"] = cpu["dataPath"];
+    expected.settingsSnapshot["options"] = options;
+    expected.settingsSnapshot["environment"] = environment;
+    expected.settingsFingerprint = settingsFingerprint(expected.settingsSnapshot);
+    QVERIFY(!expected.settingsFingerprint.isEmpty());
+    QVERIFY(reopened.enqueue(expected));
+}
+
+void OcrJobStoreTest::settingsRejectIncompleteAndChangedEvidence()
+{
+    QTemporaryDir dir;
+    Store store;
+    QVERIFY(store.open(database(dir)));
+    const auto original = sample();
+    QVERIFY(store.enqueue(original));
+    auto reject = [&](const QJsonObject &value) {
+        auto changed = original;
+        changed.settingsSnapshot = value;
+        changed.settingsFingerprint = settingsFingerprint(value);
+        return changed.settingsFingerprint.isEmpty() && !store.enqueue(changed);
+    };
+    for (const QString &section : { QStringLiteral("options"), QStringLiteral("environment") }) {
+        const auto object = original.settingsSnapshot[section].toObject();
+        for (const QString &key : object.keys()) {
+            auto missing = object;
+            missing.remove(key);
+            auto value = original.settingsSnapshot;
+            value[section] = missing;
+            QVERIFY2(reject(value), qPrintable(section + "/" + key));
+        }
+    }
+    for (const auto badValue : { QJsonValue("8"), QJsonValue(8.5), QJsonValue(0), QJsonValue(17), QJsonValue(true) }) {
+        auto value = snapshot();
+        auto options = value["options"].toObject();
+        options["cpuThreads"] = badValue;
+        value["options"] = options;
+        QVERIFY(reject(value));
+    }
+    auto value = snapshot();
+    value["version"] = 2;
+    QVERIFY(reject(value));
+    value = snapshot();
+    value["unexpected"] = true;
+    QVERIFY(reject(value));
+    const QJsonObject invalidOptions { { "gpu", 1 }, { "rotation", 45 }, { "timeoutMs", 0 }, { "segmentation", 12 }, { "language", "unsupported" }, { "executable", "relative.exe" } };
+    for (auto entry = invalidOptions.begin(); entry != invalidOptions.end(); ++entry) {
+        value = snapshot();
+        auto options = value["options"].toObject();
+        options[entry.key()] = entry.value();
+        value["options"] = options;
+        QVERIFY(reject(value));
+    }
+    for (const QString &key : snapshot()["environment"].toObject()["cpu"].toObject().keys()) {
+        value = snapshot();
+        auto environment = value["environment"].toObject();
+        auto cpu = environment["cpu"].toObject();
+        cpu.remove(key);
+        environment["cpu"] = cpu;
+        value["environment"] = environment;
+        QVERIFY2(reject(value), qPrintable(key));
+    }
+    auto incomplete = original;
+    incomplete.settingsSnapshot = { };
+    QVERIFY(!store.enqueue(incomplete)); // A legacy fingerprint alone cannot restore options.
+
+    for (const QString &key : { QStringLiteral("executableSha256"), QStringLiteral("workerSha256"), QStringLiteral("modelManifestSha256"), QStringLiteral("packageManifestSha256") }) {
+        value = snapshot();
+        auto environment = value["environment"].toObject();
+        auto cpu = environment["cpu"].toObject();
+        cpu[key] = QString(64, u'9');
+        environment["cpu"] = cpu;
+        value["environment"] = environment;
+        auto changed = original;
+        changed.settingsSnapshot = value;
+        QVERIFY(!store.enqueue(changed)); // Valid new environment with a stale fingerprint.
+        changed.settingsFingerprint = settingsFingerprint(value);
+        QVERIFY(changed.settingsFingerprint != original.settingsFingerprint);
+        const auto added = store.enqueue(changed);
+        QVERIFY(added);
+        QVERIFY(*added != *store.enqueue(original));
+        cpu[key] = "unverified";
+        environment["cpu"] = cpu;
+        value["environment"] = environment;
+        QVERIFY(reject(value));
+    }
+    QCOMPARE(store.list().size(), 5);
+}
+
+void OcrJobStoreTest::legacySchemaIsPreserved()
+{
+    QTemporaryDir dir;
+    const auto path = database(dir);
+    {
+        Store current;
+        QVERIFY(current.open(path));
+        QVERIFY(current.enqueue(sample()));
+    }
+    {
+        auto db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("legacy-snapshot-fixture"));
+        db.setDatabaseName(path);
+        QVERIFY(db.open());
+        QSqlQuery q(db);
+        QVERIFY(q.exec(QStringLiteral("PRAGMA user_version=1")));
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("legacy-snapshot-fixture"));
+    const auto before = read(path);
+    QVERIFY(!before.isEmpty());
+    Store legacy;
+    QVERIFY(!legacy.open(path));
+    QVERIFY(legacy.lastError().contains(QStringLiteral("schema")));
+    QCOMPARE(read(path), before);
+    QVERIFY(!QFile::exists(path + QStringLiteral("-wal")));
+}
 
 void OcrJobStoreTest::duplicateRegistrationAndContext()
 {
@@ -149,8 +335,13 @@ void OcrJobStoreTest::duplicateRegistrationAndContext()
     changed.sourceSnapshot = QString(64, u'e');
     QVERIFY(store.enqueue(changed) != first);
     changed = sample();
-    changed.settingsFingerprint = QString(64, u'f');
-    QVERIFY(store.enqueue(changed) != first);
+    auto options = changed.settingsSnapshot["options"].toObject();
+    options["cpuThreads"] = 4;
+    changed.settingsSnapshot["options"] = options;
+    changed.settingsFingerprint = settingsFingerprint(changed.settingsSnapshot);
+    const auto changedSettings = store.enqueue(changed);
+    QVERIFY(changedSettings);
+    QVERIFY(changedSettings != first);
     changed = sample();
     changed.totalPages = 11;
     changed.pages = { 1, 2, 3, 9, 10, 11 };

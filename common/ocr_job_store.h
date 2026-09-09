@@ -28,6 +28,7 @@ struct Spec {
     QString sourceSnapshot;
     // Include path, library root and source kind; changes create a new job.
     QJsonObject sourceContext;
+    QJsonObject settingsSnapshot;
     QString settingsFingerprint;
     int totalPages = 0;
     QVector<int> pages;
@@ -102,6 +103,9 @@ private:
     QString error;
     QThread *thread;
 };
+// Returns empty for unsupported/incomplete snapshots. This checks structure, not
+// the installed files: the executor must remeasure the environment before reuse.
+QString settingsFingerprint(const QJsonObject &snapshot);
 QString stateName(State state);
 }
 

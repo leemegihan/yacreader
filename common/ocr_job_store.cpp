@@ -11,12 +11,13 @@
 #include <QUuid>
 #include <QVariant>
 
+#include <initializer_list>
 #include <limits>
 
 namespace OcrJobs {
 namespace {
 constexpr int applicationId = 0x594f4352;
-constexpr int schemaVersion = 1;
+constexpr int schemaVersion = 2;
 
 bool fingerprint(const QString &value)
 {
@@ -26,6 +27,74 @@ bool fingerprint(const QString &value)
         if (!((c >= u'0' && c <= u'9') || (c >= u'a' && c <= u'f')))
             return false;
     return true;
+}
+
+bool exactKeys(const QJsonObject &object, std::initializer_list<const char *> keys)
+{
+    if (object.size() != qsizetype(keys.size()))
+        return false;
+    for (const char *key : keys)
+        if (!object.contains(QLatin1String(key)))
+            return false;
+    return true;
+}
+
+bool integer(const QJsonValue &value, int minimum, int maximum)
+{
+    return value.isDouble() && value.toDouble() >= minimum && value.toDouble() <= maximum && value.toDouble() == value.toInt();
+}
+
+bool absolutePath(const QJsonValue &value, bool allowEmpty = false)
+{
+    if (!value.isString())
+        return false;
+    const auto path = value.toString();
+    return (allowEmpty && path.isEmpty()) || (!path.contains(QChar::Null) && !path.trimmed().isEmpty() && QFileInfo(path).isAbsolute());
+}
+
+bool runtimeSnapshot(const QJsonValue &value, bool neural)
+{
+    if (!value.isObject())
+        return false;
+    const auto runtime = value.toObject();
+    if (!exactKeys(runtime, { "executable", "dataPath", "executableSha256", "workerSha256", "modelManifestSha256", "packageManifestSha256" }) || !absolutePath(runtime["executable"]) || !absolutePath(runtime["dataPath"]))
+        return false;
+    for (const char *key : { "executableSha256", "modelManifestSha256", "packageManifestSha256" })
+        if (!fingerprint(runtime[QLatin1String(key)].toString()))
+            return false;
+    return neural ? fingerprint(runtime["workerSha256"].toString()) : runtime["workerSha256"].isNull();
+}
+
+bool validSettings(const QJsonObject &snapshot)
+{
+    if (!exactKeys(snapshot, { "version", "options", "environment" }) || !integer(snapshot["version"], 1, 1) || !snapshot["options"].isObject() || !snapshot["environment"].isObject())
+        return false;
+    const auto o = snapshot["options"].toObject();
+    if (!exactKeys(o, { "neural", "gpu", "cpuThreads", "executable", "dataPath", "language", "vertical", "segmentation", "rotation", "invert", "adaptiveThreshold", "timeoutMs" }))
+        return false;
+    for (const char *key : { "neural", "gpu", "vertical", "invert", "adaptiveThreshold" })
+        if (!o[QLatin1String(key)].isBool())
+            return false;
+    if (!integer(o["cpuThreads"], 1, 16) || !integer(o["timeoutMs"], 1, std::numeric_limits<int>::max()) || !integer(o["rotation"], 0, 270) || o["rotation"].toInt() % 90 != 0 || !integer(o["segmentation"], 5, 13) || !QVector<int> { 5, 6, 7, 11, 13 }.contains(o["segmentation"].toInt()) || !absolutePath(o["executable"], true) || !absolutePath(o["dataPath"], true))
+        return false;
+    const bool neural = o["neural"].toBool();
+    const QString language = o["language"].toString();
+    const QStringList languages = neural ? QStringList { "auto", "kor", "jpn" }
+                                         : QStringList { "auto", "kor", "jpn", "eng", "kor+eng", "jpn+eng", "jpn_vert+eng" };
+    if (!languages.contains(language) || (!neural && o["gpu"].toBool()))
+        return false;
+    const auto e = snapshot["environment"].toObject();
+    if (!exactKeys(e, { "platform", "applicationSha256", "preprocessingRevision", "cpu", "gpu" }) || e["platform"].toString() != QStringLiteral("windows-x64") || !fingerprint(e["applicationSha256"].toString()) || e["preprocessingRevision"].toString().trimmed().isEmpty() || !runtimeSnapshot(e["cpu"], neural))
+        return false;
+    // Null is an explicit unavailable-addon snapshot, not an unknown GPU state.
+    if (!e["gpu"].isNull() && (!neural || !runtimeSnapshot(e["gpu"], true)))
+        return false;
+    if (!neural) {
+        const auto cpu = e["cpu"].toObject();
+        if (o["executable"] != cpu["executable"] || o["dataPath"] != cpu["dataPath"])
+            return false;
+    }
+    return QJsonDocument(snapshot).toJson(QJsonDocument::Compact).size() <= 32768;
 }
 
 bool validTime(qint64 now, qint64 duration)
@@ -43,6 +112,7 @@ QByteArray serialize(const Spec &s)
                                  { "comicId", s.comicId },
                                  { "sourceSnapshot", s.sourceSnapshot },
                                  { "sourceContext", s.sourceContext },
+                                 { "settingsSnapshot", s.settingsSnapshot },
                                  { "settingsFingerprint", s.settingsFingerprint },
                                  { "totalPages", s.totalPages },
                                  { "pages", pages } })
@@ -57,6 +127,7 @@ Spec deserialize(const QByteArray &bytes)
     s.comicId = o["comicId"].toString();
     s.sourceSnapshot = o["sourceSnapshot"].toString();
     s.sourceContext = o["sourceContext"].toObject();
+    s.settingsSnapshot = o["settingsSnapshot"].toObject();
     s.settingsFingerprint = o["settingsFingerprint"].toString();
     s.totalPages = o["totalPages"].toInt();
     for (const auto page : o["pages"].toArray())
@@ -67,6 +138,8 @@ Spec deserialize(const QByteArray &bytes)
 bool validSpec(const Spec &s)
 {
     if (s.libraryGeneration.trimmed().isEmpty() || s.comicId.trimmed().isEmpty() || !fingerprint(s.sourceSnapshot) || !fingerprint(s.settingsFingerprint) || s.totalPages <= 0 || s.pages.isEmpty() || s.pages.size() > 6)
+        return false;
+    if (settingsFingerprint(s.settingsSnapshot) != s.settingsFingerprint)
         return false;
     for (const QString &key : { QStringLiteral("path"), QStringLiteral("libraryRoot"), QStringLiteral("sourceKind") })
         if (s.sourceContext[key].toString().trimmed().isEmpty())
@@ -79,6 +152,13 @@ bool validSpec(const Spec &s)
     }
     return serialize(s).size() <= 65536;
 }
+}
+
+QString settingsFingerprint(const QJsonObject &snapshot)
+{
+    if (!validSettings(snapshot))
+        return { };
+    return QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(snapshot).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256).toHex());
 }
 
 QString stateName(State state)

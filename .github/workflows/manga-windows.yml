@@ -371,7 +371,9 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: manga-local-ocr-probe-${{ github.sha }}
-          path: build/bin/local_metadata_test.exe
+          path: |
+            build/bin/local_metadata_test.exe
+            build/bin/ocr_job_store_test.exe
           if-no-files-found: error
           retention-days: 14
 

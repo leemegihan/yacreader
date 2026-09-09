@@ -17,9 +17,9 @@ this is not a hardware power-loss guarantee.
 
 Registration is idempotent over a SHA256 of the complete canonical specification:
 library generation, comic ID, source snapshot, source context (path/library root/
-kind), settings fingerprint, total page count and ordered selected pages.
-The source and settings fingerprints must already have been calculated by the
-caller. At most six distinct ascending pages from the first/last three are allowed.
+kind), complete settings snapshot and its fingerprint, total page count and ordered
+selected pages. The caller computes the source fingerprint; settingsFingerprint()
+validates and hashes the complete settings snapshot. At most six distinct ascending pages from the first/last three are allowed.
 The store does not enumerate or open original media.
 
 ## State and ownership
@@ -114,9 +114,9 @@ or establishes that the caller's claimed engine fingerprints are true.
 
 ## Executor integration prerequisites
 
-The current job specification stores a settings fingerprint, not a recoverable
-OcrOptions/environment snapshot. Persist that snapshot before offering application
-restart/resume. The cache records prepared dimensions and a preprocessing fingerprint;
+The job specification now requires a recoverable options/environment snapshot.
+The executor bridge must build it from resolved options and measured installed files,
+then remeasure and compare its fingerprint before offering application restart/resume. The cache records prepared dimensions and a preprocessing fingerprint;
 full original-to-prepared transforms must accompany completion payloads before
 drawing cached regions over an original page.
 
@@ -126,3 +126,45 @@ and later CPU retries are reconciled. Preserve validated completed pages and
 reprocess remaining pages in the intended integration; do not overwrite receipts
 or relabel CPU execution as GPU. Cache elapsedMs is historical inference data,
 not a fresh cache-hit duration.
+
+
+## Recoverable settings snapshot (version 1)
+
+New job databases use schema 2. Schema 1 stored only an opaque settings hash and
+cannot reconstruct the missing options. Such databases are refused without
+migration or deletion; preserve them as evidence and create a separate new test
+database. No operating library database is involved.
+
+The private settingsSnapshot contains exactly version, options and environment.
+options records every current OcrOptions field: neural, gpu, cpuThreads, executable,
+dataPath, language, vertical, segmentation, rotation, invert, adaptiveThreshold
+and timeoutMs. Values have strict types, supported language/layout values,
+quarter-turn rotation and bounded thread counts. No omitted fields receive defaults.
+
+environment includes platform (windows-x64), applicationSha256,
+preprocessingRevision, cpu and gpu. A runtime object contains absolute executable
+and dataPath, executableSha256, workerSha256, modelManifestSha256 and
+packageManifestSha256. Tesseract uses a null worker hash and its resolved option
+paths must match the CPU runtime. GPU is either a complete neural runtime or
+explicit null for an unavailable addon. Installing an addon later changes the
+snapshot; it cannot silently change the old job's execution settings.
+
+settingsFingerprint() returns empty for malformed/unsupported snapshots and
+SHA256 of Qt's compact canonical JSON otherwise. Registration and reads verify
+that this equals the stored fingerprint, in addition to the whole job hash.
+Unknown fields and versions fail closed so newly introduced settings cannot be
+silently ignored. App bytes and the preprocessing revision distinguish code that
+can change decoding/preparation or interpretation. Both available CPU/GPU runtimes
+are recorded, including fallback dependencies.
+
+These are caller-supplied measurements, not an attestation performed by the
+store. The module does not open executables, models or original pages and does
+not restore OcrOptions into the inspector yet. Manifest fingerprints must describe
+the actual files, not just a downloaded lockfile. Before resume the executor must
+remeasure the environment, validate source/cache evidence and refuse a mismatch.
+Prepared-page geometry/transforms and physical GPU scheduling remain separate work.
+
+Synthetic checks cover non-default settings across close/reopen and lease recovery,
+absent GPU and Tesseract snapshots, missing fields, type/range/version errors,
+stale fingerprints, changed runtime hashes and preservation of an older database.
+Windows build and packaged execution results must be recorded after the new run.

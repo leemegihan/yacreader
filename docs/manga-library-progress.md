@@ -802,3 +802,12 @@ Current app and review hashes remain preserved. The queue and automatic cache
 lookup are still not wired into the inspector. Next, reconcile completed GPU
 pages with CPU retries, persist recoverable settings and publish validated page
 completion payloads before adding resume UI.
+
+## Recoverable private OCR settings
+
+Queued jobs now require the complete supported OCR options and a versioned
+CPU/GPU environment snapshot, verified against their canonical settings hash.
+The private schema advances to 2; older fingerprint-only databases are preserved
+and refused rather than supplied with guessed settings. The storage layer still
+does not execute OCR or offer restart UI. New Windows validation is pending.
+See [the snapshot contract](ocr-job-store.md#recoverable-settings-snapshot-version-1).
