@@ -126,3 +126,22 @@ that line may be a social-media heading rather than a name. Automatic language
 selection can still prefer an incomplete transcription. Inspect both model
 readings in private diagnostics or rerun with an explicitly chosen language;
 recognition confidence alone does not establish complete or correct text.
+
+## Partial cross-language readings
+
+The score winner remains the primary OCR line. When that line is ASCII-only
+and another language has a high-scoring reading containing the same token plus
+at least two additional characters with its CJK script, the worker retains up
+to two distinct alternatives for review. This heuristic identifies possible
+truncation, not correctness, and does not add inference passes.
+
+Version-1 line objects may include an optional `alternatives` array. Each
+entry has text, confidence, language and the same box as its parent. The client
+bounds and validates these records separately and accepts older responses
+without the field. Retry crops map both primary and alternative boxes back to
+the prepared page. Primary text and aggregate confidence exclude alternatives.
+
+The inspector displays primary and alternate readings together. Explicit
+credits on an alternate line can yield unlabelled review candidates; they
+cannot borrow primary text from adjacent lines, infer cover titles, autofill
+fields or start automatic lookup. Always compare them with the original.

@@ -8,6 +8,7 @@ import re
 import socket
 import sys
 import time
+import unicodedata
 
 MODEL_NAMES = ['PP-OCRv5_mobile_det', 'PP-OCRv5_server_rec', 'korean_PP-OCRv5_mobile_rec']
 
@@ -107,6 +108,40 @@ def merge_lines(lines, additions):
     return lines
 
 
+def select_reading(options):
+    """Keep the score winner; expose possible cross-language truncation for review."""
+    if not options:
+        return None
+    best = max(options, key=lambda item: item['confidence'])
+    if best['confidence'] < 35:
+        return None
+    result = dict(best)
+    compact = lambda text: ''.join(unicodedata.normalize('NFKC', text).split())
+    short = compact(best['text'])
+    if not short or not short.isascii() or not any(ch.isalnum() for ch in short):
+        return result
+    alternatives, seen = [], set()
+    for option in sorted(options, key=lambda item: item['confidence'], reverse=True):
+        if option['language'] == best['language'] or option['confidence'] < 85:
+            continue
+        longer = compact(option['text'])
+        if short not in longer or len(longer) < len(short) + 2:
+            continue
+        extra = longer.replace(short, '', 1)
+        script = (any('\u3040' <= ch <= '\u30ff' or '\u3400' <= ch <= '\u9fff' for ch in extra)
+                  if option['language'] == 'jpn' else any('\uac00' <= ch <= '\ud7a3' for ch in extra))
+        identity = (option['language'], longer)
+        if not script or identity in seen:
+            continue
+        alternatives.append(dict(option))
+        seen.add(identity)
+        if len(alternatives) == 2:
+            break
+    if alternatives:
+        result['alternatives'] = alternatives
+    return result
+
+
 class Engine:
     def __init__(self, root, language, threads, device, progress=lambda stage: None, diagnostics=False):
         from paddleocr import TextDetection, TextRecognition
@@ -176,9 +211,8 @@ class Engine:
                         continue
                     choices[owners[i]].append({'text': text, 'confidence': score * 100,
                                                'language': language, 'box': regions[owners[i]][0]})
-        # Cross-model scores are uncalibrated: Qt always requires review.
-        return [best for options in choices if options for best in [max(options, key=lambda r: r['confidence'])]
-                if best['confidence'] >= 35]
+        # Cross-model scores are uncalibrated: alternatives never replace the winner.
+        return [reading for options in choices for reading in [select_reading(options)] if reading]
 
     def read_pass(self, image, origin=(0, 0), scale=(1., 1.)):
         regions = self.regions(image)
@@ -219,6 +253,8 @@ class Engine:
                 a, b, c, d = line['box']
                 line['box'] = [max(0, math.floor(a / sx + roi[0])), max(0, math.floor(b / sy + roi[1])),
                                min(image.width, math.ceil(c / sx + roi[0])), min(image.height, math.ceil(d / sy + roi[1]))]
+                for alternative in line.get('alternatives', []):
+                    alternative['box'] = list(line['box'])
             merge_lines(lines, additions)
         vertical = sum(b['box'][3] - b['box'][1] > 1.5 * (b['box'][2] - b['box'][0]) for b in lines)
         lines.sort(key=(lambda line: (-line['box'][0], line['box'][1])) if lines and vertical > len(lines) / 2

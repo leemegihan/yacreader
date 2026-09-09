@@ -23,6 +23,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPainter>
+#include <QPlainTextEdit>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSaveFile>
@@ -129,6 +130,7 @@ private slots:
     void automaticQueryUsesOnlyStrongCredits();
     void realMultilingualColophon();
     void neuralResponseAndReview();
+    void neuralAlternativesRequireReview();
     void coverTitlesAndCombinedEvidence();
     void coverLayoutRejectsUnrelatedText();
     void nameHintsExcludeLibraryRoots();
@@ -711,6 +713,63 @@ void LocalMetadataTest::neuralResponseAndReview()
     response["lines"] = lines;
     QVERIFY(!LocalMetadata::parseNeuralReading(QJsonDocument(response).toJson(), QSize(200, 200)).error.isEmpty());
     QVERIFY(!LocalMetadata::parseNeuralReading("{}", QSize(200, 200)).error.isEmpty());
+}
+
+void LocalMetadataTest::neuralAlternativesRequireReview()
+{
+    const QJsonArray box { 10, 10, 180, 30 };
+    const QJsonObject alternate { { "text", "[Author]青木そら" }, { "language", "jpn" }, { "confidence", 93 }, { "box", box } };
+    QJsonObject line { { "text", "[Author]" }, { "language", "kor" }, { "confidence", 97 }, { "box", box }, { "alternatives", QJsonArray { alternate } } };
+    QJsonObject response { { "version", 1 }, { "engine", "paddle-regions" }, { "language", "auto" }, { "lines", QJsonArray { line } } };
+    auto read = [&] { return LocalMetadata::parseNeuralReading(QJsonDocument(response).toJson(), QSize(200, 200)); };
+    const auto reading = read();
+    QVERIFY(reading.error.isEmpty());
+    QCOMPARE(reading.text, QString("[Author]"));
+    QCOMPARE(reading.confidence, 97.0);
+    QCOMPARE(reading.lines.size(), 1);
+    QCOMPARE(reading.alternatives.size(), 1);
+    QCOMPARE(reading.alternatives.first().text, QString("[Author]青木そら"));
+    LocalMetadata::Page page;
+    page.number = 1;
+    page.text = reading.text;
+    page.reading = reading;
+    LocalMetadata::Result result;
+    result.pages = { page };
+    result.suggestions = LocalMetadata::suggest(result.pages, QString());
+    QCOMPARE(result.suggestions.size(), 1);
+    const auto candidate = result.suggestions.first();
+    QCOMPARE(candidate.field, LocalMetadata::Suggestion::Author);
+    QCOMPARE(candidate.value, QString("青木そら"));
+    QVERIFY(!candidate.labelled);
+    QVERIFY(!candidate.evidence.first().labelled);
+    YACReaderArchiveInspectorDialog dialog;
+    QSignalSpy requests(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    dialog.showResult(result);
+    QVERIFY(dialog.authorEdit->text().isEmpty());
+    QVERIFY(dialog.pageText->toPlainText().contains("[Author]青木そら"));
+    dialog.requestSearch(true);
+    QCOMPARE(requests.count(), 0);
+    // An incomplete alternative must not borrow the primary reading's next line.
+    page.reading.alternatives.first().text = "[Author]";
+    page.text += "\nWrong Person";
+    QVERIFY(LocalMetadata::suggest({ page }, QString()).isEmpty());
+    for (const auto &bad : { QJsonValue(QJsonValue::Null), QJsonValue(QJsonObject()), QJsonValue(QJsonArray { alternate, alternate, alternate }) }) {
+        line["alternatives"] = bad;
+        response["lines"] = QJsonArray { line };
+        QVERIFY(!read().error.isEmpty());
+    }
+    for (const auto &field : { QString("box"), QString("language"), QString("confidence") }) {
+        auto bad = alternate;
+        bad[field] = field == "box" ? QJsonValue(QJsonArray { 11, 10, 180, 30 }) : field == "language" ? QJsonValue(QString("kor"))
+                                                                                                       : QJsonValue(84);
+        line["alternatives"] = QJsonArray { bad };
+        response["lines"] = QJsonArray { line };
+        QVERIFY(!read().error.isEmpty());
+    }
+    line.remove("alternatives");
+    response["lines"] = QJsonArray { line };
+    QVERIFY(read().error.isEmpty());
+    QVERIFY(read().alternatives.isEmpty());
 }
 
 void LocalMetadataTest::realNeuralOcr()

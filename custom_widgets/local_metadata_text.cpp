@@ -358,6 +358,19 @@ QVector<Suggestion> suggest(const QVector<Page> &pages, const QString &sourcePat
                                                                                                                                                                        : tr("명시된 제목·작가 라벨과 연결된 글자입니다. 원본과 대조해 주세요.");
             append(field, credit.value, reason, page.number, !credit.roleUncertain, credit.confidence);
         }
+        for (const auto &alternative : page.reading.alternatives) {
+            Page review;
+            review.number = page.number;
+            review.text = alternative.text;
+            review.reading.lines = { alternative };
+            // Only this alternate line supplies evidence. Do not borrow nearby
+            // primary text, infer a cover title, or promote it to a confirmed role.
+            for (const auto &credit : credits(review)) {
+                const auto field = credit.role == Role::Title ? Suggestion::Title : credit.role == Role::Author ? Suggestion::Author
+                                                                                                                : Suggestion::Publisher;
+                append(field, credit.value, tr("다른 언어 판독에서 추가로 읽힌 글자입니다. 기본 판독과 원본을 대조해 직접 선택해 주세요."), page.number, false, credit.confidence);
+            }
+        }
         const auto titleLines = coverTitleLines(page);
         if (!titleLines.isEmpty()) {
             QStringList parts;
@@ -427,26 +440,46 @@ Reading parseNeuralReading(const QByteArray &json, const QSize &imageSize)
     const auto lines = object.value("lines").toArray();
     if (lines.size() > 256)
         return invalid();
-    double sum = 0;
-    int weight = 0;
-    for (const auto &value : lines) {
+    auto parseLine = [&](const QJsonValue &value, TextLine &output) {
+        if (!value.isObject())
+            return false;
         const auto line = value.toObject();
         const QString text = line.value("text").toString().simplified();
         const double confidence = line.value("confidence").toDouble(-1);
         const auto box = line.value("box").toArray();
         const auto language = line.value("language").toString();
         if (text.isEmpty() || text.size() > 1000 || !std::isfinite(confidence) || confidence < 0 || confidence > 100 || box.size() != 4 || (language != "jpn" && language != "kor"))
-            return invalid();
+            return false;
         for (const auto &coordinate : box)
             if (!coordinate.isDouble() || !std::isfinite(coordinate.toDouble()) || coordinate.toDouble() != coordinate.toInt(-1))
-                return invalid();
+                return false;
         const QRect bounds(box[0].toInt(), box[1].toInt(), box[2].toInt() - box[0].toInt(), box[3].toInt() - box[1].toInt());
         if (bounds.isEmpty() || !QRect(QPoint(), imageSize).contains(bounds))
+            return false;
+        output = { text, confidence, bounds, language };
+        return true;
+    };
+    double sum = 0;
+    int weight = 0;
+    for (const auto &value : lines) {
+        TextLine line;
+        if (!parseLine(value, line))
             return invalid();
-        reading.lines.append({ text, confidence, bounds });
-        reading.text += text + QLatin1Char('\n');
-        sum += confidence * text.size();
-        weight += text.size();
+        reading.lines.append(line);
+        reading.text += line.text + QLatin1Char('\n');
+        sum += line.confidence * line.text.size();
+        weight += line.text.size();
+        const auto alternatives = value.toObject().value("alternatives");
+        if (alternatives.isUndefined())
+            continue; // Older workers need not provide alternatives.
+        if (!alternatives.isArray() || alternatives.toArray().size() > 2)
+            return invalid();
+        for (const auto &item : alternatives.toArray()) {
+            TextLine alternative;
+            if (!parseLine(item, alternative) || alternative.bounds != line.bounds || alternative.language == line.language || alternative.confidence < 85)
+                return invalid();
+            reading.alternatives.append(alternative);
+        }
     }
     reading.text = reading.text.trimmed();
     reading.confidence = weight ? sum / weight : -1;

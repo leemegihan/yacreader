@@ -376,7 +376,17 @@ void YACReaderArchiveInspectorDialog::showPage(int row)
         pageInfo->setText(pageInfo->text() + tr(" · %1 · 읽기 %2초 / 모델 준비 %3초").arg(page.reading.device == "gpu:0" ? tr("NVIDIA GPU") : tr("CPU")).arg(page.reading.elapsedMs / 1000.0, 0, 'f', 1).arg(page.reading.initializationMs / 1000.0, 0, 'f', 1));
     if (!page.reading.warning.isEmpty())
         pageInfo->setText(pageInfo->text() + QStringLiteral(" · ") + page.reading.warning);
-    pageText->setPlainText(page.error.isEmpty() ? page.text : page.error + QStringLiteral("\n\n") + page.text);
+    QString displayText = page.error.isEmpty() ? page.text : page.error + QStringLiteral("\n\n") + page.text;
+    if (!page.reading.alternatives.isEmpty()) {
+        displayText += tr("\n\n다른 언어 판독 · 미확정 (원본과 대조해 주세요)");
+        for (const auto &alternative : page.reading.alternatives) {
+            const auto primary = std::find_if(page.reading.lines.cbegin(), page.reading.lines.cend(), [&](const LocalMetadata::TextLine &line) { return line.bounds == alternative.bounds; });
+            if (primary != page.reading.lines.cend())
+                displayText += tr("\n기본 판독: %1").arg(primary->text);
+            displayText += tr("\n대안 (%1 · 점수 %2): %3\n").arg(alternative.language == "jpn" ? tr("일본어") : tr("한국어"), QString::number(alternative.confidence, 'f', 0), alternative.text);
+        }
+    }
+    pageText->setPlainText(displayText);
 }
 
 LocalMetadata::OcrOptions YACReaderArchiveInspectorDialog::ocrOptions() const

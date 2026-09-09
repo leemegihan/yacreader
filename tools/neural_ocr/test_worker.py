@@ -130,6 +130,50 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(len(audit['text']), 160)
         self.assertTrue(audit['textTruncated'])
 
+    def test_partial_language_reading_is_retained_without_replacing_winner(self):
+        short = {'text': '[Circle]', 'confidence': 97, 'language': 'kor', 'box': [0, 0, 100, 20]}
+        full = dict(short, text='[Circle]月の工房', confidence=93, language='jpn')
+        result = worker.select_reading([full, short, full])
+        self.assertEqual(result['text'], short['text'])
+        self.assertEqual(result['confidence'], short['confidence'])
+        self.assertEqual(result['alternatives'], [full])
+        self.assertNotIn('alternatives', short)
+        self.assertNotIn('alternatives', full)
+        for alternate in [dict(full, confidence=84), dict(full, language='kor'),
+                          dict(full, text='[Studio]月の工房'), dict(full, text='[Circle] Moon Studio'),
+                          dict(full, text='[Circle]月')]:
+            self.assertNotIn('alternatives', worker.select_reading([short, alternate]))
+        self.assertNotIn('alternatives', worker.select_reading([full]))
+        self.assertIsNone(worker.select_reading([]))
+        self.assertIsNone(worker.select_reading([dict(short, confidence=34)]))
+        korean = dict(short, text='그PC-90과', confidence=90)
+        latin = dict(full, text='PC-90', confidence=98)
+        self.assertEqual(worker.select_reading([latin, korean])['alternatives'], [korean])
+
+    def test_batched_reader_exposes_partial_alternative(self):
+        engine = worker.Engine.__new__(worker.Engine)
+        engine.readers = {'jpn': Reader('[Author]青木そら', .93), 'kor': Reader('[Author]', .97)}
+        engine.progress = lambda stage: None
+        image = Image.new('RGB', (200, 100), 'white')
+        regions = worker.regions_from([[(5, 5), (150, 5), (150, 20), (5, 20)]], 200, 100)
+        result = engine.read_regions(image, regions)
+        self.assertEqual(result[0]['text'], '[Author]')
+        self.assertEqual(result[0]['alternatives'][0]['text'], '[Author]青木そら')
+        self.assertEqual(result[0]['box'], result[0]['alternatives'][0]['box'])
+
+    def test_retry_alternative_uses_parent_page_coordinates(self):
+        engine = worker.Engine.__new__(worker.Engine)
+        engine.progress = lambda stage: None
+        image = Image.new('RGB', (200, 200), 'white')
+        anchor = {'text': '著者', 'confidence': 99, 'language': 'jpn', 'box': [80, 100, 120, 110]}
+        addition = {'text': '[Author]', 'confidence': 97, 'language': 'kor', 'box': [10, 10, 50, 30],
+                    'alternatives': [{'text': '[Author]青木そら', 'confidence': 93, 'language': 'jpn', 'box': [10, 10, 50, 30]}]}
+        with patch.object(engine, 'read_pass', side_effect=[[anchor], [addition]]):
+            result = engine.read(image)
+        row = next(line for line in result if 'alternatives' in line)
+        self.assertEqual(row['box'], [45, 85, 65, 95])
+        self.assertEqual(row['alternatives'][0]['box'], row['box'])
+
     def test_atomic_unicode_output(self):
         with tempfile.TemporaryDirectory(prefix='OCR 한글 ') as folder:
             path = Path(folder) / 'result.json'

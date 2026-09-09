@@ -22,12 +22,14 @@ struct TextLine {
     QString text;
     double confidence = -1;
     QRect bounds;
+    QString language;
 };
 struct Reading {
     QString text;
     QString language;
     QString error;
     QVector<TextLine> lines;
+    QVector<TextLine> alternatives;
     double confidence = -1;
     double score = -1;
     bool uncertainLanguage = false;
