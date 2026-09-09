@@ -242,3 +242,9 @@ qt_add_shaders(rhi_flow_library "flow_shaders_library"
 )
 
 endif() # NOT BUILD_SERVER_STANDALONE
+
+# Independent durable OCR bookkeeping; no application/library DB dependency.
+add_library(ocr_job_store STATIC ocr_job_store.h ocr_job_store.cpp)
+target_include_directories(ocr_job_store PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+yacreader_apply_build_options(ocr_job_store)
+target_link_libraries(ocr_job_store PUBLIC Qt6::Core Qt6::Sql)

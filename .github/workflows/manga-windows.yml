@@ -39,10 +39,10 @@ jobs:
           if errorlevel 1 exit /b 1
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON -DDECOMPRESSION_BACKEND=7zip -DPDF_BACKEND=pdfium -DBUILD_NUMBER=${{ github.run_number }}
           if errorlevel 1 exit /b 1
-          cmake --build build --target metadata_search_test metadata_workflow_test local_metadata_test --parallel %NUMBER_OF_PROCESSORS% || exit /b 1
+          cmake --build build --target metadata_search_test metadata_workflow_test local_metadata_test ocr_job_store_test --parallel %NUMBER_OF_PROCESSORS% || exit /b 1
           if errorlevel 1 exit /b 1
           set PATH=%GITHUB_WORKSPACE%\dependencies\pdfium\win\x64;%PATH%
-          ctest --test-dir build -R "^(metadata_(search|workflow)|local_metadata)_test$" --output-on-failure
+          ctest --test-dir build -R "^(metadata_(search|workflow)|local_metadata|ocr_job_store)_test$" --output-on-failure
           set TEST_EXIT=%ERRORLEVEL%
           if exist build\tests\local_metadata_test\local-metadata.txt type build\tests\local_metadata_test\local-metadata.txt
           if not "%TEST_EXIT%"=="0" exit /b %TEST_EXIT%
@@ -265,6 +265,7 @@ jobs:
           # install path too, not just a command-line invocation with relative paths.
           $qtBin = Split-Path (Get-Command qmake.exe -ErrorAction Stop).Source
           Copy-Item 'build/bin/local_metadata_test.exe' $package
+          Copy-Item 'build/bin/ocr_job_store_test.exe' $package
           Copy-Item "$qtBin/Qt6Test.dll" $package
           # Use only installed DLLs; no runner Qt fallback.
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
@@ -352,6 +353,10 @@ jobs:
           Remove-Item Env:YACREADER_EXPECT_NEURAL_DEVICE
           Get-Content "$env:GITHUB_WORKSPACE/build/artifact-ocr.txt"
           if ($testExit -ne 0) { throw 'Downloaded artifact OCR or settings isolation failed' }
+          & "$package/ocr_job_store_test.exe" -o "$env:GITHUB_WORKSPACE/build/artifact-job-store.txt,txt"
+          $storeExit = $LASTEXITCODE
+          Get-Content "$env:GITHUB_WORKSPACE/build/artifact-job-store.txt"
+          if ($storeExit -ne 0) { throw 'Downloaded artifact durable job store failed' }
 
       - name: Upload local-only OCR diagnostic executable
         uses: actions/upload-artifact@v6
@@ -392,4 +397,5 @@ jobs:
             build/Testing/Temporary/LastTest.log
             build/CMakeFiles/CMakeConfigureLog.yaml
             build/tests/local_metadata_test/local-metadata.txt
+            build/artifact-job-store.txt
           retention-days: 14
