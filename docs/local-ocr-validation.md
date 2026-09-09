@@ -9,12 +9,16 @@ These modes never call database save or external catalog lookup functions.
 ## Read the application's actual sampled pages
 
 ```powershell
-.\local_metadata_test.exe --local-ocr-pages <source-comic-or-image-folder> <new-output-directory>
+.\local_metadata_test.exe --local-ocr-pages <source-comic-or-image-folder> <new-output-directory> [pages-per-end]
 ```
 
 The output directory must not exist. Its parent must already exist, outside
 the original source directory. This uses the application's decoder, natural
-ordering, front/back three-page sampling and OCR preprocessing. It writes
+ordering and OCR preprocessing. Sampling defaults to front/back three pages;
+the optional final argument accepts 1–6 pages per end, matching the inspector's
+bounded range. Short works are deduplicated and the selected value is recorded
+in `pages.json`. Keep expanded-page discovery separate from a frozen comparison
+corpus. It writes
 `pages.json` and prepared PNGs into the new directory only.
 
 ## Classify already-read text with the application's candidate parser
@@ -141,7 +145,24 @@ bounds and validates these records separately and accepts older responses
 without the field. Retry crops map both primary and alternative boxes back to
 the prepared page. Primary text and aggregate confidence exclude alternatives.
 
-The inspector displays primary and alternate readings together. Explicit
-credits on an alternate line can yield unlabelled review candidates; they
-cannot borrow primary text from adjacent lines, infer cover titles, autofill
-fields or start automatic lookup. Always compare them with the original.
+The inspector displays primary and alternate readings together. Same-line
+explicit credits can yield unlabelled review candidates. General alternative
+parsing does not borrow adjacent primary text. A separate constrained path
+handles a slash-only primary whose alternate is an ordered publisher/author
+label: independently identified colophon context, an immediately following
+aligned same-language name pair, and high scores are all required. Shared
+person/circle labels and incomplete or intervening rows are excluded. These
+proposals cannot infer cover titles, autofill fields or start automatic lookup.
+Always compare both the role order and names with the original.
+
+CJK disagreements may also be retained when both readings score at least 85
+and the gap is at most 8. A slash, colon or middle-dot-only primary can retain
+an expansion containing that delimiter under the same score/gap limits.
+These are review-volume limits, not calibrated correctness probabilities.
+Primary text and the number of inference calls remain unchanged.
+
+Compact joined circle banners near the top of an opening page may contribute
+one unconfirmed publishing proposal. The complete two-part value is preserved;
+the delimiter does not establish which part is a person or a circle. Automatic
+lookup excludes publisher hints without strong evidence. Explicit lookup
+carrying tentative publishing hints opens review even with a filled title.

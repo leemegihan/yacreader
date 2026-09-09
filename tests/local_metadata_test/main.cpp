@@ -115,6 +115,7 @@ class LocalMetadataTest : public QObject
     Q_OBJECT
 private slots:
     void localProbePreservesInputs();
+    void localPageProbeSamplingIsBounded();
     void isolatedSettingsPaths();
     void sampling();
     void folderAndArchiveUseSamePageOrder();
@@ -220,6 +221,64 @@ void LocalMetadataTest::localProbePreservesInputs()
     QVERIFY(!QFileInfo::exists(directory.filePath("unsafe")));
     QVERIFY(reading.open(QIODevice::ReadOnly));
     QCOMPARE(reading.readAll(), bytes);
+}
+
+void LocalMetadataTest::localPageProbeSamplingIsBounded()
+{
+    QTemporaryDir directory;
+    const auto sourceRoot = directory.filePath("sources");
+    QVERIFY(QDir().mkdir(sourceRoot));
+    const auto folder = QDir(sourceRoot).filePath("images");
+    QVERIFY(QDir().mkdir(folder));
+    QList<QPair<QString, QByteArray>> files;
+    for (int i = 8; i >= 1; --i) {
+        QImage image(12, 16, QImage::Format_RGB32);
+        image.fill(qRgb(i * 20, 0, 0));
+        QBuffer buffer;
+        QVERIFY(buffer.open(QIODevice::WriteOnly));
+        QVERIFY(image.save(&buffer, "PNG"));
+        const auto name = QString::number(i) + ".png";
+        files.append(qMakePair(name, buffer.data()));
+        QFile file(QDir(folder).filePath(name));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write(buffer.data()), qint64(buffer.data().size()));
+    }
+    const auto archive = QDir(sourceRoot).filePath("sample.cbz");
+    QVERIFY(writeZip(archive, files));
+    const QVector<QVector<int>> expected { { 1, 8 }, { 1, 2, 3, 6, 7, 8 }, { 1, 2, 3, 4, 5, 6, 7, 8 } };
+    const QVector<int> counts { 1, 3, 6 };
+    for (const auto &source : { folder, archive }) {
+        for (int i = 0; i < counts.size(); ++i) {
+            const auto output = directory.filePath(QString("pages-%1-%2").arg(source == folder ? "folder" : "archive").arg(counts[i]));
+            QStringList args { "probe", "--local-ocr-pages", source, output };
+            if (counts[i] != 3)
+                args.append(QString::number(counts[i])); // Default remains three.
+            QCOMPARE(localOcrProbe(args), 0);
+            QFile manifest(QDir(output).filePath("pages.json"));
+            QVERIFY(manifest.open(QIODevice::ReadOnly));
+            const auto object = QJsonDocument::fromJson(manifest.readAll()).object();
+            QCOMPARE(object.value("pageCount").toInt(), 8);
+            QCOMPARE(object.value("perEnd").toInt(), counts[i]);
+            QVector<int> numbers;
+            for (const auto &page : object.value("pages").toArray())
+                numbers.append(page.toObject().value("number").toInt());
+            QCOMPARE(numbers, expected[i]); // A short work never repeats pages.
+            QCOMPARE(localOcrProbe(args), 2); // Existing output is preserved.
+        }
+    }
+    for (const auto &count : QStringList { "0", "7", "-1", "invalid", "1.5" }) {
+        const auto output = directory.filePath("rejected");
+        QCOMPARE(localOcrProbe({ "probe", "--local-ocr-pages", archive, output, count }), 2);
+        QVERIFY(!QFileInfo::exists(output));
+    }
+    QCOMPARE(localOcrProbe({ "probe", "--local-ocr-pages", folder, QDir(folder).filePath("rejected"), "6" }), 2);
+    QVERIFY(!QFileInfo::exists(QDir(folder).filePath("rejected")));
+    QCOMPARE(localOcrProbe({ "probe", "--local-ocr-candidates", archive, directory.filePath("rejected"), "6" }), 2);
+    for (const auto &item : files) {
+        QFile source(QDir(folder).filePath(item.first));
+        QVERIFY(source.open(QIODevice::ReadOnly));
+        QCOMPARE(source.readAll(), item.second);
+    }
 }
 
 void LocalMetadataTest::sampling()
@@ -1675,8 +1734,15 @@ void LocalMetadataTest::missingSourceDoesNotCreateDatabase()
 // Explicit local diagnostics: no library database or external lookup.
 int localOcrProbe(const QStringList &args)
 {
-    if (args.size() != 4)
+    if (args.size() != 4 && args.size() != 5)
         return 2;
+    int perEnd = 3;
+    if (args.size() == 5) {
+        bool valid = false;
+        perEnd = args.at(4).toInt(&valid);
+        if (args.at(1) != "--local-ocr-pages" || !valid || perEnd < 1 || perEnd > 6)
+            return 2;
+    }
     const QFileInfo input(args.at(2)), output(args.at(3));
     if (!input.exists() || output.exists() || !output.absoluteDir().exists())
         return 2;
@@ -1685,7 +1751,7 @@ int localOcrProbe(const QStringList &args)
         const QString relative = QDir(sourceRoot).relativeFilePath(output.absoluteDir().canonicalPath());
         if (relative != ".." && !relative.startsWith("../") && !QDir::isAbsolutePath(relative))
             return 2;
-        const auto result = LocalMetadata::readPages(input.canonicalFilePath(), 3, std::make_shared<std::atomic_bool>(false));
+        const auto result = LocalMetadata::readPages(input.canonicalFilePath(), perEnd, std::make_shared<std::atomic_bool>(false));
         if (!result.error.isEmpty() || result.pages.isEmpty() || !QDir().mkdir(output.absoluteFilePath()))
             return 3;
         QJsonArray pages;
@@ -1698,7 +1764,7 @@ int localOcrProbe(const QStringList &args)
             pages.append(QJsonObject { { "number", page.number }, { "sourceEntry", page.name }, { "image", name }, { "size", QJsonArray { image.width(), image.height() } } });
         }
         QSaveFile destination(QDir(output.absoluteFilePath()).filePath("pages.json"));
-        const auto bytes = QJsonDocument(QJsonObject { { "version", 1 }, { "pageCount", result.pageCount }, { "pages", pages } }).toJson();
+        const auto bytes = QJsonDocument(QJsonObject { { "version", 1 }, { "pageCount", result.pageCount }, { "perEnd", perEnd }, { "pages", pages } }).toJson();
         return destination.open(QIODevice::WriteOnly) && destination.write(bytes) == bytes.size() && destination.commit() ? 0 : 3;
     }
     if (args.at(1) != "--local-ocr-candidates" || !input.isFile())
