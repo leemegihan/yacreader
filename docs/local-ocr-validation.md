@@ -1,7 +1,7 @@
 # Local OCR validation without a library database
 
 The Windows validation workflow also publishes `manga-local-ocr-probe-<commit>`.
-Its `local_metadata_test.exe` has two explicit diagnostic modes in addition to
+Its `local_metadata_test.exe` has three explicit diagnostic modes in addition to
 the existing regression tests. Run it beside the matching application's Qt
 DLLs/plugins and `utils/7z.dll`, in a separate validation installation.
 These modes never call database save or external catalog lookup functions.
@@ -15,10 +15,11 @@ These modes never call database save or external catalog lookup functions.
 The output directory must not exist. Its parent must already exist, outside
 the original source directory. This uses the application's decoder, natural
 ordering and OCR preprocessing. Sampling defaults to front/back three pages;
-the optional final argument accepts 1–6 pages per end, matching the inspector's
-bounded range. Short works are deduplicated and the selected value is recorded
-in `pages.json`. Keep expanded-page discovery separate from a frozen comparison
-corpus. It writes
+the optional diagnostic argument accepts 1–6 pages per end to reproduce earlier
+audits. The normal inspector is limited to 1–3 per end. Do not expand the window
+automatically when candidates are absent; use filename/catalog review. Short
+works are deduplicated and the selection is recorded in `pages.json`. Historical
+expanded audits stay separate from a frozen comparison corpus. The probe writes
 `pages.json` and prepared PNGs into the new directory only.
 
 ## Classify already-read text with the application's candidate parser

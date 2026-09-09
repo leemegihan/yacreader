@@ -639,8 +639,27 @@ Review the fixed sample's unresolved person/circle roles and candidate-free cove
   silently assigned as artists. The original filename remains visible.
 - Keep previews, cancellation, read errors and existing page candidates distinct from successful
   no-candidate OCR. Add synthetic regressions and an offline, private filename-fallback probe.
-- Windows/package validation and fixed-output filename replay are pending for this revision.
-  Real names, paths, OCR and lookup results stay outside Git/CI. No operating DB, current app or
-  original-media changes are authorized by this workflow; full-library execution remains out of scope.
+- Windows/package validation and fixed-output filename replay passed at code
+  2dab6ca1fcdcba7b17b3ad72ecfdddc6d866141d; details follow below. Real names, paths, OCR
+  and lookup results stay outside Git/CI. Operating DB, current app and original media remain
+  unchanged; full-library execution remains out of scope.
 
 - Expose the three filename name hints as editable review fields. Changing them clears stale matches, busy searches disable editing, and switching works clears the fields. A synthetic workflow test covers import, edits, deduplication, reset and unchanged DB values.
+
+## 2026-09-09 — filename fallback validation and handoff
+
+- Tested code 2dab6ca1fcdcba7b17b3ad72ecfdddc6d866141d: [Windows validation](https://github.com/leemegihan/yacreader/actions/runs/34340931129) passed all 12 CTest suites, 17 worker tests, staged neural checks (8 passed), installed OCR/candidate checks (21 passed), GUI startup and downloaded-artifact checks (4 passed). Prerequisite-stage skips remain distinct from required package checks.
+- [General builds](https://github.com/leemegihan/yacreader/actions/runs/34340937878) passed formatting, Windows x64/ARM64, both Linux backends, macOS Universal and Docker amd64/arm64. Fork signing, notarization and publishing skips are not a signed release.
+- A fresh, independently extracted runtime passed 22 targeted C++ tests plus initialization/cleanup. Its archive SHA256 matched the published digest and hidden PaddleX metadata was present. Packaged worker bytes matched the previously tested package; normalized source/AST matched the actual OCR matrix, and all nine model files were unchanged. The editable-hint workflow passed in the full CI metadata workflow suite.
+- Replaying the frozen GPU and CPU 4/8/16 outputs preserved complete OCR-only candidate records and page identities when filename hints were added. All configurations retained equal candidate sets. Cached result hashes were unchanged. This was offline candidate replay, not another inference-speed benchmark or a catalog-match accuracy result.
+- Separate C++ tests passed missing-addon CPU fallback and actual GPU inference after copying the optional runtime into the private validation deployment. These checks used synthetic text; the earlier fixed real-input GPU/CPU measurements remain separately recorded. Both extracted GUI applications started with private settings.
+- The new fallback probe rejected existing output, missing source hints, unsupported versions, excessive pages and invalid readings without replacing a saved actual result. No extra original pages, HTTP requests or database writes were needed for replay.
+- The first build exposed a missing QPushButton test include; the final code fixed it and passed all required checks. Null-image warnings in synthetic dialog tests are separate from actual page-read errors.
+- Current user instructions now state the normal 1–3-page range. The explicit 1–6 diagnostic option only preserves historical audits and is not the candidate-free route. Installation ran in isolated CI; local checks used an extracted runtime without installer upgrade hooks. Current installed executable/worker hashes and the previous private review file were preserved.
+- Real filenames, OCR, candidate values, query leads, reviewed answers and timings remain private. This final record changes documentation only; no full-library processing or unreviewed save was performed.
+
+### Next work after filename fallback
+
+Review filename title/name hints and supported catalog references within the fixed sample. Mixed-language titles, numerical decorations and unexplained trailing names may still need search-text edits. A filename lead does not establish artist identity or a catalog match; unresolved person/circle roles and cross-language aliases stay in review.
+
+Once individual review/save behavior is stable, implement the durable queue, cancellation/restart and a content/settings/version-keyed OCR cache against a separate test DB and a small frozen sample. Successful candidate-free work must transition to filename review; failed or cancelled work must retain its own state. Wider automatic page reads, bulk save and full-library execution are not part of this completed change.
