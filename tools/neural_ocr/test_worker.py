@@ -250,5 +250,80 @@ class WorkerTest(unittest.TestCase):
             self.assertFalse(path.with_suffix('.tmp').exists())
 
 
+    def test_atomic_replace_retries_windows_sharing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'progress.json'
+            path.write_text('old', encoding='utf8')
+            busy = PermissionError('reader still holds the old file')
+            busy.winerror = 32
+            replace = type(path).replace
+            calls = []
+
+            def attempt(source, target):
+                calls.append(target)
+                self.assertEqual(path.read_text(encoding='utf8'), 'old')
+                if len(calls) < 3:
+                    raise busy
+                return replace(source, target)
+
+            with patch.object(worker.os, 'name', 'nt'), patch.object(type(path), 'replace', attempt), patch.object(worker.time, 'sleep') as sleep:
+                worker.write_json(path, {'stage': 'done'})
+                self.assertEqual(sleep.call_count, 2)
+            self.assertIn('done', path.read_text())
+            self.assertFalse(path.with_suffix('.tmp').exists())
+
+    def test_atomic_replace_refuses_persistent_denial(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'progress.json'
+            path.write_text('old', encoding='utf8')
+            busy = PermissionError('persistent denial')
+            busy.winerror = 5
+            with patch.object(worker.os, 'name', 'nt'), patch.object(type(path), 'replace', side_effect=busy) as replace, patch.object(worker.time, 'sleep') as sleep:
+                with self.assertRaises(PermissionError):
+                    worker.write_json(path, {'stage': 'done'})
+                self.assertEqual(replace.call_count, 51)
+                self.assertEqual(sleep.call_count, 50)
+            self.assertEqual(path.read_text(), 'old')
+
+    def test_atomic_replace_does_not_retry_other_errors(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'progress.json'
+            denied = PermissionError('not a Windows sharing error')
+            with patch.object(type(path), 'replace', side_effect=denied), patch.object(worker.time, 'sleep') as sleep:
+                with self.assertRaises(PermissionError):
+                    worker.write_json(path, {'stage': 'done'})
+                sleep.assert_not_called()
+
+    @unittest.skipUnless(worker.os.name == 'nt', 'Windows delete-sharing semantics')
+    def test_atomic_replace_survives_real_windows_reader(self):
+        import ctypes
+        from ctypes import wintypes
+        import threading
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        kernel.CreateFileW.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'progress.json'
+            path.write_text('old', encoding='utf8')
+            handle = kernel.CreateFileW(str(path), 0x80000000, 3, None, 3, 0, None)
+            self.assertNotEqual(handle, ctypes.c_void_p(-1).value)
+            released = threading.Event()
+
+            def release():
+                kernel.CloseHandle(handle)
+                released.set()
+
+            timer = threading.Timer(.06, release)
+            timer.start()
+            try:
+                worker.write_json(path, {'stage': 'done'})
+                self.assertIn('done', path.read_text())
+                self.assertTrue(released.is_set())
+            finally:
+                timer.join()
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -20,7 +20,16 @@ def no_network(*args, **kwargs):
 def write_json(path, value):
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
-    temporary.replace(path)
+    # Windows readers can briefly hold the old file without delete sharing.
+    # Preserve atomic replacement; never truncate the published JSON in place.
+    for attempt in range(51):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError as error:
+            if os.name != 'nt' or getattr(error, 'winerror', None) not in (5, 32, 33) or attempt == 50:
+                raise
+            time.sleep(.01)
 
 
 def regions_from(polygons, width, height):

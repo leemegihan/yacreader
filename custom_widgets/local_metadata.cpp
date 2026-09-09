@@ -354,6 +354,7 @@ static QVector<Reading> recognizeNeuralPages(const QVector<QImage> &images, cons
         QString stage = QStringLiteral("models");
         if (file.open(QIODevice::ReadOnly) && file.size() < 4096)
             stage = QJsonDocument::fromJson(file.readAll()).object().value("stage").toString();
+        file.close(); // Release Windows replacement sharing before invoking UI callbacks.
         const QString key = QString::number(completed) + stage;
         if (progress && key != lastStage) {
             const QString label = stage == "detect" ? tr("글자 영역 찾는 중") : stage == "recognize" ? tr("글자 읽는 중")

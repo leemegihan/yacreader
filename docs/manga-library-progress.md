@@ -753,3 +753,23 @@ The personal branch's automatic validation is Windows x64 build/tests/installer
 plus C++ formatting. The pre-existing general OS matrix remains manually callable.
 This implementation is awaiting its new Windows run and local artifact checks;
 the successful storage-foundation results above refer to the earlier code.
+
+### Windows progress-file sharing correction
+
+The process-ownership code passed Windows build/install and synthetic lifecycle
+checks. Its local integrated GPU check nevertheless fell back to CPU, while the
+same worker succeeded when launched directly. An observed retry exposed a
+Windows access-denied error replacing progress.json while a reader held it.
+The diagnostic observer can increase that race, so its failure is not an
+independent GPU accuracy measurement.
+
+Release the C++ progress reader before invoking callbacks. Keep atomic JSON
+replacement and retry only Windows access/delete-sharing errors, up to 50 waits
+of 10 ms. Persistent denial and unrelated errors still fail; the previously
+published JSON is never truncated in place. Four additional worker tests include
+a real Windows reader without delete sharing and bounded persistent denial.
+
+All 21 worker tests passed locally. A private prototype with the patched worker
+passed three consecutive actual-GPU synthetic checks and then restored the prior
+worker bytes. This is prototype evidence; the new packaged build and GPU cleanup
+verification remain pending. Original media and library data were not involved.
