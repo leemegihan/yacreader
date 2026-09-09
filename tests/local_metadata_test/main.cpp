@@ -136,6 +136,7 @@ private slots:
     void conflictingCandidatesRequireSelection();
     void creditSuffixAndCompoundLabels();
     void creditGeometryAndDialogue();
+    void bulletSeparatedCredits();
     void sharedAuthorCircleNeedsReview();
     void realNeuralWorkReuse();
     void localNeuralDevice();
@@ -885,6 +886,37 @@ void LocalMetadataTest::creditSuffixAndCompoundLabels()
     QVERIFY(LocalMetadata::suggest({ page }, QString()).isEmpty());
     page.text = "김하늘 지음";
     QCOMPARE(LocalMetadata::suggest({ page }, QString()).first().value, QString("김하늘"));
+}
+
+void LocalMetadataTest::bulletSeparatedCredits()
+{
+    LocalMetadata::Page page;
+    page.number = 20;
+    page.text = "発行者●青木そら\n発行所◉月の工房\n印刷所●架空印刷会社\n発行日●2025年1月1日";
+    QCOMPARE(LocalMetadata::classifyPage(page.text, page.number), LocalMetadata::PageKind::Colophon);
+    const auto candidates = LocalMetadata::suggest({ page }, QString());
+    QCOMPARE(candidates.size(), 2);
+    QCOMPARE(candidates[0].value, QString("青木そら"));
+    QCOMPARE(candidates[1].value, QString("月の工房"));
+    for (const auto &candidate : candidates) {
+        QCOMPARE(candidate.field, LocalMetadata::Suggestion::Publisher);
+        QVERIFY(candidate.labelled);
+    }
+    page.text = "著者●青木そら\nTitle: A Circle ● In The Rain";
+    const auto titled = LocalMetadata::suggest({ page }, QString());
+    QCOMPARE(titled.size(), 2);
+    QCOMPARE(titled[0].field, LocalMetadata::Suggestion::Author);
+    QCOMPARE(titled[0].value, QString("青木そら"));
+    QCOMPARE(titled[1].value, QString("A Circle ● In The Rain"));
+    page.text = "作者・サークル名●青木そら";
+    const auto ambiguous = LocalMetadata::suggest({ page }, QString());
+    QCOMPARE(ambiguous.size(), 2);
+    for (const auto &candidate : ambiguous)
+        QVERIFY(!candidate.labelled);
+    for (const auto &text : QStringList { "ここでは著者●青木そら", "著者●ここで待とう。", "著者青木そら", "著者●\n翻訳●Wrong Person", "翻訳●Wrong Person", "Unknown●著者: Wrong Person" }) {
+        page.text = text;
+        QVERIFY2(LocalMetadata::suggest({ page }, QString()).isEmpty(), qPrintable(text));
+    }
 }
 
 void LocalMetadataTest::sharedAuthorCircleNeedsReview()

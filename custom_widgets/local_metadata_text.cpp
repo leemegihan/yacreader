@@ -68,9 +68,12 @@ Label label(const QString &raw)
     const auto suffix = QRegularExpression(QStringLiteral("^(.+?)\\s+(지음|글[·/]그림|著)$")).match(line);
     if (suffix.hasMatch())
         return { Role::Author, suffix.captured(1), true };
-    const int colon = line.indexOf(QLatin1Char(':'));
-    if (colon > 0 && role(line.left(colon)) != Role::None)
-        return { role(line.left(colon)), line.mid(colon + 1).trimmed() };
+    // Colophons also separate a role and its value with a filled circle.
+    // Match the complete role before the first delimiter; punctuation in a
+    // name or a role word inside dialogue must not create another field.
+    const int delimiter = line.indexOf(QRegularExpression(QStringLiteral("[:●◉]")));
+    if (delimiter > 0 && role(line.left(delimiter)) != Role::None)
+        return { role(line.left(delimiter)), line.mid(delimiter + 1).trimmed() };
     // Boundaries must be present; do not match a role word buried in dialogue.
     for (int i = line.size() - 1; i > 0; --i) {
         if (line.at(i).isSpace() && role(line.left(i)) != Role::None)

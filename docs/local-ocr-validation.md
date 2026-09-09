@@ -111,3 +111,11 @@ Treat performance totals as the stated measurement interval, not full import
 time. Record first-run initialization separately; runtime bytecode and OS caches
 can change startup costs. Keep CPU/GPU comparison details and real-work review
 results local.
+
+## Filled-circle credit separators
+
+Explicit roles may use a colon or a filled-circle separator (● or ◉).
+Publisher and printer roles remain separate from authors, and shared
+person/circle labels remain unconfirmed alternatives. Separators inside values
+are preserved. A role word embedded in dialogue or concatenated directly with
+a name does not become a labelled identity candidate.
