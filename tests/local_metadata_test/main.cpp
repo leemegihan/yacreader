@@ -442,20 +442,22 @@ void LocalMetadataTest::neuralRecoveryWorkerFaults()
     QTemporaryDir temporary;
     QVERIFY(temporary.isValid());
     const auto oldMode = qgetenv("YACREADER_FAULT_MODE");
-    const auto oldTrace = qgetenv("YACREADER_FAULT_TRACE");
+    const auto oldTrace = qgetenv("YACREADER_FAULT_TRACE_BASE64");
     const auto restore = qScopeGuard([&] {
         if (oldMode.isNull())
             qunsetenv("YACREADER_FAULT_MODE");
         else
             qputenv("YACREADER_FAULT_MODE", oldMode);
         if (oldTrace.isNull())
-            qunsetenv("YACREADER_FAULT_TRACE");
+            qunsetenv("YACREADER_FAULT_TRACE_BASE64");
         else
-            qputenv("YACREADER_FAULT_TRACE", oldTrace);
+            qputenv("YACREADER_FAULT_TRACE_BASE64", oldTrace);
     });
     const QString tracePath = temporary.filePath(QStringLiteral("trace.jsonl"));
-    qputenv("YACREADER_FAULT_MODE", mode.toUtf8());
-    qputenv("YACREADER_FAULT_TRACE", tracePath.toUtf8());
+    QVERIFY(qputenv("YACREADER_FAULT_MODE", mode.toUtf8()));
+    // qputenv uses the Windows narrow CRT environment. Carry Unicode paths
+    // as ASCII bytes instead of passing UTF-8 to the active ANSI code page.
+    QVERIFY(qputenv("YACREADER_FAULT_TRACE_BASE64", tracePath.toUtf8().toBase64()));
     auto images = recoveryImages();
     images.resize(2);
     OcrOptions options;

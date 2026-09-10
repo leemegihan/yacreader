@@ -837,3 +837,21 @@ CPU responses and cancellation from a progress callback. New Windows validation
 and local packaged checks for this execution change are pending. These tests do
 not establish new real-work speed or accuracy. Durable raw-result callbacks,
 cache-before-receipt persistence and restart UI remain follow-up work.
+
+### Recovery verification and Unicode fault-fixture transport
+
+Recovery code c672913f passed Windows run34422590178: all 13 CTest suites,
+21 worker tests, staged neural checks (8), installed OCR checks (21), downloaded
+OCR/process checks (22) and job-store checks (18). Required packaged checks had
+no skips; prerequisite skips and the opt-in fault fixture were separate.
+The source-matched diagnostic executable passed 42 local native checks, CPU
+fallback and actual GPU inference on synthetic CJK pages in a composed runtime.
+These are not new real-work accuracy measurements or whole-runtime artifact checks.
+
+The opt-in process fault fixture initially failed before creating its trace: the
+worker received its ASCII mode, but not the Unicode trace-path environment value.
+Carry that private test path as ASCII base64 and check qputenv success. Keep the
+failed fixture logs. The fixture now lives with the tests and runs in a separate
+CI downloaded package using CPU Python for simulated GPU-labelled responses;
+it does not claim actual GPU execution. The original worker is restored afterward.
+New packaged and local fault-fixture validation is pending.
