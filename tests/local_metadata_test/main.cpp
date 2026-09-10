@@ -14,6 +14,7 @@
 #include <QApplication>
 #include <QBuffer>
 #include <QCheckBox>
+#include <QCryptographicHash>
 #include <QDataStream>
 #include <QElapsedTimer>
 #include <QFile>
@@ -129,6 +130,8 @@ private slots:
     void folderAndArchiveUseSamePageOrder();
     void collectionFolderIsNotAComic();
     void labelledCandidatesAreNotTranslators();
+    void neuralRecoveryWorkerFaults_data();
+    void neuralRecoveryWorkerFaults();
     void recoveryRetainsCompletedPages();
     void recoveryFailureBoundaries_data();
     void recoveryFailureBoundaries();
@@ -417,6 +420,89 @@ QVector<QImage> recoveryImages()
     }
     return images;
 }
+}
+
+void LocalMetadataTest::neuralRecoveryWorkerFaults_data()
+{
+    QTest::addColumn<QString>("mode");
+    for (const char *mode : { "partial-gap", "all-output-failure", "partial-cpu-failure", "cancel-after-page" })
+        QTest::newRow(mode) << QString::fromLatin1(mode);
+}
+
+void LocalMetadataTest::neuralRecoveryWorkerFaults()
+{
+    using namespace LocalMetadata;
+    if (qEnvironmentVariable("YACREADER_SYNTHETIC_RECOVERY_WORKER") != QStringLiteral("1"))
+        QSKIP("Explicit isolated synthetic worker failure injection only.");
+    QFETCH(QString, mode);
+    QFile worker(QCoreApplication::applicationDirPath() + QStringLiteral("/ocr-neural/worker.py"));
+    QVERIFY(worker.open(QIODevice::ReadOnly));
+    QVERIFY(worker.readLine().startsWith("# YACReader synthetic recovery worker v1"));
+    QVERIFY(QFile::exists(QCoreApplication::applicationDirPath() + QStringLiteral("/ocr-neural-gpu/runtime/python.exe")));
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto oldMode = qgetenv("YACREADER_FAULT_MODE");
+    const auto oldTrace = qgetenv("YACREADER_FAULT_TRACE");
+    const auto restore = qScopeGuard([&] {
+        if (oldMode.isNull())
+            qunsetenv("YACREADER_FAULT_MODE");
+        else
+            qputenv("YACREADER_FAULT_MODE", oldMode);
+        if (oldTrace.isNull())
+            qunsetenv("YACREADER_FAULT_TRACE");
+        else
+            qputenv("YACREADER_FAULT_TRACE", oldTrace);
+    });
+    const QString tracePath = temporary.filePath(QStringLiteral("trace.jsonl"));
+    qputenv("YACREADER_FAULT_MODE", mode.toUtf8());
+    qputenv("YACREADER_FAULT_TRACE", tracePath.toUtf8());
+    auto images = recoveryImages();
+    images.resize(2);
+    OcrOptions options;
+    options.neural = options.gpu = true;
+    auto cancel = std::make_shared<std::atomic_bool>(false);
+    const auto result = recognizePagesWithOutcome(images, options, cancel,
+                                                  [&](int count, int, const QString &) {
+                                                      if (mode == QStringLiteral("cancel-after-page") && count > 0)
+                                                          cancel->store(true);
+                                                  });
+    QFile trace(tracePath);
+    QVERIFY(trace.open(QIODevice::ReadOnly));
+    QVector<QJsonObject> calls;
+    while (!trace.atEnd()) {
+        const auto line = trace.readLine().trimmed();
+        if (!line.isEmpty())
+            calls.append(QJsonDocument::fromJson(line).object());
+    }
+    const bool retry = mode == QStringLiteral("partial-gap") || mode == QStringLiteral("partial-cpu-failure");
+    QCOMPARE(calls.size(), retry ? 2 : 1);
+    QCOMPARE(calls[0]["device"].toString(), QStringLiteral("gpu:0"));
+    const auto firstHashes = calls[0]["images"].toArray();
+    QCOMPARE(firstHashes.size(), 2);
+    QCOMPARE(result.readings.size(), 2);
+    QVERIFY(result.gpuStarted);
+    QCOMPARE(result.readings[1].device, QStringLiteral("gpu:0"));
+    QCOMPARE(result.readings[1].text, firstHashes[1].toString());
+    QVERIFY(result.validPages[1]);
+    if (retry) {
+        QCOMPARE(calls[1]["device"].toString(), QStringLiteral("cpu"));
+        const auto retriedHashes = calls[1]["images"].toArray();
+        QCOMPARE(retriedHashes.size(), 1);
+        QCOMPARE(retriedHashes[0], firstHashes[0]);
+        QCOMPARE(result.readings[0].device, QStringLiteral("cpu"));
+        QCOMPARE(result.readings[0].text, firstHashes[0].toString());
+        QVERIFY(result.validPages[0]);
+        QCOMPARE(result.attemptErrors.size(), 1);
+    }
+    if (mode == QStringLiteral("partial-gap")) {
+        QCOMPARE(result.status, RecognitionStatus::Complete);
+        QVERIFY(result.error.isEmpty());
+    } else {
+        QCOMPARE(result.status, mode == QStringLiteral("cancel-after-page") ? RecognitionStatus::Cancelled : RecognitionStatus::Failed);
+        QVERIFY(!result.error.isEmpty());
+        if (mode == QStringLiteral("all-output-failure"))
+            QVERIFY(result.validPages[0]);
+    }
 }
 
 void LocalMetadataTest::recoveryRetainsCompletedPages()
