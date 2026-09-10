@@ -548,3 +548,22 @@ The opt-in actual neural check also reloads the completed review after fresh
 source/runtime measurements, without another inference. Device and original
 raw/timing evidence must match. Its library selection is synthetic; it does not
 open an operating library or replace the separate filesystem binding tests.
+
+
+### Selected-work preflight (validation pending)
+
+LocalOcrPreflight::read joins the selected library binding, stopped runtime
+measurement and first/last at most3-page snapshot into one complete job Spec.
+It checks the library row/file identity before and after potentially slower
+runtime/source work. Metadata-only edits may proceed; replacement or a changed
+selected row/path fails without creating a queue, cache, OCR worker or metadata
+write. Cancellation and progress callback exceptions also return no preparation.
+Progress counts preparation stages rather than recognized pages.
+
+This is a read-only snapshot, not a long-lived lock or permission to save. The
+caller must keep the measured runtime stopped during inventory, own its Store on
+the worker thread, confirm old process cleanup before explicit resume, and check
+the current selection/source again before saving. No inspector action is enabled
+by this helper alone. Thirteen synthetic cases use test-only library/runtime and
+image files and compare bytes between stages; only deliberately injected fixture
+edits are allowed. Actual device tests and operating libraries are separate.

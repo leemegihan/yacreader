@@ -1069,3 +1069,17 @@ without OCR or job/cache writes. It requires the fresh selected-library identity
 source and runtime and refuses partial/corrupt/mismatched or failed-session data.
 Fourteen synthetic regression cases are added. This new change awaits Windows
 and local validation and is not yet exposed as inspector restart UI.
+
+
+### 2026-09-10: read-only selected-work preparation
+
+The new selected preflight assembles a job specification from current library,
+runtime and first/last-three source evidence and rechecks the library after the
+capture. It creates no job or OCR process. Thirteen synthetic cases cover changed
+rows/files/paths, metadata-only edits, invalid source/models/options, cancellation
+and callback failure with byte preservation. Windows/local validation is pending.
+
+Completed-review codef35c0342 passed its initial Windows stage and an exact local
+early diagnostic:38pass/0fail/0skip. Its full build and installer validation is
+still running. This early result does not establish a full-package or updated
+physical-device pass. Inspector restart UI remains the next integration boundary.
