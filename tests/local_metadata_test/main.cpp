@@ -7,6 +7,8 @@
 #include "local_ocr_cache.h"
 #include "local_ocr_process.h"
 #include "local_ocr_recovery.h"
+#include "local_ocr_runtime.h"
+#include "ocr_job_store.h"
 #include "ocr_page_view.h"
 #include "yacreader_archive_inspector_dialog.h"
 #include "yacreader_global.h"
@@ -149,6 +151,8 @@ private slots:
     void preparationGeometry_data();
     void preparationGeometry();
     void preparationEvidenceValidation();
+    void runtimeSnapshotMeasuresFiles();
+    void runtimeSnapshotDeployed();
     void regionCoordinatesAndCandidatePrefill();
     void spacedColophonAndPublisher();
     void dialogueAndLabelBoundaries();
@@ -1046,6 +1050,128 @@ void LocalMetadataTest::preparationEvidenceValidation()
     QVERIFY(!result.validPages[0]);
     QVERIFY(!result.evidence[0]);
     QVERIFY(!validOcrGeometry(prepareOcrPage({ }, { }).geometry));
+}
+
+void LocalMetadataTest::runtimeSnapshotMeasuresFiles()
+{
+    using namespace LocalMetadata;
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto write = [&](const QString &relative, const QByteArray &bytes) {
+        const auto path = temporary.filePath(relative);
+        if (!QDir().mkpath(QFileInfo(path).absolutePath()))
+            return false;
+        QFile file(path);
+        return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
+    };
+    const auto hash = [](const QByteArray &bytes) { return QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex()); };
+    QVERIFY(write("app.exe", "synthetic application"));
+    QVERIFY(write("Qt6Core.dll", "synthetic shared dependency"));
+    QVERIFY(write("imageformats/plugin.dll", "synthetic image plugin"));
+    QVERIFY(write("ocr-neural/worker.py", "synthetic worker"));
+    QVERIFY(write("ocr-neural/runtime/python.exe", "synthetic CPU interpreter"));
+    QVERIFY(write("ocr-neural/runtime/Lib/package.py", "synthetic package"));
+    QVERIFY(write("ocr-neural/runtime/Lib/__pycache__/package.pyc", "synthetic bytecode"));
+    QJsonArray declaration;
+    for (const QString &model : { QStringLiteral("PP-OCRv5_mobile_det"), QStringLiteral("PP-OCRv5_server_rec"), QStringLiteral("korean_PP-OCRv5_mobile_rec") })
+        for (const QString &name : { QStringLiteral("inference.json"), QStringLiteral("inference.pdiparams"), QStringLiteral("inference.yml") }) {
+            const QString relative = QStringLiteral("models/") + model + u'/' + name;
+            const auto bytes = relative.toUtf8();
+            QVERIFY(write(QStringLiteral("ocr-neural/") + relative, bytes));
+            declaration.append(QJsonObject { { "path", relative }, { "sha256", hash(bytes) } });
+        }
+    const auto manifest = QJsonDocument(declaration).toJson();
+    QVERIFY(write("ocr-neural/models.json", manifest));
+    OcrOptions options;
+    options.neural = options.gpu = true;
+    options.cpuThreads = 4;
+    options.rotation = 90;
+    options.invert = true;
+    QString error;
+    const auto measure = [&] { return LocalOcrRuntime::measure(temporary.filePath("app.exe"), options, { }, &error); };
+    const auto original = measure();
+    QVERIFY2(original.has_value(), qPrintable(error));
+    QVERIFY(error.isEmpty());
+    QCOMPARE(original->settingsFingerprint, OcrJobs::settingsFingerprint(original->settingsSnapshot));
+    const auto environment = original->settingsSnapshot["environment"].toObject();
+    QCOMPARE(environment["applicationSha256"].toString(), hash("synthetic application"));
+    QVERIFY(environment["gpu"].isNull());
+    QCOMPARE(original->manifests["models"].toArray().size(), 9);
+    QCOMPARE(original->manifests["cpu"].toArray().size(), 3); // Bytecode is executable evidence too.
+    QCOMPARE(original->settingsSnapshot["options"].toObject()["cpuThreads"].toInt(), 4);
+    QCOMPARE(original->settingsSnapshot["options"].toObject()["rotation"].toInt(), 90);
+    QVERIFY(original->settingsSnapshot["options"].toObject()["invert"].toBool());
+    QCOMPARE(measure()->settingsFingerprint, original->settingsFingerprint);
+    const QStringList changed { "app.exe", "Qt6Core.dll", "imageformats/plugin.dll", "ocr-neural/worker.py", "ocr-neural/runtime/python.exe", "ocr-neural/runtime/Lib/package.py", "ocr-neural/runtime/Lib/__pycache__/package.pyc" };
+    for (const auto &path : changed) {
+        QFile file(temporary.filePath(path));
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto before = file.readAll();
+        file.close();
+        QVERIFY(write(path, before + " changed"));
+        const auto current = measure();
+        QVERIFY2(current.has_value(), qPrintable(error));
+        QVERIFY(current->settingsFingerprint != original->settingsFingerprint);
+        QVERIFY(write(path, before));
+        QCOMPARE(measure()->settingsFingerprint, original->settingsFingerprint);
+    }
+    const auto modelPath = declaration[0].toObject()["path"].toString();
+    QVERIFY(write(QStringLiteral("ocr-neural/") + modelPath, "changed model"));
+    QVERIFY(!measure()); // A lockfile claim cannot substitute for the installed bytes.
+    auto revised = declaration;
+    revised[0] = QJsonObject { { "path", modelPath }, { "sha256", hash("changed model") } };
+    QVERIFY(write("ocr-neural/models.json", QJsonDocument(revised).toJson()));
+    const auto changedModel = measure();
+    QVERIFY2(changedModel.has_value(), qPrintable(error));
+    QVERIFY(changedModel->settingsFingerprint != original->settingsFingerprint);
+    QVERIFY(write(QStringLiteral("ocr-neural/") + modelPath, modelPath.toUtf8()));
+    QVERIFY(write("ocr-neural/models.json", manifest));
+    auto duplicate = declaration;
+    duplicate[1] = duplicate[0];
+    QVERIFY(write("ocr-neural/models.json", QJsonDocument(duplicate).toJson()));
+    QVERIFY(!measure());
+    QVERIFY(write("ocr-neural/models.json", manifest));
+    QVERIFY(QDir().mkpath(temporary.filePath("ocr-neural-gpu")));
+    QVERIFY(!measure()); // Incomplete addon is not explicit absence.
+    QVERIFY(write("ocr-neural-gpu/runtime/python.exe", "synthetic GPU interpreter"));
+    const auto gpu = measure();
+    QVERIFY2(gpu.has_value(), qPrintable(error));
+    QVERIFY(gpu->settingsSnapshot["environment"].toObject()["gpu"].isObject());
+    QVERIFY(gpu->settingsFingerprint != original->settingsFingerprint);
+    QVERIFY(write("ocr-neural-gpu/runtime/library.dll", "synthetic GPU library"));
+    QVERIFY(measure()->settingsFingerprint != gpu->settingsFingerprint);
+    auto cancelled = std::make_shared<std::atomic_bool>(true);
+    QVERIFY(!LocalOcrRuntime::measure(temporary.filePath("app.exe"), options, cancelled, &error));
+    QVERIFY(error.contains("cancelled"));
+    options.neural = false;
+    QVERIFY(!measure()); // This adapter does not claim Tesseract support.
+}
+
+void LocalMetadataTest::runtimeSnapshotDeployed()
+{
+    const auto output = qEnvironmentVariable("YACREADER_RUNTIME_MEASUREMENT_OUTPUT");
+    if (output.isEmpty())
+        QSKIP("Explicit read-only inventory of an isolated deployed runtime only.");
+    const QFileInfo target(output);
+    QVERIFY(target.isAbsolute());
+    QVERIFY(!target.exists());
+    QVERIFY(!target.isSymLink());
+    const auto parent = target.absoluteDir().canonicalPath();
+    QVERIFY(!parent.isEmpty());
+    const auto relative = QDir(QCoreApplication::applicationDirPath()).relativeFilePath(parent);
+    QVERIFY(relative == ".." || relative.startsWith("../") || QDir::isAbsolutePath(relative));
+    LocalMetadata::OcrOptions options;
+    options.neural = options.gpu = true;
+    QString error;
+    const auto measurement = LocalOcrRuntime::measure(QCoreApplication::applicationFilePath(), options, { }, &error);
+    QVERIFY2(measurement.has_value(), qPrintable(error));
+    const QJsonObject record { { "settingsSnapshot", measurement->settingsSnapshot }, { "settingsFingerprint", measurement->settingsFingerprint }, { "manifests", measurement->manifests }, { "ocrExecuted", false }, { "diagnosticApplication", true } };
+    QSaveFile file(output);
+    file.setDirectWriteFallback(false);
+    const auto bytes = QJsonDocument(record).toJson();
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(bytes), bytes.size());
+    QVERIFY(file.commit());
 }
 
 void LocalMetadataTest::regionCoordinatesAndCandidatePrefill()

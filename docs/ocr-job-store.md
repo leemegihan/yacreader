@@ -245,3 +245,35 @@ Synthetic geometry and worker-failure tests cover mapping, sparse retries, blank
 and malformed responses and exact raw bytes after temporary cleanup. Windows CI
 and local downloaded-artifact verification must pass before calling this change
 validated. No original works or private OCR outputs are included in these tests.
+
+
+## Read-only neural runtime measurement
+
+LocalOcrRuntime::measure builds the complete version-1 settings snapshot from the
+selected OcrOptions and measured package files. It hashes the application and
+worker, checks all nine installed model files against models.json with exact
+required paths and no duplicate entries, and inventories CPU plus any installed
+GPU interpreter tree. Shared application files/plugins also enter each package
+fingerprint. The retained manifests contain relative paths, byte lengths and
+SHA256 values; the settings snapshot contains resolved absolute runtime paths.
+They are private local evidence, never build artifacts or telemetry.
+
+Missing GPU is explicit null. A present but incomplete addon, linked/unreadable
+entry, cancellation, bound violation or observed file/directory change refuses
+the measurement. The model lock declaration alone cannot stand in for installed
+bytes. Python bytecode is included because it can execute: a legitimate first
+warmup may change that inventory and must trigger remeasurement, not silent reuse.
+The adapter reads files only; it neither imports Python nor runs CPU/GPU inference.
+
+This adapter currently supports the neural Windows package, not arbitrary external
+Tesseract installations. Its file fingerprint does not attest binary trust,
+CUDA availability, OS/driver stability, or absence of a hostile filesystem race.
+Keep workers stopped while taking/rechecking an inventory, compare the saved
+fingerprint before resume, and preserve a mismatch for explicit review. No
+automatic inspector restart or cache/receipt write is authorized by this helper.
+
+Synthetic tests change actual temporary model, worker, interpreter, bytecode,
+shared-plugin and addon files and verify fingerprint separation/refusal. The
+opt-in runtimeSnapshotDeployed diagnostic writes its measurement outside the
+isolated application directory; its application hash identifies the diagnostic
+executable, not the GUI app. It performs no OCR and is not a GPU success test.
