@@ -1915,13 +1915,32 @@ void LocalMetadataTest::claimedExecutorNeural()
     options.gpu = expected == QStringLiteral("gpu:0");
     options.language = QStringLiteral("auto");
     QString error;
-    const auto source = LocalOcrSource::read(folder, 3, { }, &error);
-    QVERIFY2(source.has_value(), qPrintable(error));
-    const auto measured = LocalOcrRuntime::measure(QCoreApplication::applicationFilePath(), options, { }, &error);
-    QVERIFY2(measured.has_value(), qPrintable(error));
-    auto spec = persistenceSpec(temporary.path(), *measured);
-    spec.sourceSnapshot = source->fingerprint;
-    spec.sourceContext = { { "path", source->manifest["path"] }, { "sourceKind", "folder" }, { "libraryRoot", temporary.path() } };
+    const auto data = temporary.filePath(".yacreaderlibrary");
+    QVERIFY(QDir().mkdir(data));
+    const auto libraryDatabase = data + QStringLiteral("/library.ydb");
+    const auto connection = QUuid::createUuid().toString();
+    bool created = false;
+    {
+        auto db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connection);
+        db.setDatabaseName(libraryDatabase);
+        if (db.open()) {
+            QSqlQuery query(db);
+            created = query.exec("CREATE TABLE comic(id INTEGER, comicInfoId INTEGER, path TEXT)") && query.exec("INSERT INTO comic VALUES(1,42,'/synthetic-resume')");
+        }
+    }
+    QSqlDatabase::removeDatabase(connection);
+    QVERIFY(created);
+    const auto libraryBytes = [&] {
+        QFile file(libraryDatabase);
+        return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+    };
+    const auto originalLibrary = libraryBytes();
+    QVERIFY(!originalLibrary.isEmpty());
+    const auto prepared = LocalOcrPreflight::read(temporary.path(), 42, folder, 3, QCoreApplication::applicationFilePath(), options, &error);
+    QVERIFY2(prepared.has_value(), qPrintable(error));
+    const auto *source = &prepared->source;
+    const auto *measured = &prepared->runtime;
+    const auto spec = prepared->spec;
     OcrJobs::Store store;
     QVERIFY(store.open(temporary.filePath("ocr-jobs.sqlite")));
     const auto id = store.enqueue(spec);
@@ -1939,10 +1958,12 @@ void LocalMetadataTest::claimedExecutorNeural()
     QVERIFY(store.get(*id)->pages.isEmpty()); // Interrupt after cache publication, before the page receipt.
     QVERIFY(store.pauseWhenCurrent(*firstLease, now));
     // Both input and deployed runtime are remeasured after the first worker exit.
-    const auto currentSource = LocalOcrSource::read(folder, 3, { }, &error);
-    QVERIFY2(currentSource.has_value(), qPrintable(error));
-    const auto currentRuntime = LocalOcrRuntime::measure(QCoreApplication::applicationFilePath(), options, { }, &error);
-    QVERIFY2(currentRuntime.has_value(), qPrintable(error));
+    const auto current = LocalOcrPreflight::read(temporary.path(), 42, folder, 3, QCoreApplication::applicationFilePath(), options, &error);
+    QVERIFY2(current.has_value(), qPrintable(error));
+    const auto *currentSource = &current->source;
+    const auto *currentRuntime = &current->runtime;
+    QCOMPARE(current->spec.libraryGeneration, spec.libraryGeneration);
+    QCOMPARE(current->spec.comicId, spec.comicId);
     QCOMPARE(currentSource->fingerprint, source->fingerprint);
     QCOMPARE(currentRuntime->settingsFingerprint, measured->settingsFingerprint);
     QVERIFY(store.resume(*id));
@@ -1971,17 +1992,10 @@ void LocalMetadataTest::claimedExecutorNeural()
         QCOMPARE(recovered->rawResult, page.rawResult);
         QCOMPARE(recovered->actualDevice, expected);
     }
-    const auto reviewSource = LocalOcrSource::read(folder, 3, { }, &error);
-    QVERIFY2(reviewSource.has_value(), qPrintable(error));
-    const auto reviewRuntime = LocalOcrRuntime::measure(QCoreApplication::applicationFilePath(), options, { }, &error);
-    QVERIFY2(reviewRuntime.has_value(), qPrintable(error));
-    QCOMPARE(reviewRuntime->settingsFingerprint, measured->settingsFingerprint);
-    LocalOcrLibrary::Binding syntheticLibrary;
-    syntheticLibrary.generation = spec.libraryGeneration;
-    syntheticLibrary.comicId = spec.comicId;
-    syntheticLibrary.libraryRoot = spec.sourceContext["libraryRoot"].toString();
-    syntheticLibrary.sourcePath = spec.sourceContext["path"].toString();
-    const auto review = LocalOcrExecutor::restoreReview(*job, syntheticLibrary, *reviewSource, *reviewRuntime, cache, &error);
+    const auto reviewPrepared = LocalOcrPreflight::read(temporary.path(), 42, folder, 3, QCoreApplication::applicationFilePath(), options, &error);
+    QVERIFY2(reviewPrepared.has_value(), qPrintable(error));
+    QCOMPARE(reviewPrepared->runtime.settingsFingerprint, measured->settingsFingerprint);
+    const auto review = LocalOcrExecutor::restoreReview(*job, reviewPrepared->library, reviewPrepared->source, reviewPrepared->runtime, cache, &error);
     QVERIFY2(review.has_value(), qPrintable(error));
     QCOMPARE(review->evidence.size(), 2);
     for (int i = 0; i < 2; ++i) {
@@ -1990,6 +2004,8 @@ void LocalMetadataTest::claimedExecutorNeural()
         QCOMPARE(review->metadata.pages[i].reading.elapsedMs, out.batch.readings[i].elapsedMs);
     }
     QCOMPARE(store.get(*id)->state, job->state);
+    QCOMPARE(libraryBytes(), originalLibrary);
+    QCOMPARE(QDir(data).entryList(QDir::Files), QStringList({ QStringLiteral("library.ydb") }));
     qInfo("Actual executor device=%s cached=%d cache-phase=%lld ms remaining-page-ocr=%lld ms",
           qPrintable(expected), out.cachedPages, out.cacheReadMs, out.batch.readings[1].elapsedMs);
 }

@@ -567,3 +567,10 @@ the current selection/source again before saving. No inspector action is enabled
 by this helper alone. Thirteen synthetic cases use test-only library/runtime and
 image files and compare bytes between stages; only deliberately injected fixture
 edits are allowed. Actual device tests and operating libraries are separate.
+
+The opt-in packaged/physical-device executor check now also uses a real synthetic
+library DB and this preflight for initial execution, explicit resume and completed
+review. Its generated Korean/Japanese fixtures still execute the actual neural
+runtime, and library DB bytes must stay unchanged. This replaces the supplied
+synthetic binding in that check; it is not an operating-library test. Validation
+of these added assertions is pending.
