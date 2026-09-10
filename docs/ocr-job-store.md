@@ -331,3 +331,26 @@ clock while it holds the real write lock. They cover claim, renewal, completion,
 failure and interruption, including rollback and retained receipts. No worker,
 original media or library database is involved. This still does not serialize
 physical GPU access or connect an executor to the inspector.
+
+
+## Verified boundary and next integration
+
+Code 9d88c0db passed Windows run34443926773 including all 13 CTest suites,
+installed OCR, downloaded persistence/process checks and 23 job-store checks.
+The exact local diagnostic passed persistence (5) and job-store (23) totals with
+no failures/skips. These are synthetic persistence tests, not new OCR accuracy.
+
+The measured runtime adapter was separately checked against actual private CPU/GPU
+package files, twice with identical snapshots and independently checked hashes.
+Full file inventory involves substantial disk I/O; do not run it once per page.
+Design a stopped-worker deployment/session boundary, explicit resume remeasurement
+and invalidation policy before caching inventory results. PNG metadata is part
+of exact input bytes: regenerated pixels alone do not establish the same cache key.
+
+Next connect validated per-page delivery to the helper, preserving sparse retry
+index mapping and separate batch failure. Construct the Store on its executor
+thread and use current-clock lifecycle APIs. Revalidate source/page identity and
+cached artifacts; retain corrupt or mismatched evidence for explicit recovery.
+Physical GPU ownership must outlive an individual dialog and must verify old
+worker exit before handing off. Only then add explicit restart/review UI in a
+separate test library. No automatic metadata save or full-library execution.

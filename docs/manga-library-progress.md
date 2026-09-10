@@ -885,3 +885,43 @@ UI test or a new full-artifact GPU benchmark.
 Original media, the operating library and current installed app were preserved.
 The durable executor, measured settings bridge, cache callbacks and restart UI
 remain unconnected; the next boundary is described in the job-store document.
+
+### 2026-09-10: retained evidence, measured packages and durable page receipts
+
+Evidence code 2f72d4b0 passed Windows run34437306928 and local validation:
+six frozen synthetic PNGs remained identical, 63 native checks passed, and
+actual CPU fallback and NVIDIA inference succeeded on two synthetic CJK pages.
+The eight process-fault checks use simulated device labels, separately from
+real inference. The full runtime ZIP, worker/source and nine models were verified.
+No new real-work accuracy or speed measurement was made in this phase.
+
+Runtime measurement bb26e03c passed Windows run34440154136, including 13 CTest
+suites and 44 downloaded checks. Its exact probe passed a synthetic file-change
+case and two actual deployed inventories. Repeated snapshots and independent
+model/interpreter/package hash checks matched; this read-only test ran no OCR.
+
+Cache/receipt code 3c53d6f4 initially failed a cross-process crash-fixture lookup.
+The fixture regenerated PNGs in QApplication and QCoreApplication contexts.
+e2f57137 fixes synthetic DPI metadata and checks identical parent/child PNG hashes
+before the abrupt exit. Its initial regression passed; the run was superseded
+before full build/install completion. Production preprocessing was unchanged.
+
+Final code 9d88c0db extends post-write-lock clock sampling to every lease lifecycle
+operation. [Windows run34443926773](https://github.com/leemegihan/yacreader/actions/runs/34443926773)
+passed all 13 CTest suites, 21 worker checks, staged neural (8), installed OCR (21),
+downloaded OCR/process/geometry/persistence (47), job store (23), and synthetic
+worker faults (8). Required packaged checks had no failures/skips; prerequisite
+stage skips remain separate.
+
+Local verification used the complete source-matched runtime artifact:
+the three persistence boundary cases plus Qt setup/cleanup passed (5 total), and
+all job-store checks passed (23 total). These synthetic tests cover cache-before-
+receipt ordering, abrupt process exit, actual SQLite write contention, expired
+ownership and false backwards-clock detection. They run no OCR or library writes.
+The full artifact hash, source worker, model files, runtime metadata and probe equality were verified.
+
+The helpers are still not connected to incremental inspector callbacks, source
+revalidation, shared physical GPU scheduling or restart UI. Next: connect a single
+owned executor and explicit recovery in a separate small test library. Keep
+first/last-three routing, unresolved name review, original media and the operating
+installation unchanged. No full-library processing, bulk save or local installer.
