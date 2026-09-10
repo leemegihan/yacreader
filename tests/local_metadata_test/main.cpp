@@ -6,6 +6,7 @@
 #include "local_metadata.h"
 #include "local_ocr_cache.h"
 #include "local_ocr_executor.h"
+#include "local_ocr_library.h"
 #include "local_ocr_persistence.h"
 #include "local_ocr_process.h"
 #include "local_ocr_recovery.h"
@@ -155,6 +156,7 @@ private slots:
     void recoveryLegacyRejectsSessionFailure();
     void recoveryCancellationFromProgress();
     void ocrProcessAndCancellation();
+    void ocrReadinessSharing();
     void ocrProcessTreeCleanup_data();
     void ocrProcessTreeCleanup();
     void ocrResourceOwnership_data();
@@ -169,6 +171,8 @@ private slots:
     void runtimeSnapshotMeasuresFiles();
     void runtimeSnapshotDeployed();
     void cacheReceiptOrdering();
+    void libraryBinding_data();
+    void libraryBinding();
     void inspectorWorkerLifetime_data();
     void inspectorWorkerLifetime();
     void claimedExecutorNeural();
@@ -1092,6 +1096,39 @@ int processTreeHelper(const QStringList &args)
 }
 }
 
+void LocalMetadataTest::ocrReadinessSharing()
+{
+#ifndef Q_OS_WIN
+    QSKIP("Windows file sharing readiness regression");
+#else
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    QProcess controller;
+    controller.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *a) { a->flags |= CREATE_NO_WINDOW; });
+    controller.start(QCoreApplication::applicationFilePath(), { "--ocr-tree-leaf" });
+    QVERIFY(controller.waitForStarted(5000));
+    auto stop = qScopeGuard([&] { controller.kill(); controller.waitForFinished(5000); });
+    const auto path = directory.filePath("ready.json");
+    HANDLE file = CreateFileW(reinterpret_cast<LPCWSTR>(path.utf16()), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    QVERIFY(file != INVALID_HANDLE_VALUE);
+    auto close = qScopeGuard([&] { if (file != INVALID_HANDLE_VALUE) CloseHandle(file); });
+    const QByteArray expected("{\"ready\":true}");
+    DWORD written = 0;
+    QVERIFY(WriteFile(file, expected.constData(), DWORD(expected.size()), &written, nullptr));
+    QCOMPARE(written, DWORD(expected.size()));
+    QVERIFY(QFileInfo::exists(path));
+    QFile immediate(path);
+    QVERIFY(!immediate.open(QIODevice::ReadOnly)); // Deterministically recreate the local failure class.
+    std::thread release([owned = file] { QThread::msleep(100); CloseHandle(owned); });
+    file = INVALID_HANDLE_VALUE;
+    auto join = qScopeGuard([&] { release.join(); });
+    QString error;
+    const auto bytes = processTreeReady(controller, path, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(bytes, expected);
+#endif
+}
+
 void LocalMetadataTest::ocrProcessTreeCleanup_data()
 {
     QTest::addColumn<QString>("mode");
@@ -1653,6 +1690,112 @@ int persistenceCrashHelper(const QStringList &args)
     LocalOcrPersistence::recordPage(store, { args[4], args[5], args[6] }, settings, page, args[3], { }, []() -> qint64 { std::_Exit(86); });
     return 83; // The clock seam is reached only after atomic cache publication.
 }
+}
+
+void LocalMetadataTest::libraryBinding_data()
+{
+    QTest::addColumn<QString>("mode");
+    for (const auto &mode : { "stable-and-metadata", "replace-database", "reuse-row", "changed-source", "ambiguous", "foreign-schema", "outside", "missing" })
+        QTest::newRow(mode) << QString::fromLatin1(mode);
+}
+
+void LocalMetadataTest::libraryBinding()
+{
+#ifndef Q_OS_WIN
+    QSKIP("Personal Windows file identity binding");
+#else
+    QFETCH(QString, mode);
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto root = temporary.filePath("library");
+    const auto source = root + QStringLiteral("/selected");
+    const auto data = root + QStringLiteral("/.yacreaderlibrary");
+    const auto path = data + QStringLiteral("/library.ydb");
+    QVERIFY(QDir().mkpath(source));
+    QVERIFY(QDir().mkdir(data));
+    const auto sql = [&](const QString &statement) {
+        const auto connection = QUuid::createUuid().toString();
+        bool ok = false;
+        {
+            auto db = QSqlDatabase::addDatabase("QSQLITE", connection);
+            db.setDatabaseName(path);
+            if (db.open()) {
+                QSqlQuery query(db);
+                ok = query.exec(statement);
+            }
+        }
+        QSqlDatabase::removeDatabase(connection);
+        return ok;
+    };
+    const auto fileHash = [&] {
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly))
+            return QByteArray();
+        return QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256);
+    };
+    QString error;
+    if (mode == QStringLiteral("missing")) {
+        QVERIFY(!LocalOcrLibrary::read(root, 42, source, &error));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(!QFile::exists(path));
+        return;
+    }
+    QVERIFY(sql("CREATE TABLE comic(id INTEGER, comicInfoId INTEGER, path TEXT, title TEXT)"));
+    QVERIFY(sql("INSERT INTO comic VALUES(1,42,'/selected','Initial')"));
+    const auto before = fileHash();
+    QVERIFY(!before.isEmpty());
+    const auto original = LocalOcrLibrary::read(root, 42, source, &error);
+    QVERIFY2(original.has_value(), qPrintable(error));
+    QCOMPARE(original->generation.size(), 64);
+    QCOMPARE(original->comicId, QStringLiteral("1"));
+    QCOMPARE(original->comicInfoId, qulonglong(42));
+    QCOMPARE(original->sourcePath, QFileInfo(source).canonicalFilePath());
+    QCOMPARE(fileHash(), before); // Read binding cannot alter library contents.
+    QCOMPARE(QDir(data).entryList(QDir::Files), QStringList({ QStringLiteral("library.ydb") }));
+    if (mode == QStringLiteral("stable-and-metadata")) {
+        const auto repeated = LocalOcrLibrary::read(root, 42, source, &error);
+        QVERIFY2(repeated.has_value(), qPrintable(error));
+        QCOMPARE(repeated->generation, original->generation);
+        QVERIFY(sql("UPDATE comic SET title='Edited metadata'"));
+        const auto changed = fileHash();
+        QVERIFY(changed != before);
+        const auto current = LocalOcrLibrary::read(root, 42, source, &error);
+        QVERIFY(current.has_value());
+        QCOMPARE(current->generation, original->generation);
+        QCOMPARE(current->comicId, original->comicId);
+        QCOMPARE(fileHash(), changed);
+    } else if (mode == QStringLiteral("replace-database")) {
+        QVERIFY(QFile::copy(path, data + QStringLiteral("/replacement.ydb")));
+        QVERIFY(QFile::rename(path, data + QStringLiteral("/original.ydb")));
+        QVERIFY(QFile::rename(data + QStringLiteral("/replacement.ydb"), path));
+        const auto current = LocalOcrLibrary::read(root, 42, source, &error);
+        QVERIFY2(current.has_value(), qPrintable(error));
+        QVERIFY(current->generation != original->generation);
+        QCOMPARE(fileHash(), before); // Equal bytes do not mean the same file generation.
+    } else if (mode == QStringLiteral("reuse-row")) {
+        QVERIFY(sql("UPDATE comic SET id=2"));
+        const auto current = LocalOcrLibrary::read(root, 42, source, &error);
+        QVERIFY(current.has_value());
+        QCOMPARE(current->generation, original->generation);
+        QCOMPARE(current->comicId, QStringLiteral("2"));
+    } else {
+        auto requested = source;
+        if (mode == QStringLiteral("changed-source"))
+            QVERIFY(sql("UPDATE comic SET path='/different'"));
+        else if (mode == QStringLiteral("ambiguous"))
+            QVERIFY(sql("INSERT INTO comic VALUES(2,42,'/selected','Duplicate')"));
+        else if (mode == QStringLiteral("foreign-schema"))
+            QVERIFY(sql("DROP TABLE comic"));
+        else if (mode == QStringLiteral("outside")) {
+            requested = temporary.filePath("outside");
+            QVERIFY(QDir().mkdir(requested));
+        }
+        const auto preserved = fileHash();
+        QVERIFY(!LocalOcrLibrary::read(root, 42, requested, &error));
+        QVERIFY(!error.isEmpty());
+        QCOMPARE(fileHash(), preserved);
+    }
+#endif
 }
 
 void LocalMetadataTest::inspectorWorkerLifetime_data()

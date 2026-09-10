@@ -459,3 +459,38 @@ import-time bytecode writes from changing the measured deployed runtime. The
 opt-in actual neural executor test compares runtime identity before and after a
 first page, then explicitly resumes the second synthetic CJK page. It measures
 CPU and physical GPU separately; no real library images are included in CI.
+
+
+## Read-only binding to the current personal Windows library
+
+LocalOcrLibrary::read captures the existing library database path, Windows volume
+and 128-bit file ID, and file creation time as a local generation fingerprint.
+It queries only rows sharing the supplied comicInfoId and binds the expected
+source to one comic row ID. It does not stat unrelated copies, create a database,
+add a UUID, update schema, enumerate the library or change metadata. Missing or
+ambiguous selected rows and sources outside the library are refused.
+
+The file handle remains open without delete sharing during the bounded read; a
+second handle confirms the path still refers to the captured file object. The
+SQLite connection is read-only and scoped to its calling thread. Ordinary
+metadata edits keep this filesystem generation; replacement with byte-identical
+DB contents changes it. Row identity and a fresh selected-source snapshot are
+also necessary. This is not a content revision, universal library UUID or a lock
+covering later OCR/save. An in-place restore can retain the file identity, so the
+caller must recheck the selected row/source before explicit resume and saving.
+The helper has not yet been connected to the production inspector executor.
+
+Synthetic DB checks cover repeated reads, metadata edits, byte-identical file
+replacement, changed row IDs/source paths, duplicate matches, foreign schema,
+outside sources and absent databases. They assert original DB bytes are unchanged
+by the read. No operating library is opened for these tests. Windows validation
+for this new helper is pending.
+
+The existing Windows workflow now publishes a small native diagnostic artifact
+after its initial regression stage. This enables earlier checks on the personal
+PC while the full build, neural packaging, installer and downloaded-package
+verification continue unchanged. An early artifact is not an installer-validation
+result; its exact SHA and validation stage must be reported separately.
+
+Windows identity semantics: [FILE_ID_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info),
+[CreateFileW sharing](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew).

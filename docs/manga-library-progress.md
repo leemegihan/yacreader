@@ -1024,3 +1024,18 @@ Japanese fixtures: actual inference and persistence for one page, explicit pause
 fresh source/runtime measurements, and resume of only the remaining page with
 exact cache reload. Windows packaging requires CPU execution; local physical GPU
 execution is checked separately. This newly added check is not yet a pass claim.
+
+### 2026-09-10: current-library binding prepared (validation pending)
+
+A read-only personal Windows helper now identifies the current database file and
+matches one selected source to its comic row. File replacement, row reuse, missing
+or ambiguous paths cannot be mistaken for the old selection. Metadata-only edits
+keep the filesystem generation; fresh source/row checks remain required for
+in-place restores. No DB UUID/schema update or production inspector hookup is
+included. Eight synthetic DB cases and early native diagnostic artifact upload
+are added; the full Windows build and installer checks remain unchanged.
+
+A deterministic Windows readiness test now holds the published file without read
+sharing, proves immediate open fails, then releases it and requires the bounded
+readiness helper to succeed. This checks the observed failure class without
+claiming which external process caused the original intermittent failures.

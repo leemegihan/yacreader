@@ -79,6 +79,8 @@ add_library(metadata_widgets STATIC
     local_ocr_process.cpp
     local_ocr_persistence.h
     local_ocr_persistence.cpp
+    local_ocr_library.h
+    local_ocr_library.cpp
     local_ocr_executor.h
     local_ocr_executor.cpp
     local_ocr_source.h

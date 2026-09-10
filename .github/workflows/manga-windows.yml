@@ -56,6 +56,16 @@ jobs:
           if exist build\tests\local_metadata_test\local-metadata.txt type build\tests\local_metadata_test\local-metadata.txt
           if not "%TEST_EXIT%"=="0" exit /b %TEST_EXIT%
 
+      - name: Upload early native diagnostic executables
+        uses: actions/upload-artifact@v6
+        with:
+          name: manga-native-probe-${{ github.sha }}
+          path: |
+            build/bin/local_metadata_test.exe
+            build/bin/ocr_job_store_test.exe
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Check out pinned OCR build tools
         uses: actions/checkout@v6
         with:
@@ -357,7 +367,7 @@ jobs:
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
           $env:YACREADER_DATA_DIR = Join-Path $env:RUNNER_TEMP 'artifact settings 한글'
           $env:YACREADER_EXPECT_NEURAL_DEVICE = 'cpu'
-          & "$package/local_metadata_test.exe" claimedExecutorNeural inspectorWorkerLifetime claimedExecutor cacheReceiptOrdering cacheReceiptRecovery sourceSnapshotValidation cacheReceiptCrash cacheReceiptClockAfterContention runtimeSnapshotMeasuresFiles preparationGeometry preparationEvidenceValidation recoveryRetainsCompletedPages recoveryPageSinkGuards recoveryFailureBoundaries recoveryCpuFailurePreservesEvidence recoveryLegacyRejectsSessionFailure recoveryCancellationFromProgress ocrProcessAndCancellation ocrProcessTreeCleanup ocrResourceOwnership ocrResourceSameThread localNeuralDevice isolatedSettingsPaths neuralCacheCompetingWriters neuralCacheIdentity neuralCachePreservesReviewAndDevices neuralCacheRejectsCorruption -o "$env:GITHUB_WORKSPACE/build/artifact-ocr.txt,txt"
+          & "$package/local_metadata_test.exe" libraryBinding claimedExecutorNeural inspectorWorkerLifetime claimedExecutor cacheReceiptOrdering cacheReceiptRecovery sourceSnapshotValidation cacheReceiptCrash cacheReceiptClockAfterContention runtimeSnapshotMeasuresFiles preparationGeometry preparationEvidenceValidation recoveryRetainsCompletedPages recoveryPageSinkGuards recoveryFailureBoundaries recoveryCpuFailurePreservesEvidence recoveryLegacyRejectsSessionFailure recoveryCancellationFromProgress ocrProcessAndCancellation ocrReadinessSharing ocrProcessTreeCleanup ocrResourceOwnership ocrResourceSameThread localNeuralDevice isolatedSettingsPaths neuralCacheCompetingWriters neuralCacheIdentity neuralCachePreservesReviewAndDevices neuralCacheRejectsCorruption -o "$env:GITHUB_WORKSPACE/build/artifact-ocr.txt,txt"
           $testExit = $LASTEXITCODE
           Remove-Item Env:YACREADER_EXPECT_NEURAL_DEVICE
           Get-Content "$env:GITHUB_WORKSPACE/build/artifact-ocr.txt"
