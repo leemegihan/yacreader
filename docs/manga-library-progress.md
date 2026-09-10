@@ -987,3 +987,40 @@ The caller's source/runtime preflight and library-generation validation, actual
 worker-thread ownership and explicit inspector restart UI are still required.
 No library scan, original write, unreviewed save or new real OCR run is enabled by
 this adapter. Windows and exact local executable validation are pending.
+
+### 2026-09-10: full ownership runtime verified; completion receipt fence
+
+Ownership/source/cache code 4bf4b4ce passed Windows run34451991498: 13 CTest
+suites, worker21, staged8, installed21, downloaded54, jobstore23 and synthetic
+fault14, with zero failures/skips in required packaged checks. Its full artifact
+and probe hashes matched locally, all nine model files matched the prior runtime,
+and six frozen synthetic input preparations remained byte-identical. Separate
+CPU-fallback and actual NVIDIA runs passed the same two synthetic CJK fixtures.
+This is not a new real-work accuracy or speed measurement.
+
+The first local native run was 25 pass/1 fail at the scope-cleanup readiness-file
+open; five focused repetitions passed and a full confirmation was 26/0/0. Both
+original failure and follow-up evidence are retained privately. The test now
+waits for readable readiness within the existing deadline and reports the file
+error/controller exit rather than assuming existence guarantees a readable file.
+
+The claimed executor now compares completion evidence against the actual accepted
+receipt, including raw result and device identity. A divergent completion cannot
+supply candidates or enter review. In addition to fifteen injected-runner cases,
+four isolated Python worker cases exercise cached-page exclusion, sparse GPU to
+CPU mapping, live persistence/reload, cancellation and failure after all outputs.
+These last changes await Windows and local executable validation. The explicit
+inspector restart UI and caller library-generation checks remain subsequent work.
+
+The inspector now keeps its run controls disabled after a cancellation request
+until its worker has returned. A selection change queues only the latest preview
+behind that cleanup, while close/destruction discards pending preview work.
+Five controlled-thread GUI cases cover cancel, valid/missing selection, close and
+destruction without launching OCR models. These changes also await Windows
+validation; they do not yet enable durable inspector resume.
+
+A separate opt-in neural executor check uses the packaged synthetic Korean and
+Japanese fixtures: actual inference and persistence for one page, explicit pause,
+fresh source/runtime measurements, and resume of only the remaining page with
+exact cache reload. Windows packaging requires CPU execution; local physical GPU
+execution is checked separately. This newly added check is not yet a pass claim.

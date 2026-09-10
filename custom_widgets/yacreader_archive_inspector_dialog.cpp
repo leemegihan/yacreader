@@ -176,8 +176,9 @@ YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent
     connect(regionButton, &QPushButton::clicked, this, &YACReaderArchiveInspectorDialog::recognizeRegion);
     connect(cancelButton, &QPushButton::clicked, this, [this] {
         cancel();
-        setBusy(false);
-        statusLabel->setText(tr("중지했습니다. 다시 실행할 수 있습니다."));
+        setBusy(bool(activeWorker));
+        cancelButton->setEnabled(false);
+        statusLabel->setText(activeWorker ? tr("중지 요청했습니다. 작업 정리가 끝날 때까지 기다려 주세요.") : tr("중지했습니다. 다시 실행할 수 있습니다."));
     });
     connect(pageList, &QListWidget::currentRowChanged, this, &YACReaderArchiveInspectorDialog::showPage);
     connect(candidateList, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *item) {
@@ -207,8 +208,36 @@ YACReaderArchiveInspectorDialog::~YACReaderArchiveInspectorDialog()
 
 void YACReaderArchiveInspectorDialog::cancel()
 {
+    pendingPreview = false;
     if (cancellation)
         cancellation->store(true);
+}
+
+QThread *YACReaderArchiveInspectorDialog::createWorker(const LocalMetadata::Cancellation &flag,
+                                                       const std::function<void()> &work, const std::function<void()> &completed)
+{
+    if (activeWorker)
+        return nullptr;
+    auto *thread = QThread::create(work);
+    activeWorker = thread;
+    connect(thread, &QThread::finished, this, [this, flag, completed] {
+        activeWorker.clear();
+        if (pendingPreview) {
+            pendingPreview = false;
+            start(false);
+            return;
+        }
+        setBusy(false);
+        if (flag != cancellation)
+            return;
+        if (flag->load()) {
+            statusLabel->setText(tr("중지했습니다. 다시 실행할 수 있습니다."));
+            return;
+        }
+        completed();
+    });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    return thread;
 }
 
 void YACReaderArchiveInspectorDialog::setBusy(bool busy)
@@ -232,6 +261,7 @@ void YACReaderArchiveInspectorDialog::setBusy(bool busy)
 void YACReaderArchiveInspectorDialog::inspectComic(const QString &path, qulonglong id)
 {
     cancel();
+    cancellation.reset(); // Preserve a new selection error when old cleanup finishes.
     libraryPath = path;
     comicInfoId = id;
     titleEdit->clear();
@@ -250,9 +280,15 @@ void YACReaderArchiveInspectorDialog::inspectComic(const QString &path, qulonglo
     QString error;
     sourcePath = LocalMetadata::comicPath(path, id, &error);
     fileLabel->setText(sourcePath);
-    setBusy(false);
+    setBusy(bool(activeWorker));
     if (sourcePath.isEmpty()) {
         statusLabel->setText(error);
+        return;
+    }
+    if (activeWorker) {
+        pendingPreview = true;
+        cancelButton->setEnabled(false);
+        statusLabel->setText(tr("이전 작업을 정리한 뒤 선택한 작품을 불러옵니다."));
         return;
     }
     start(false);
@@ -260,7 +296,7 @@ void YACReaderArchiveInspectorDialog::inspectComic(const QString &path, qulonglo
 
 void YACReaderArchiveInspectorDialog::start(bool ocr)
 {
-    if (sourcePath.isEmpty())
+    if (sourcePath.isEmpty() || activeWorker)
         return;
     cancel();
     cancellation = std::make_shared<std::atomic_bool>(false);
@@ -291,24 +327,18 @@ void YACReaderArchiveInspectorDialog::start(bool ocr)
     });
     ticker->start(500);
     // Worker owns copied values only; cancelled/stale results never touch the UI.
-    auto *thread = QThread::create([source, root, count, options, flag, output, ocr, relay] {
+    auto *thread = createWorker(flag, [source, root, count, options, flag, output, ocr, relay] {
         const LocalMetadata::Progress progress = [relay](int completed, int total, const QString &stage) { emit relay->changed(completed, total, stage); };
         *output = ocr ? LocalMetadata::analyze(source, count, options, flag, progress) : LocalMetadata::readPages(source, count, flag);
-        output->suggestions = LocalMetadata::suggest(output->pages, source, root);
-    });
-    connect(thread, &QThread::finished, this, [this, flag, output, ocr, elapsed] {
-        if (flag->load() || flag != cancellation)
-            return;
+        output->suggestions = LocalMetadata::suggest(output->pages, source, root); }, [this, output, ocr, elapsed] {
         showResult(*output, ocr);
         if (ocr)
             statusLabel->setText(statusLabel->text() + tr(" · 총 %1초").arg(elapsed.elapsed() / 1000));
         setBusy(false);
         if (ocr)
-            requestSearch(true);
-    });
+            requestSearch(true); });
     connect(thread, &QThread::finished, ticker, &QTimer::stop);
     connect(thread, &QThread::finished, ticker, &QObject::deleteLater);
-    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
     thread->start();
 }
 
@@ -421,7 +451,7 @@ LocalMetadata::OcrOptions YACReaderArchiveInspectorDialog::ocrOptions() const
 void YACReaderArchiveInspectorDialog::recognizeRegion()
 {
     const int row = pageList->currentRow();
-    if (row < 0 || row >= result.pages.size())
+    if (row < 0 || row >= result.pages.size() || activeWorker)
         return;
     cancel();
     cancellation = std::make_shared<std::atomic_bool>(false);
@@ -432,14 +462,10 @@ void YACReaderArchiveInspectorDialog::recognizeRegion()
     const auto output = std::make_shared<LocalMetadata::Page>();
     setBusy(true);
     statusLabel->setText(tr("선택한 글자를 다시 읽는 중… 기존 페이지 인식 결과에 추가합니다."));
-    auto *thread = QThread::create([image, options, flag, output] {
+    auto *thread = createWorker(flag, [image, options, flag, output] {
         output->reading = LocalMetadata::recognizePage(image, options, flag);
         output->text = output->reading.text;
-        output->error = output->reading.error;
-    });
-    connect(thread, &QThread::finished, this, [this, row, flag, output] {
-        if (flag->load() || flag != cancellation)
-            return;
+        output->error = output->reading.error; }, [this, row, output] {
         auto updated = result;
         auto &page = updated.pages[row];
         if (!output->text.isEmpty())
@@ -458,9 +484,7 @@ void YACReaderArchiveInspectorDialog::recognizeRegion()
         showResult(updated);
         pageList->setCurrentRow(row);
         setBusy(false);
-        requestSearch(true);
-    });
-    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+        requestSearch(true); });
     thread->start();
 }
 

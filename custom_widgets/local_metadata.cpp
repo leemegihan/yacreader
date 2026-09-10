@@ -401,7 +401,7 @@ static RecognitionBatch recognizeNeuralAttempt(const QVector<QImage> &images, co
     process.setProcessEnvironment(environment);
     const QString language = options.language == "auto" ? "auto" : options.language.startsWith("kor") ? "kor"
                                                                                                       : "jpn";
-    const QStringList arguments { "-I", "-X", "utf8", root.filePath("worker.py"), "--manifest", manifest.fileName(), "--language", language,
+    const QStringList arguments { "-I", "-B", "-X", "utf8", root.filePath("worker.py"), "--manifest", manifest.fileName(), "--language", language,
                                   "--threads", QString::number(qBound(1, options.cpuThreads, 16)), "--device", gpu ? "gpu:0" : "cpu" };
     QString startError;
     if (!process.startOcr(python, arguments, &startError, gpu ? QStringLiteral("nvidia-0") : QString(), cancel))

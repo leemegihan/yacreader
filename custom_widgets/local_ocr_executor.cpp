@@ -162,18 +162,20 @@ Outcome executeClaimed(OcrJobs::Store &store, const OcrJobs::Lease &lease,
         if (progress)
             progress(out.cachedPages + qBound(0, completed, int(missing.size())), count, stage);
     };
-    QVector<bool> accepted(count, false);
+    QVector<std::optional<NeuralPageEvidence>> accepted(count);
     QString deliveryError;
     const PageSink persist = [&](const NeuralPageEvidence &page, QString *error) {
         const auto reject = [&](const QString &reason) {
             deliveryError = reason;
-            *error = reason;
+            if (error)
+                *error = reason;
             return false;
         };
         if (!deliveryError.isEmpty())
             return reject(deliveryError);
         if (flag->load()) {
-            *error = QStringLiteral("Cancelled");
+            if (error)
+                *error = QStringLiteral("Cancelled");
             return false;
         }
         if (page.selectedIndex < 0 || page.selectedIndex >= missing.size() || !validNeuralEvidence(page)) {
@@ -187,12 +189,13 @@ Outcome executeClaimed(OcrJobs::Store &store, const OcrJobs::Lease &lease,
         const auto saved = LocalOcrPersistence::recordPage(store, lease, runtime, mapped, cacheRoot, flag, now);
         if (!saved.receiptSaved) {
             if (flag->load()) {
-                *error = saved.error;
+                if (error)
+                    *error = saved.error;
                 return false;
             }
             return reject(saved.error.isEmpty() ? QStringLiteral("Page persistence failed.") : saved.error);
         }
-        accepted[mapped.selectedIndex] = true;
+        accepted[mapped.selectedIndex] = mapped;
         return true;
     };
     RecognitionBatch result;
@@ -218,6 +221,14 @@ Outcome executeClaimed(OcrJobs::Store &store, const OcrJobs::Lease &lease,
         if (out.batch.evidence.at(original))
             out.batch.evidence[original]->selectedIndex = original;
         out.batch.validPages[original] = result.validPages.at(i) && out.batch.evidence.at(original).has_value() && validNeuralEvidence(*out.batch.evidence.at(original)) && sameInput(*out.batch.evidence.at(original), inputs.at(original));
+        if (out.batch.validPages.at(original) && accepted.at(original)) {
+            const auto &saved = *accepted.at(original);
+            const auto &completed = *out.batch.evidence.at(original);
+            if (saved.rawResult != completed.rawResult || saved.resultSha256 != completed.resultSha256 || saved.requestedDevice != completed.requestedDevice || saved.actualDevice != completed.actualDevice) {
+                out.batch.validPages[original] = false;
+                deliveryError = QStringLiteral("Completion evidence differs from the accepted page receipt.");
+            }
+        }
         if (out.batch.validPages.at(original)) {
             // Candidate text comes from the validated raw response, never a
             // divergent presentation string supplied by a runner.

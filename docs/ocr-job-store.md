@@ -444,3 +444,18 @@ review, cancellation, lease expiry and stale owners, changed source/settings,
 missing delivery, corrupt cache, changed prepared input, exceptions and failure
 after all outputs. The store also tests stale-worker pause and real SQLite lock
 contention for pause. These new integration tests await Windows/package validation.
+
+
+Completion evidence must also equal the page accepted by the persistence sink.
+A valid but different raw response, digest or requested/actual device is rejected
+and cannot supply candidate text. This protects the final review state from a
+runner reporting a different result after persistence. Isolated synthetic-worker
+integration covers one cached page plus two live pages, sparse CPU retry, exact
+receipt reload, cancellation and nonzero exit after all output. Device labels in
+this fault fixture are simulated; it does not execute NVIDIA kernels.
+
+The neural worker is launched with Python -B as well as isolated mode, preventing
+import-time bytecode writes from changing the measured deployed runtime. The
+opt-in actual neural executor test compares runtime identity before and after a
+first page, then explicitly resumes the second synthetic CJK page. It measures
+CPU and physical GPU separately; no real library images are included in CI.

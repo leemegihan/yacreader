@@ -21,6 +21,7 @@
 #include <QCheckBox>
 #include <QCryptographicHash>
 #include <QDataStream>
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFontDatabase>
@@ -39,6 +40,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QScopeGuard>
+#include <QSemaphore>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QSpinBox>
@@ -167,6 +169,11 @@ private slots:
     void runtimeSnapshotMeasuresFiles();
     void runtimeSnapshotDeployed();
     void cacheReceiptOrdering();
+    void inspectorWorkerLifetime_data();
+    void inspectorWorkerLifetime();
+    void claimedExecutorNeural();
+    void claimedExecutorWorker_data();
+    void claimedExecutorWorker();
     void claimedExecutor_data();
     void claimedExecutor();
     void cacheReceiptRecovery();
@@ -1006,6 +1013,33 @@ void LocalMetadataTest::ocrProcessAndCancellation()
 }
 
 namespace {
+// Existence alone is not a readable-file handshake: publication can become
+// visible while the producer or another process still holds the file open.
+QByteArray processTreeReady(QProcess &controller, const QString &path, QString *error)
+{
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < 5000) {
+        QFile ready(path);
+        if (ready.open(QIODevice::ReadOnly)) {
+            const auto bytes = ready.readAll();
+            if (ready.error() == QFileDevice::NoError) {
+                error->clear();
+                return bytes;
+            }
+        }
+        *error = ready.errorString();
+        if (controller.state() == QProcess::NotRunning) {
+            *error = QStringLiteral("Controller exited (%1): %2; %3")
+                             .arg(controller.exitCode())
+                             .arg(*error, QString::fromUtf8(controller.readAllStandardError()));
+            return { };
+        }
+        QTest::qWait(10);
+    }
+    *error = QStringLiteral("Timed out reading worker readiness: %1").arg(*error);
+    return { };
+}
 int processTreeHelper(const QStringList &args)
 {
     if (args.value(1) == "--ocr-tree-exit")
@@ -1089,16 +1123,11 @@ void LocalMetadataTest::ocrProcessTreeCleanup()
             controller.waitForFinished(5000);
         }
     });
-    QElapsedTimer timer;
-    timer.start();
-    const auto readyPath = directory.filePath("ready.json");
-    while (!QFileInfo::exists(readyPath) && timer.elapsed() < 5000) {
-        QVERIFY(controller.state() != QProcess::NotRunning);
-        QTest::qWait(10);
-    }
-    QFile ready(readyPath);
-    QVERIFY(ready.open(QIODevice::ReadOnly));
-    const auto object = QJsonDocument::fromJson(ready.readAll()).object();
+    QString readinessError;
+    const auto readyBytes = processTreeReady(controller, directory.filePath("ready.json"), &readinessError);
+    QVERIFY2(readinessError.isEmpty(), qPrintable(readinessError));
+    const auto object = QJsonDocument::fromJson(readyBytes).object();
+    QVERIFY(object["worker"].toInteger() > 0 && object["leaf"].toInteger() > 0);
     HANDLE leaf = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, object.value("leaf").toInteger());
     QVERIFY(leaf != nullptr);
     auto closeLeaf = qScopeGuard([&] { CloseHandle(leaf); });
@@ -1146,13 +1175,11 @@ void LocalMetadataTest::ocrResourceOwnership()
     QVERIFY(controller.waitForStarted(5000));
     auto stopController = qScopeGuard([&] { if (controller.state() != QProcess::NotRunning) { controller.kill(); controller.waitForFinished(5000); } });
     QElapsedTimer timer;
-    timer.start();
-    while (!QFile::exists(directory.filePath("ready.json")) && timer.elapsed() < 5000)
-        QTest::qWait(10);
-    QFile ready(directory.filePath("ready.json"));
-    QVERIFY(ready.open(QIODevice::ReadOnly));
-    const auto record = QJsonDocument::fromJson(ready.readAll()).object();
-    ready.close();
+    QString readinessError;
+    const auto readyBytes = processTreeReady(controller, directory.filePath("ready.json"), &readinessError);
+    QVERIFY2(readinessError.isEmpty(), qPrintable(readinessError));
+    const auto record = QJsonDocument::fromJson(readyBytes).object();
+    QVERIFY(record["worker"].toInteger() > 0 && record["leaf"].toInteger() > 0);
     HANDLE leaf = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, record["leaf"].toInteger());
     QVERIFY(leaf != nullptr);
     auto closeLeaf = qScopeGuard([&] { CloseHandle(leaf); });
@@ -1628,10 +1655,308 @@ int persistenceCrashHelper(const QStringList &args)
 }
 }
 
+void LocalMetadataTest::inspectorWorkerLifetime_data()
+{
+    QTest::addColumn<QString>("mode");
+    for (const auto &mode : { "cancel", "selection-change", "missing-selection", "close", "destroy" })
+        QTest::newRow(mode) << QString::fromLatin1(mode);
+}
+
+void LocalMetadataTest::inspectorWorkerLifetime()
+{
+    QFETCH(QString, mode);
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto folder = temporary.filePath("selected");
+    QVERIFY(QDir().mkdir(folder));
+    QVERIFY(sampleImage().save(QDir(folder).filePath("new-selection.png"), "PNG"));
+    if (mode == QStringLiteral("selection-change") || mode == QStringLiteral("missing-selection")) {
+        QVERIFY(QDir().mkdir(temporary.filePath(".yacreaderlibrary")));
+        const auto connection = QUuid::createUuid().toString();
+        bool created = false;
+        {
+            auto db = QSqlDatabase::addDatabase("QSQLITE", connection);
+            db.setDatabaseName(temporary.filePath(".yacreaderlibrary/library.ydb"));
+            if (db.open()) {
+                QSqlQuery query(db);
+                created = query.exec("CREATE TABLE comic(id INTEGER, comicInfoId INTEGER, path TEXT)") && query.exec("INSERT INTO comic VALUES(1, 2, '/selected')");
+            }
+        }
+        QSqlDatabase::removeDatabase(connection);
+        QVERIFY(created);
+    }
+    auto dialog = std::make_unique<YACReaderArchiveInspectorDialog>();
+    dialog->sourcePath = folder;
+    dialog->libraryPath = temporary.path();
+    dialog->cancellation = std::make_shared<std::atomic_bool>(false);
+    const auto flag = dialog->cancellation;
+    QSemaphore entered, release;
+    bool completed = false;
+    QPointer<QThread> thread = dialog->createWorker(flag, [&] {
+        entered.release();
+        release.acquire(); // Deliberately hold cleanup after cancellation.
+    },
+                                                    [&] { completed = true; });
+    QVERIFY(thread);
+    auto cleanup = qScopeGuard([&] {
+        release.release();
+        if (thread)
+            thread->wait(5000);
+    });
+    dialog->setBusy(true);
+    thread->start();
+    QVERIFY(entered.tryAcquire(1, 5000));
+    if (mode == QStringLiteral("selection-change") || mode == QStringLiteral("missing-selection")) {
+        dialog->inspectComic(temporary.path(), mode == QStringLiteral("missing-selection") ? 999 : 2);
+        QCOMPARE(dialog->pendingPreview, mode == QStringLiteral("selection-change"));
+        QCOMPARE(dialog->sourcePath, mode == QStringLiteral("selection-change") ? QDir::cleanPath(folder) : QString());
+    } else if (mode == QStringLiteral("destroy")) {
+        dialog.reset();
+    } else if (mode == QStringLiteral("close")) {
+        dialog->reject();
+    } else {
+        dialog->cancelButton->click();
+        QVERIFY(!dialog->cancelButton->isEnabled());
+        QVERIFY(dialog->statusLabel->text().contains(QStringLiteral("정리")));
+    }
+    QVERIFY(flag->load());
+    QVERIFY(!completed);
+    if (dialog) {
+        QVERIFY(!dialog->ocrButton->isEnabled());
+        const auto old = dialog->activeWorker;
+        dialog->start(false); // Even a direct request cannot overlap cleanup.
+        QCOMPARE(dialog->activeWorker, old);
+        QVERIFY(!dialog->createWorker(flag, [] { }, [] { }));
+    }
+    release.release();
+    QTRY_VERIFY_WITH_TIMEOUT(thread.isNull() || thread->isFinished(), 5000);
+    if (dialog) {
+        QTRY_VERIFY_WITH_TIMEOUT(dialog->activeWorker.isNull(), 5000);
+        QCOMPARE(dialog->ocrButton->isEnabled(), mode != QStringLiteral("missing-selection"));
+        if (mode == QStringLiteral("missing-selection"))
+            QVERIFY(!dialog->statusLabel->text().contains(QStringLiteral("다시 실행")));
+        QVERIFY(!dialog->pendingPreview);
+        if (mode == QStringLiteral("selection-change")) {
+            QCOMPARE(dialog->result.pages.size(), 1);
+            QCOMPARE(dialog->result.pages[0].name, QStringLiteral("new-selection.png"));
+        }
+    }
+    QVERIFY(!completed); // Cancelled/stale completion never updates the UI.
+}
+
+void LocalMetadataTest::claimedExecutorNeural()
+{
+    using namespace LocalMetadata;
+    const auto expected = qEnvironmentVariable("YACREADER_EXPECT_NEURAL_DEVICE");
+    if (expected.isEmpty())
+        QSKIP("Explicit packaged CPU or physical GPU executor verification only.");
+    QVERIFY(expected == QStringLiteral("cpu") || expected == QStringLiteral("gpu:0"));
+    QVERIFY(qEnvironmentVariableIsEmpty("YACREADER_SYNTHETIC_RECOVERY_WORKER"));
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto folder = temporary.filePath("synthetic-resume");
+    const auto cache = temporary.filePath("cache");
+    QVERIFY(QDir().mkdir(folder));
+    QVERIFY(QDir().mkdir(cache));
+    for (const auto &item : { QPair<QString, QString>("kor", "1.png"), { "jpn", "2.png" } })
+        QVERIFY(QFile::copy(QCoreApplication::applicationDirPath() + QStringLiteral("/ocr-colophon-%1.png").arg(item.first), QDir(folder).filePath(item.second)));
+    auto options = defaultOcrOptions();
+    options.neural = true;
+    options.gpu = expected == QStringLiteral("gpu:0");
+    options.language = QStringLiteral("auto");
+    QString error;
+    const auto source = LocalOcrSource::read(folder, 3, { }, &error);
+    QVERIFY2(source.has_value(), qPrintable(error));
+    const auto measured = LocalOcrRuntime::measure(QCoreApplication::applicationFilePath(), options, { }, &error);
+    QVERIFY2(measured.has_value(), qPrintable(error));
+    auto spec = persistenceSpec(temporary.path(), *measured);
+    spec.sourceSnapshot = source->fingerprint;
+    spec.sourceContext = { { "path", source->manifest["path"] }, { "sourceKind", "folder" }, { "libraryRoot", temporary.path() } };
+    OcrJobs::Store store;
+    QVERIFY(store.open(temporary.filePath("ocr-jobs.sqlite")));
+    const auto id = store.enqueue(spec);
+    QVERIFY(id.has_value());
+    const auto now = [] { return QDateTime::currentMSecsSinceEpoch(); };
+    const auto firstLease = store.claimWhenCurrent(*id, QStringLiteral("first-actual-owner"), 300000, now);
+    QVERIFY(firstLease.has_value());
+    const auto first = recognizePagesWithOutcome({ source->source.pages[0].image }, options, { });
+    QCOMPARE(first.status, RecognitionStatus::Complete);
+    QVERIFY(first.evidence[0].has_value());
+    QCOMPARE(first.evidence[0]->actualDevice, expected);
+    const auto saved = LocalOcrPersistence::recordPage(store, *firstLease, *measured, *first.evidence[0], cache, { }, now);
+    QVERIFY2(saved.receiptSaved, qPrintable(saved.error));
+    QVERIFY(store.pauseWhenCurrent(*firstLease, now));
+    // Both input and deployed runtime are remeasured after the first worker exit.
+    const auto currentSource = LocalOcrSource::read(folder, 3, { }, &error);
+    QVERIFY2(currentSource.has_value(), qPrintable(error));
+    const auto currentRuntime = LocalOcrRuntime::measure(QCoreApplication::applicationFilePath(), options, { }, &error);
+    QVERIFY2(currentRuntime.has_value(), qPrintable(error));
+    QCOMPARE(currentSource->fingerprint, source->fingerprint);
+    QCOMPARE(currentRuntime->settingsFingerprint, measured->settingsFingerprint);
+    QVERIFY(store.resume(*id));
+    const auto lease = store.claimWhenCurrent(*id, QStringLiteral("resumed-actual-owner"), 300000, now);
+    QVERIFY(lease.has_value());
+    const auto out = LocalOcrExecutor::executeClaimed(store, *lease, *currentSource, *currentRuntime, cache, { });
+    QCOMPARE(out.batch.status, RecognitionStatus::Complete);
+    QVERIFY2(out.stateSaved, qPrintable(out.stateError));
+    QCOMPARE(out.cachedPages, 1);
+    QCOMPARE(out.cacheHits, QVector<bool>({ true, false }));
+    QCOMPARE(out.batch.validPages, QVector<bool>({ true, true }));
+    QCOMPARE(out.batch.evidence[0]->rawResult, first.evidence[0]->rawResult);
+    const auto job = store.get(*id);
+    QVERIFY(job.has_value());
+    QCOMPARE(job->pages.size(), 2);
+    QVERIFY(job->state == OcrJobs::State::PageReview || job->state == OcrJobs::State::FilenameReview);
+    for (int i = 0; i < 2; ++i) {
+        QCOMPARE(out.batch.readings[i].device, expected);
+        QString text = out.batch.readings[i].text;
+        text.remove(QRegularExpression(QStringLiteral("\\s+")));
+        QVERIFY2(text.contains(i ? QStringLiteral("見本太郎") : QStringLiteral("홍길동")), qPrintable(out.batch.readings[i].text));
+        const auto &page = *out.batch.evidence[i];
+        const auto recovered = LocalOcrPersistence::restorePage(*job, *currentRuntime, i, page.geometry, page.imageSha256, cache, &error);
+        QVERIFY2(recovered.has_value(), qPrintable(error));
+        QCOMPARE(recovered->rawResult, page.rawResult);
+        QCOMPARE(recovered->actualDevice, expected);
+    }
+    qInfo("Actual executor device=%s cached=%d cache-read=%lld ms remaining-page-ocr=%lld ms",
+          qPrintable(expected), out.cachedPages, out.cacheReadMs, out.batch.readings[1].elapsedMs);
+}
+
+void LocalMetadataTest::claimedExecutorWorker_data()
+{
+    QTest::addColumn<QString>("mode");
+    for (const auto &mode : { "partial-gap", "cancel-after-page", "all-output-failure", "partial-cpu-failure" })
+        QTest::newRow(mode) << QString::fromLatin1(mode);
+}
+
+void LocalMetadataTest::claimedExecutorWorker()
+{
+    using namespace LocalMetadata;
+    if (qEnvironmentVariable("YACREADER_SYNTHETIC_RECOVERY_WORKER") != QStringLiteral("1"))
+        QSKIP("Explicit isolated synthetic worker failure injection only.");
+    QFETCH(QString, mode);
+    QFile worker(QCoreApplication::applicationDirPath() + QStringLiteral("/ocr-neural/worker.py"));
+    QVERIFY(worker.open(QIODevice::ReadOnly));
+    QVERIFY(worker.readLine().startsWith("# YACReader synthetic recovery worker v1"));
+    QVERIFY(QFile::exists(QCoreApplication::applicationDirPath() + QStringLiteral("/ocr-neural-gpu/runtime/python.exe")));
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto oldMode = qgetenv("YACREADER_FAULT_MODE");
+    const auto oldTrace = qgetenv("YACREADER_FAULT_TRACE_BASE64");
+    const auto restore = qScopeGuard([&] {
+        if (oldMode.isNull())
+            qunsetenv("YACREADER_FAULT_MODE");
+        else
+            qputenv("YACREADER_FAULT_MODE", oldMode);
+        if (oldTrace.isNull())
+            qunsetenv("YACREADER_FAULT_TRACE_BASE64");
+        else
+            qputenv("YACREADER_FAULT_TRACE_BASE64", oldTrace);
+    });
+    const auto tracePath = temporary.filePath("trace.jsonl");
+    QVERIFY(qputenv("YACREADER_FAULT_MODE", mode.toUtf8()));
+    QVERIFY(qputenv("YACREADER_FAULT_TRACE_BASE64", tracePath.toUtf8().toBase64()));
+    const auto folder = temporary.filePath("synthetic-live-executor");
+    const auto cache = temporary.filePath("cache");
+    QVERIFY(QDir().mkdir(folder));
+    QVERIFY(QDir().mkdir(cache));
+    for (int i = 0; i < 3; ++i) {
+        QImage image(80 + i * 10, 40, QImage::Format_RGB32);
+        image.fill(Qt::white);
+        QVERIFY(image.save(QDir(folder).filePath(QStringLiteral("%1.png").arg(i + 1)), "PNG"));
+    }
+    QString error;
+    const auto source = LocalOcrSource::read(folder, 3, { }, &error);
+    QVERIFY2(source.has_value(), qPrintable(error));
+    const auto settings = persistenceSettings(temporary.path()); // Synthetic identities only.
+    auto spec = persistenceSpec(temporary.path(), settings);
+    spec.sourceSnapshot = source->fingerprint;
+    spec.sourceContext = { { "path", source->manifest["path"] }, { "sourceKind", "folder" }, { "libraryRoot", temporary.path() } };
+    spec.totalPages = 3;
+    spec.pages = { 1, 2, 3 };
+    OcrJobs::Store store;
+    QVERIFY(store.open(temporary.filePath("ocr-jobs.sqlite")));
+    const auto id = store.enqueue(spec);
+    QVERIFY(id.has_value());
+    const auto lease = store.claim(*id, QStringLiteral("synthetic-live-owner"), 1000, 1000);
+    QVERIFY(lease.has_value());
+    const auto hash = [](const QByteArray &bytes) { return QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex()); };
+    const auto prepared = prepareOcrPage(source->source.pages[0].image, { });
+    QByteArray png;
+    QBuffer buffer(&png);
+    QVERIFY(buffer.open(QIODevice::WriteOnly));
+    QVERIFY(prepared.image.save(&buffer, "PNG"));
+    const QByteArray raw = R"({"version":1,"engine":"paddle-regions","device":"cpu","language":"auto","lines":[]})";
+    const NeuralPageEvidence cached { 0, prepared.geometry, hash(png), raw, hash(raw), QStringLiteral("cpu"), QStringLiteral("cpu") };
+    QVERIFY(LocalOcrPersistence::recordPage(store, *lease, settings, cached, cache, { }, [] { return 1001; }).receiptSaved);
+    auto cancel = std::make_shared<std::atomic_bool>(false);
+    QElapsedTimer elapsed;
+    elapsed.start();
+    // Default runner launches the isolated Python processes; no injected Runner.
+    const auto out = LocalOcrExecutor::executeClaimed(store, *lease, *source, settings, cache, cancel, [&](int completed, int, const QString &) {
+                if (mode == QStringLiteral("cancel-after-page") && completed > 1)
+                    cancel->store(true); }, [] { return 1002; });
+    QVERIFY(out.stateSaved);
+    QCOMPARE(out.cachedPages, 1);
+    QCOMPARE(out.cacheHits, QVector<bool>({ true, false, false }));
+    const auto job = store.get(*id);
+    QVERIFY(job.has_value());
+    if (mode == QStringLiteral("cancel-after-page")) {
+        QVERIFY(elapsed.elapsed() < 15000);
+        QCOMPARE(out.batch.status, RecognitionStatus::Cancelled);
+        QCOMPARE(job->state, OcrJobs::State::Paused);
+        QCOMPARE(job->pages.size(), 2);
+        QCOMPARE(out.batch.validPages, QVector<bool>({ true, false, true }));
+    } else {
+        QCOMPARE(job->pages.size(), 3);
+        QCOMPARE(out.batch.validPages, QVector<bool>({ true, true, true }));
+        if (mode == QStringLiteral("partial-gap")) {
+            QCOMPARE(out.batch.status, RecognitionStatus::Complete);
+            QVERIFY(job->state == OcrJobs::State::PageReview || job->state == OcrJobs::State::FilenameReview);
+        } else {
+            QCOMPARE(out.batch.status, RecognitionStatus::Failed);
+            QCOMPARE(job->state, OcrJobs::State::Failed);
+            QVERIFY(!out.batch.error.isEmpty());
+        }
+    }
+    QFile trace(tracePath);
+    QVERIFY(trace.open(QIODevice::ReadOnly));
+    QVector<QJsonObject> calls;
+    while (!trace.atEnd())
+        calls.append(QJsonDocument::fromJson(trace.readLine()).object());
+    const bool retry = mode == QStringLiteral("partial-gap") || mode == QStringLiteral("partial-cpu-failure");
+    QCOMPARE(calls.size(), retry ? 2 : 1);
+    const auto gpuImages = calls[0]["images"].toArray();
+    QCOMPARE(gpuImages.size(), 2); // Cached first image was never sent to a worker.
+    QCOMPARE(gpuImages[1].toString(), out.batch.evidence[2]->imageSha256);
+    QVERIFY(!gpuImages.contains(cached.imageSha256));
+    if (retry) {
+        QCOMPARE(calls[1]["images"].toArray(), QJsonArray({ gpuImages[0] }));
+        QCOMPARE(out.batch.evidence[1]->requestedDevice, QStringLiteral("cpu"));
+    }
+    QCOMPARE(out.batch.evidence[2]->requestedDevice, QStringLiteral("gpu:0"));
+    for (int i = 0; i < 3; ++i) {
+        if (!out.batch.validPages[i])
+            continue;
+        const auto &page = *out.batch.evidence[i];
+        const auto loaded = LocalOcrPersistence::restorePage(*job, settings, i, page.geometry, page.imageSha256, cache, &error);
+        QVERIFY2(loaded.has_value(), qPrintable(error));
+        QCOMPARE(loaded->selectedIndex, i);
+        QCOMPARE(loaded->rawResult, page.rawResult);
+        QCOMPARE(loaded->requestedDevice, page.requestedDevice);
+    }
+    for (const auto &call : calls)
+        for (const auto &output : call["outputs"].toArray())
+            QVERIFY(!QFile::exists(output.toString()));
+    const auto unchanged = LocalOcrSource::read(folder, 3, { }, &error);
+    QVERIFY(unchanged.has_value());
+    QCOMPARE(unchanged->fingerprint, source->fingerprint);
+}
+
 void LocalMetadataTest::claimedExecutor_data()
 {
     QTest::addColumn<QString>("mode");
-    for (const auto &mode : { "fresh", "resume", "page-candidate", "cancel", "worker-failure", "missing-delivery", "lease-expired", "changed-source", "changed-settings", "damaged-cache", "all-recorded", "changed-delivery", "callback-throw", "stale-owner" })
+    for (const auto &mode : { "fresh", "resume", "page-candidate", "cancel", "worker-failure", "missing-delivery", "lease-expired", "changed-source", "changed-settings", "damaged-cache", "all-recorded", "changed-delivery", "changed-completion", "callback-throw", "stale-owner" })
         QTest::newRow(mode) << QString::fromLatin1(mode);
 }
 
@@ -1740,6 +2065,12 @@ void LocalMetadataTest::claimedExecutor()
                         result.error = error;
                         break;
                     }
+                    if (mode == QStringLiteral("changed-completion")) {
+                        auto altered = page;
+                        altered.rawResult = R"({"version":1,"engine":"paddle-regions","device":"cpu","language":"auto","lines":[{"text":"Author: Altered Completion","confidence":99,"box":[1,1,150,20],"language":"jpn"}]})";
+                        altered.resultSha256 = QString::fromLatin1(QCryptographicHash::hash(altered.rawResult, QCryptographicHash::Sha256).toHex());
+                        result.evidence[i] = altered; // Valid, but not the accepted receipt.
+                    }
                     if (mode == QStringLiteral("callback-throw"))
                         throw std::runtime_error("synthetic runner failure after receipt");
                     if (mode == QStringLiteral("cancel")) {
@@ -1795,13 +2126,13 @@ void LocalMetadataTest::claimedExecutor()
         QVERIFY(!out.batch.error.isEmpty());
         if (mode == QStringLiteral("callback-throw"))
             QCOMPARE(out.batch.status, RecognitionStatus::CleanupFailed);
-        else if (mode == QStringLiteral("missing-delivery") || mode == QStringLiteral("changed-delivery"))
+        else if (mode == QStringLiteral("missing-delivery") || mode == QStringLiteral("changed-delivery") || mode == QStringLiteral("changed-completion"))
             QCOMPARE(out.batch.status, RecognitionStatus::DeliveryFailed);
         else
             QCOMPARE(out.batch.status, RecognitionStatus::Failed);
-        QCOMPARE(savedJob->pages.size(), mode == QStringLiteral("worker-failure") || mode == QStringLiteral("all-recorded") || mode == QStringLiteral("callback-throw") ? 2 : 1);
+        QCOMPARE(savedJob->pages.size(), mode == QStringLiteral("worker-failure") || mode == QStringLiteral("all-recorded") || mode == QStringLiteral("callback-throw") || mode == QStringLiteral("changed-completion") ? 2 : 1);
     }
-    if (mode == QStringLiteral("changed-delivery"))
+    if (mode == QStringLiteral("changed-delivery") || mode == QStringLiteral("changed-completion"))
         QVERIFY(out.metadata.pages[1].text.isEmpty()); // Invalid evidence never supplies candidate text.
     if (mode == QStringLiteral("damaged-cache")) {
         QFile file(QDir(cache).filePath(firstKey + QStringLiteral(".json")));

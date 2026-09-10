@@ -357,7 +357,7 @@ jobs:
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
           $env:YACREADER_DATA_DIR = Join-Path $env:RUNNER_TEMP 'artifact settings 한글'
           $env:YACREADER_EXPECT_NEURAL_DEVICE = 'cpu'
-          & "$package/local_metadata_test.exe" claimedExecutor cacheReceiptOrdering cacheReceiptRecovery sourceSnapshotValidation cacheReceiptCrash cacheReceiptClockAfterContention runtimeSnapshotMeasuresFiles preparationGeometry preparationEvidenceValidation recoveryRetainsCompletedPages recoveryPageSinkGuards recoveryFailureBoundaries recoveryCpuFailurePreservesEvidence recoveryLegacyRejectsSessionFailure recoveryCancellationFromProgress ocrProcessAndCancellation ocrProcessTreeCleanup ocrResourceOwnership ocrResourceSameThread localNeuralDevice isolatedSettingsPaths neuralCacheCompetingWriters neuralCacheIdentity neuralCachePreservesReviewAndDevices neuralCacheRejectsCorruption -o "$env:GITHUB_WORKSPACE/build/artifact-ocr.txt,txt"
+          & "$package/local_metadata_test.exe" claimedExecutorNeural inspectorWorkerLifetime claimedExecutor cacheReceiptOrdering cacheReceiptRecovery sourceSnapshotValidation cacheReceiptCrash cacheReceiptClockAfterContention runtimeSnapshotMeasuresFiles preparationGeometry preparationEvidenceValidation recoveryRetainsCompletedPages recoveryPageSinkGuards recoveryFailureBoundaries recoveryCpuFailurePreservesEvidence recoveryLegacyRejectsSessionFailure recoveryCancellationFromProgress ocrProcessAndCancellation ocrProcessTreeCleanup ocrResourceOwnership ocrResourceSameThread localNeuralDevice isolatedSettingsPaths neuralCacheCompetingWriters neuralCacheIdentity neuralCachePreservesReviewAndDevices neuralCacheRejectsCorruption -o "$env:GITHUB_WORKSPACE/build/artifact-ocr.txt,txt"
           $testExit = $LASTEXITCODE
           Remove-Item Env:YACREADER_EXPECT_NEURAL_DEVICE
           Get-Content "$env:GITHUB_WORKSPACE/build/artifact-ocr.txt"
@@ -381,7 +381,7 @@ jobs:
           $env:YACREADER_SYNTHETIC_RECOVERY_WORKER = '1'
           try {
             Copy-Item -LiteralPath 'tests/local_metadata_test/neural_fault_worker.py' -Destination $worker -Force
-            & "$package/local_metadata_test.exe" neuralRecoveryWorkerFaults -o "$env:GITHUB_WORKSPACE/build/artifact-recovery-faults.txt,txt"
+            & "$package/local_metadata_test.exe" neuralRecoveryWorkerFaults claimedExecutorWorker -o "$env:GITHUB_WORKSPACE/build/artifact-recovery-faults.txt,txt"
             $faultExit = $LASTEXITCODE
             Get-Content "$env:GITHUB_WORKSPACE/build/artifact-recovery-faults.txt"
             if ($faultExit -ne 0) { throw 'Synthetic OCR process recovery failed' }

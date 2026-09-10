@@ -4,6 +4,7 @@
 #include "local_metadata.h"
 
 #include <QDialog>
+#include <QPointer>
 
 class QCheckBox;
 class QComboBox;
@@ -13,6 +14,7 @@ class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
+class QThread;
 class OcrPageView;
 
 // Shared by the copied worker closure; destruction is queued on the UI thread.
@@ -38,6 +40,7 @@ signals:
 
 private:
     friend class LocalMetadataTest;
+    QThread *createWorker(const LocalMetadata::Cancellation &flag, const std::function<void()> &work, const std::function<void()> &completed);
     void start(bool ocr);
     void recognizeRegion();
     void requestSearch(bool automatic);
@@ -52,6 +55,8 @@ private:
     QString sourcePath;
     qulonglong comicInfoId = 0;
     LocalMetadata::Cancellation cancellation;
+    QPointer<QThread> activeWorker;
+    bool pendingPreview = false;
     LocalMetadata::Result result;
     bool automaticSearchDone = false;
     bool filenameFallback = false;
