@@ -1198,7 +1198,11 @@ LocalMetadata::NeuralPageEvidence persistencePage()
 {
     QImage image(80, 40, QImage::Format_RGB32);
     image.fill(Qt::white);
-    const auto prepared = LocalMetadata::prepareOcrPage(image, { });
+    auto prepared = LocalMetadata::prepareOcrPage(image, { });
+    // QCoreApplication and QApplication can supply different default PNG DPI.
+    // This crash fixture must reproduce identical bytes across both processes.
+    prepared.image.setDotsPerMeterX(3780);
+    prepared.image.setDotsPerMeterY(3780);
     QByteArray png;
     QBuffer buffer(&png);
     buffer.open(QIODevice::WriteOnly);
@@ -1235,7 +1239,7 @@ int persistenceLockHelper(const QStringList &args)
 
 int persistenceCrashHelper(const QStringList &args)
 {
-    if (args.size() != 7)
+    if (args.size() != 8)
         return 80;
     OcrJobs::Store store;
     if (!store.open(args[2]))
@@ -1244,7 +1248,10 @@ int persistenceCrashHelper(const QStringList &args)
     if (!job)
         return 82;
     const LocalOcrRuntime::Measurement settings { job->spec.settingsSnapshot, job->spec.settingsFingerprint, { } };
-    LocalOcrPersistence::recordPage(store, { args[4], args[5], args[6] }, settings, persistencePage(), args[3], { }, []() -> qint64 { std::_Exit(86); });
+    const auto page = persistencePage();
+    if (page.imageSha256 != args[7])
+        return 84; // Distinguish fixture byte drift from missing persisted data.
+    LocalOcrPersistence::recordPage(store, { args[4], args[5], args[6] }, settings, page, args[3], { }, []() -> qint64 { std::_Exit(86); });
     return 83; // The clock seam is reached only after atomic cache publication.
 }
 }
@@ -1289,7 +1296,7 @@ void LocalMetadataTest::cacheReceiptOrdering()
     const auto identity = LocalOcrPersistence::identity(settings, page, &error);
     QVERIFY(identity.has_value());
     const auto orphan = LocalOcrCache::load(cache, *identity, &error);
-    QVERIFY(orphan.has_value());
+    QVERIFY2(orphan.has_value(), qPrintable(error));
     QCOMPARE(orphan->rawResult, page.rawResult);
     QVERIFY(store.interruptExpired(1101));
     QVERIFY(store.resume(*id));
@@ -1352,16 +1359,16 @@ void LocalMetadataTest::cacheReceiptCrash()
             process.waitForFinished(5000);
         }
     });
-    process.start(QCoreApplication::applicationFilePath(), { "--ocr-persist-crash", database, cache, *id, lease->token, lease->owner });
+    const auto page = persistencePage();
+    process.start(QCoreApplication::applicationFilePath(), { "--ocr-persist-crash", database, cache, *id, lease->token, lease->owner, page.imageSha256 });
     QVERIFY(process.waitForFinished(10000));
     QCOMPARE(process.exitCode(), 86);
     QVERIFY(store.get(*id)->pages.isEmpty());
     QString error;
-    const auto page = persistencePage();
     const auto identity = LocalOcrPersistence::identity(settings, page, &error);
     QVERIFY(identity.has_value());
     const auto orphan = LocalOcrCache::load(cache, *identity, &error);
-    QVERIFY(orphan.has_value());
+    QVERIFY2(orphan.has_value(), qPrintable(error));
     QCOMPARE(orphan->rawResult, page.rawResult);
     OcrJobs::Store reopened;
     QVERIFY(reopened.open(database));
