@@ -953,3 +953,22 @@ actual device and raw response hash. Invalid evidence remains available for revi
 Synthetic worker callbacks now exercise cache publication, DB receipt creation
 and exact reload together. No inspector scheduler, automatic metadata save,
 whole-library processing or new real-work benchmark is included in this change.
+
+### 2026-09-10: page delivery verified; cooperating GPU ownership pending
+
+Page-delivery code cf9934d0 passed Windows run34448991748: 13 CTest suites,
+21 worker checks, staged neural8, installed OCR21, downloaded49, jobstore23 and
+simulated faults14. Required packaged checks had zero failures/skips; prerequisite
+skips are separate. The exact downloaded probe passed local native18, simulated
+fault14 and actual NVIDIA inference on two synthetic CJK fixtures (3 Qt totals)
+in the previously verified composed runtime. The real worker was restored.
+This adds no real-work accuracy or speed claim.
+
+Source/cache code 1b49991e passed the initial Windows test stage in run34451293579.
+That run is superseded by the following GPU ownership integration before full
+package completion; final package validation must cover all changes together.
+Cooperating NVIDIA workers now use a bounded, cancellable named mutex/Job handoff
+and verify old process exit. The same-thread recursive-mutex case is explicitly
+blocked until the previous object finishes. Synthetic crash tests retain old
+kernel handles so abandonment alone cannot stand in for actual worker cleanup.
+This ownership change still needs complete Windows and local verification.

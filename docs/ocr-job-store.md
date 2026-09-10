@@ -384,3 +384,31 @@ SQLite receipt and validated reload. Runtime measurements in this suite are
 synthetic fixtures, not claims of actual GPU inference. Windows validation for
 this integration is pending. A production owned executor and explicit UI resume
 remain subsequent work.
+
+## Cooperating Windows NVIDIA worker ownership
+
+Neural GPU requests now acquire the Windows resource nvidia-0 before process
+creation. A named mutex serializes cooperating app instances in the same Windows
+session; its named Job retains the worker tree for handoff checks. Acquisition
+and cleanup waits are bounded and cancellable. A busy or unverified old resource
+is an execution error before GPU start, not authorization for a CPU retry.
+
+WAIT_ABANDONED transfers mutex ownership but does not establish worker exit.
+Only the corresponding named OCR Job is eligible for abandoned-owner termination;
+its active-process count must reach zero before a new worker is assigned. Normal
+cleanup closes the Job handle before releasing the mutex. Later cleanup calls on
+an old object cannot act on a Job reused by a new worker. Because Windows mutexes
+are recursive, a thread-local guard also requires the previous invocation to
+explicitly finish even when its root process exited naturally.
+
+This coordinates these cooperating OCR requests, not unrelated GPU software or
+older installations without this protocol. Synthetic tests use unique resource
+names and keep Job/mutex handles open to leave real descendants alive after an
+owner crash, then verify handoff cleanup. They also cover cancellation while
+waiting, normal handoff, same-thread reentry and natural-exit reuse. No NVIDIA
+kernels are needed for these ownership tests. Full Windows/package validation for
+this integration is pending; a durable inspector executor/restart UI is still
+subsequent work.
+
+Primary Windows semantics: [Job objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+and [mutex wait results](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject).

@@ -154,6 +154,9 @@ private slots:
     void ocrProcessAndCancellation();
     void ocrProcessTreeCleanup_data();
     void ocrProcessTreeCleanup();
+    void ocrResourceOwnership_data();
+    void ocrResourceOwnership();
+    void ocrResourceSameThread();
     void realOcr();
     void croppedCreditOcr();
     void preprocessingPreservesSource();
@@ -1002,6 +1005,8 @@ void LocalMetadataTest::ocrProcessAndCancellation()
 namespace {
 int processTreeHelper(const QStringList &args)
 {
+    if (args.value(1) == "--ocr-tree-exit")
+        return 0;
     if (args.value(1) == "--ocr-tree-leaf") {
         QThread::sleep(60);
         return 0;
@@ -1031,7 +1036,7 @@ int processTreeHelper(const QStringList &args)
     }
     LocalOcrProcess worker;
     QString error;
-    if (!worker.startOcr(QCoreApplication::applicationFilePath(), { "--ocr-tree-worker", root, mode }, &error))
+    if (!worker.startOcr(QCoreApplication::applicationFilePath(), { "--ocr-tree-worker", root, mode }, &error, args.value(4)))
         return 43;
     if (mode == "worker-exit" && !worker.waitForFinished(5000))
         return 46;
@@ -1112,6 +1117,128 @@ void LocalMetadataTest::ocrProcessTreeCleanup()
         QCOMPARE(WaitForSingleObject(worker, 5000), DWORD(WAIT_OBJECT_0));
     QVERIFY(!unrelated.waitForFinished(50));
     QCOMPARE(unrelated.state(), QProcess::Running);
+#endif
+}
+
+void LocalMetadataTest::ocrResourceOwnership_data()
+{
+    QTest::addColumn<QString>("mode");
+    QTest::newRow("normal-handoff") << QStringLiteral("stop");
+    QTest::newRow("abandoned-live-descendants") << QStringLiteral("owner-crash");
+}
+
+void LocalMetadataTest::ocrResourceOwnership()
+{
+#ifndef Q_OS_WIN
+    QSKIP("Windows named OCR resource ownership test");
+#else
+    QFETCH(QString, mode);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto key = QStringLiteral("test-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const auto name = QStringLiteral("Local\\YACReader.OCR.v1.") + key;
+    QProcess controller;
+    controller.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *a) { a->flags |= CREATE_NO_WINDOW; });
+    controller.start(QCoreApplication::applicationFilePath(), { "--ocr-tree-controller", directory.path(), mode, key });
+    QVERIFY(controller.waitForStarted(5000));
+    auto stopController = qScopeGuard([&] { if (controller.state() != QProcess::NotRunning) { controller.kill(); controller.waitForFinished(5000); } });
+    QElapsedTimer timer;
+    timer.start();
+    while (!QFile::exists(directory.filePath("ready.json")) && timer.elapsed() < 5000)
+        QTest::qWait(10);
+    QFile ready(directory.filePath("ready.json"));
+    QVERIFY(ready.open(QIODevice::ReadOnly));
+    const auto record = QJsonDocument::fromJson(ready.readAll()).object();
+    ready.close();
+    HANDLE leaf = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, record["leaf"].toInteger());
+    QVERIFY(leaf != nullptr);
+    auto closeLeaf = qScopeGuard([&] { CloseHandle(leaf); });
+    HANDLE worker = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, record["worker"].toInteger());
+    QVERIFY(worker != nullptr);
+    auto closeWorker = qScopeGuard([&] { CloseHandle(worker); });
+    // Keep kernel objects alive across owner exit. In the crash case this
+    // intentionally prevents kill-on-last-close from doing the recovery for us.
+    const auto jobName = name + QStringLiteral(".job");
+    HANDLE job = OpenJobObjectW(JOB_OBJECT_QUERY, FALSE, reinterpret_cast<LPCWSTR>(jobName.utf16()));
+    QVERIFY(job != nullptr);
+    auto closeJob = qScopeGuard([&] { CloseHandle(job); });
+    const auto mutexName = name + QStringLiteral(".mutex");
+    HANDLE mutex = OpenMutexW(SYNCHRONIZE, FALSE, reinterpret_cast<LPCWSTR>(mutexName.utf16()));
+    QVERIFY(mutex != nullptr);
+    auto closeMutex = qScopeGuard([&] { CloseHandle(mutex); });
+    {
+        LocalOcrProcess contender;
+        auto cancel = std::make_shared<std::atomic_bool>(false);
+        std::thread cancellation([cancel] { QThread::msleep(100); cancel->store(true); });
+        auto join = qScopeGuard([&] { cancellation.join(); });
+        QString error;
+        timer.restart();
+        QVERIFY(!contender.startOcr(QCoreApplication::applicationFilePath(), { "--ocr-tree-leaf" }, &error, key, cancel));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(timer.elapsed() < 2000);
+    }
+    QCOMPARE(WaitForSingleObject(leaf, 0), DWORD(WAIT_TIMEOUT));
+    QCOMPARE(WaitForSingleObject(worker, 0), DWORD(WAIT_TIMEOUT));
+    QFile act(directory.filePath("act"));
+    QVERIFY(act.open(QIODevice::WriteOnly));
+    act.close();
+    QVERIFY(controller.waitForFinished(10000));
+    QCOMPARE(controller.exitCode(), mode == QStringLiteral("owner-crash") ? 73 : 0);
+    if (mode == QStringLiteral("owner-crash")) {
+        QCOMPARE(WaitForSingleObject(leaf, 0), DWORD(WAIT_TIMEOUT));
+        QCOMPARE(WaitForSingleObject(worker, 0), DWORD(WAIT_TIMEOUT));
+    }
+    LocalOcrProcess successor;
+    QString error;
+    QVERIFY2(successor.startOcr(QCoreApplication::applicationFilePath(), { "--ocr-tree-leaf" }, &error, key), qPrintable(error));
+    // Both old handles must already be signalled at successful handoff.
+    QCOMPARE(WaitForSingleObject(leaf, 0), DWORD(WAIT_OBJECT_0));
+    QCOMPARE(WaitForSingleObject(worker, 0), DWORD(WAIT_OBJECT_0));
+    QVERIFY(!successor.waitForFinished(50));
+    QVERIFY2(successor.finishTree(&error), qPrintable(error));
+#endif
+}
+
+void LocalMetadataTest::ocrResourceSameThread()
+{
+#ifndef Q_OS_WIN
+    QSKIP("Windows recursive-mutex resource guard test");
+#else
+    const auto key = QStringLiteral("test-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    LocalOcrProcess first;
+    QString error;
+    QVERIFY2(first.startOcr(QCoreApplication::applicationFilePath(), { "--ocr-tree-leaf" }, &error, key), qPrintable(error));
+    {
+        LocalOcrProcess contender;
+        QElapsedTimer elapsed;
+        elapsed.start();
+        QVERIFY(!contender.startOcr(QCoreApplication::applicationFilePath(), { "--ocr-tree-leaf" }, &error, key));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(elapsed.elapsed() < 1000);
+    }
+    QVERIFY(!first.waitForFinished(50)); // Failed reentrant contender cannot kill it.
+    QVERIFY(first.finishTree(&error));
+    LocalOcrProcess successor;
+    QVERIFY2(successor.startOcr(QCoreApplication::applicationFilePath(), { "--ocr-tree-leaf" }, &error, key), qPrintable(error));
+    QVERIFY(first.finishTree(&error)); // Old object must not act on the reused named job.
+    QVERIFY(!successor.waitForFinished(50));
+    QVERIFY(successor.finishTree(&error));
+    LocalOcrProcess invalid;
+    QVERIFY(!invalid.startOcr(QCoreApplication::applicationFilePath(), { "--ocr-tree-leaf" }, &error, QStringLiteral("bad/key")));
+    QCOMPARE(invalid.state(), QProcess::NotRunning);
+    LocalOcrProcess completed;
+    QVERIFY(completed.startOcr(QCoreApplication::applicationFilePath(), { "--ocr-tree-exit" }, &error, key));
+    QVERIFY(completed.waitForFinished(5000));
+    {
+        LocalOcrProcess premature;
+        QVERIFY(!premature.startOcr(QCoreApplication::applicationFilePath(), { "--ocr-tree-leaf" }, &error, key));
+    }
+    QVERIFY(completed.finishTree(&error));
+    LocalOcrProcess afterCompletion;
+    QVERIFY(afterCompletion.startOcr(QCoreApplication::applicationFilePath(), { "--ocr-tree-leaf" }, &error, key));
+    QVERIFY(completed.finishTree(&error));
+    QVERIFY(!afterCompletion.waitForFinished(50));
+    QVERIFY(afterCompletion.finishTree(&error));
 #endif
 }
 
