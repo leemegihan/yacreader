@@ -51,6 +51,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <limits>
+#include <stdexcept>
 #include <thread>
 #ifdef Q_OS_WIN
 #include <qt_windows.h>
@@ -139,6 +140,7 @@ private slots:
     void neuralRecoveryWorkerFaults_data();
     void neuralRecoveryWorkerFaults();
     void recoveryRetainsCompletedPages();
+    void recoveryPageSinkGuards();
     void recoveryFailureBoundaries_data();
     void recoveryFailureBoundaries();
     void recoveryCpuFailurePreservesEvidence();
@@ -439,8 +441,15 @@ QVector<QImage> recoveryImages()
 void LocalMetadataTest::neuralRecoveryWorkerFaults_data()
 {
     QTest::addColumn<QString>("mode");
+    QTest::addColumn<QString>("action");
     for (const char *mode : { "partial-gap", "all-output-failure", "partial-cpu-failure", "cancel-after-page", "blank-partial", "invalid-partial" })
-        QTest::newRow(mode) << QString::fromLatin1(mode);
+        QTest::newRow(mode) << QString::fromLatin1(mode) << QString();
+    QTest::newRow("sink-reject-running-worker") << QStringLiteral("cancel-after-page") << QStringLiteral("reject");
+    QTest::newRow("sink-exception-running-worker") << QStringLiteral("cancel-after-page") << QStringLiteral("throw");
+    QTest::newRow("sink-cancel-running-worker") << QStringLiteral("cancel-after-page") << QStringLiteral("cancel");
+    QTest::newRow("sink-reject-cpu-retry") << QStringLiteral("partial-gap") << QStringLiteral("reject-cpu");
+    QTest::newRow("sink-reject-after-all-output") << QStringLiteral("all-output-failure") << QStringLiteral("reject");
+    QTest::newRow("sink-reject-blank-page") << QStringLiteral("blank-partial") << QStringLiteral("reject");
 }
 
 void LocalMetadataTest::neuralRecoveryWorkerFaults()
@@ -449,6 +458,7 @@ void LocalMetadataTest::neuralRecoveryWorkerFaults()
     if (qEnvironmentVariable("YACREADER_SYNTHETIC_RECOVERY_WORKER") != QStringLiteral("1"))
         QSKIP("Explicit isolated synthetic worker failure injection only.");
     QFETCH(QString, mode);
+    QFETCH(QString, action);
     QFile worker(QCoreApplication::applicationDirPath() + QStringLiteral("/ocr-neural/worker.py"));
     QVERIFY(worker.open(QIODevice::ReadOnly));
     QVERIFY(worker.readLine().startsWith("# YACReader synthetic recovery worker v1"));
@@ -477,11 +487,39 @@ void LocalMetadataTest::neuralRecoveryWorkerFaults()
     OcrOptions options;
     options.neural = options.gpu = true;
     auto cancel = std::make_shared<std::atomic_bool>(false);
-    const auto result = recognizePagesWithOutcome(images, options, cancel,
-                                                  [&](int count, int, const QString &) {
-                                                      if (mode == QStringLiteral("cancel-after-page") && count > 0)
+    QVector<NeuralPageEvidence> deliveries;
+    bool deliveredBeforeCleanup = true;
+    QElapsedTimer elapsed;
+    elapsed.start();
+    const auto result = recognizePagesWithOutcome(images, options, cancel, [&](int count, int, const QString &) {
+                                                      if (action.isEmpty() && mode == QStringLiteral("cancel-after-page") && count > 0)
+                                                          cancel->store(true); }, [&](const NeuralPageEvidence &page, QString *error) {
+                                                      deliveries.append(page);
+                                                      // The exact result file must still exist: this callback
+                                                      // runs during collection, not after a batch returns.
+                                                      QFile liveTrace(tracePath);
+                                                      if (!liveTrace.open(QIODevice::ReadOnly))
+                                                          deliveredBeforeCleanup = false;
+                                                      QJsonObject liveCall;
+                                                      while (!liveTrace.atEnd())
+                                                          liveCall = QJsonDocument::fromJson(liveTrace.readLine()).object();
+                                                      const int attemptIndex = page.requestedDevice == QStringLiteral("cpu") ? 0 : page.selectedIndex;
+                                                      const auto outputs = liveCall["outputs"].toArray();
+                                                      if (attemptIndex >= outputs.size() || !QFile::exists(outputs[attemptIndex].toString()))
+                                                          deliveredBeforeCleanup = false;
+                                                      if (action == QStringLiteral("cancel"))
                                                           cancel->store(true);
-                                                  });
+                                                      if (action == QStringLiteral("throw"))
+                                                          throw std::runtime_error("synthetic receiver exception");
+                                                      if (action == QStringLiteral("reject") || (action == QStringLiteral("reject-cpu") && page.requestedDevice == QStringLiteral("cpu"))) {
+                                                          *error = QStringLiteral("synthetic receipt rejection");
+                                                          return false;
+                                                      }
+                                                      return true; });
+    QVERIFY(deliveredBeforeCleanup);
+    if (mode == QStringLiteral("cancel-after-page"))
+        QVERIFY(elapsed.elapsed() < 15000); // Worker intentionally sleeps for 30 seconds.
+
     QFile trace(tracePath);
     QVERIFY(trace.open(QIODevice::ReadOnly));
     QVector<QJsonObject> calls;
@@ -490,7 +528,7 @@ void LocalMetadataTest::neuralRecoveryWorkerFaults()
         if (!line.isEmpty())
             calls.append(QJsonDocument::fromJson(line).object());
     }
-    const bool retry = mode == QStringLiteral("partial-gap") || mode == QStringLiteral("partial-cpu-failure") || mode == QStringLiteral("blank-partial") || mode == QStringLiteral("invalid-partial");
+    const bool retry = (action.isEmpty() || action == QStringLiteral("reject-cpu")) && (mode == QStringLiteral("partial-gap") || mode == QStringLiteral("partial-cpu-failure") || mode == QStringLiteral("blank-partial") || mode == QStringLiteral("invalid-partial"));
     QCOMPARE(calls.size(), retry ? 2 : 1);
     QCOMPARE(calls[0]["device"].toString(), QStringLiteral("gpu:0"));
     const auto firstHashes = calls[0]["images"].toArray();
@@ -528,7 +566,22 @@ void LocalMetadataTest::neuralRecoveryWorkerFaults()
         QCOMPARE(evidence.rawResult, exact);
         QVERIFY(!QFile::exists(call["outputs"].toArray()[attemptIndex].toString())); // Temp directory is gone.
     }
-    if (mode == QStringLiteral("partial-gap") || mode == QStringLiteral("blank-partial") || mode == QStringLiteral("invalid-partial")) {
+    QVector<int> deliveredIndexes;
+    for (const auto &page : deliveries) {
+        deliveredIndexes.append(page.selectedIndex);
+        QVERIFY(result.evidence[page.selectedIndex].has_value());
+        QCOMPARE(page.rawResult, result.evidence[page.selectedIndex]->rawResult);
+        QCOMPARE(page.imageSha256, result.evidence[page.selectedIndex]->imageSha256);
+        QCOMPARE(page.requestedDevice, result.evidence[page.selectedIndex]->requestedDevice);
+    }
+    if (mode == QStringLiteral("all-output-failure"))
+        QCOMPARE(deliveredIndexes, action.isEmpty() ? QVector<int>({ 0, 1 }) : QVector<int>({ 0 }));
+    else
+        QCOMPARE(deliveredIndexes, retry ? QVector<int>({ 1, 0 }) : QVector<int>({ 1 }));
+    if (!action.isEmpty()) {
+        QCOMPARE(result.status, action == QStringLiteral("cancel") ? RecognitionStatus::Cancelled : RecognitionStatus::DeliveryFailed);
+        QVERIFY(!result.error.isEmpty());
+    } else if (mode == QStringLiteral("partial-gap") || mode == QStringLiteral("blank-partial") || mode == QStringLiteral("invalid-partial")) {
         QCOMPARE(result.status, RecognitionStatus::Complete);
         QVERIFY(result.error.isEmpty());
     } else {
@@ -577,19 +630,31 @@ void LocalMetadataTest::recoveryRetainsCompletedPages()
         gpu.evidence[i] = evidenceFor(i, images[i], gpu.readings[i], QStringLiteral("gpu:0"));
     cpu.evidence = { evidenceFor(0, images[1], cpu.readings[0], QStringLiteral("cpu")), evidenceFor(1, images[4], cpu.readings[1], QStringLiteral("cpu")) };
     int calls = 0;
-    QVector<int> retriedWidths, progressCounts;
+    QVector<int> retriedWidths, progressCounts, deliveredIndexes;
+    bool allAccepted = true;
     QVector<OcrOptions> receivedOptions;
     auto result = LocalOcrRecovery::recognize(images, options, cancel, [&](int complete, int total, const QString &) {
                 progressCounts.append(complete);
-                QCOMPARE(total, 6); }, [&](const QVector<QImage> &input, const OcrOptions &received, const Cancellation &, const Progress &progress) {
+                QCOMPARE(total, 6); }, [&](const QVector<QImage> &input, const OcrOptions &received, const Cancellation &, const Progress &progress, const PageSink &sink) {
                 receivedOptions.append(received);
-                if (++calls == 1)
+                const auto &outcome = ++calls == 1 ? gpu : cpu;
+                for (const auto &page : outcome.evidence) {
+                    if (page) {
+                        QString error;
+                        allAccepted = sink(*page, &error) && allAccepted;
+                    }
+                }
+                if (calls == 1)
                     return gpu;
                 for (const auto &image : input)
                     retriedWidths.append(image.width());
                 progress(1, 2, QStringLiteral("synthetic retry"));
                 progress(2, 2, QStringLiteral("synthetic retry done"));
-                return cpu; });
+                return cpu; }, [&](const NeuralPageEvidence &page, QString *) {
+                    deliveredIndexes.append(page.selectedIndex);
+                    return true; });
+    QVERIFY(allAccepted);
+    QCOMPARE(deliveredIndexes, QVector<int>({ 0, 2, 3, 5, 1, 4 }));
     QCOMPARE(calls, 2);
     QCOMPARE(retriedWidths, QVector<int>({ 2, 5 }));
     QCOMPARE(receivedOptions.size(), 2);
@@ -626,6 +691,61 @@ void LocalMetadataTest::recoveryRetainsCompletedPages()
     }
 }
 
+void LocalMetadataTest::recoveryPageSinkGuards()
+{
+    using namespace LocalMetadata;
+    OcrOptions options;
+    options.neural = options.gpu = true;
+    const auto prepared = prepareOcrPage(sampleImage(), options);
+    QByteArray png;
+    QBuffer buffer(&png);
+    QVERIFY(buffer.open(QIODevice::WriteOnly));
+    QVERIFY(prepared.image.save(&buffer, "PNG"));
+    const auto hash = [](const QByteArray &bytes) { return QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex()); };
+    const QByteArray raw = R"({"version":1,"engine":"paddle-regions","device":"gpu:0","language":"auto","lines":[]})";
+    const NeuralPageEvidence valid { 0, prepared.geometry, hash(png), raw, hash(raw), QStringLiteral("gpu:0"), QStringLiteral("gpu:0") };
+    QVERIFY(validNeuralEvidence(valid));
+    for (const QString mode : { "duplicate", "bad-index", "bad-hash", "cpu-device", "cancel-reject", "cleanup" }) {
+        auto page = valid;
+        auto selected = options;
+        if (mode == QStringLiteral("bad-index"))
+            page.selectedIndex = 1;
+        if (mode == QStringLiteral("bad-hash"))
+            page.resultSha256 = QString(64, u'0');
+        if (mode == QStringLiteral("cpu-device"))
+            selected.gpu = false;
+        auto cancel = std::make_shared<std::atomic_bool>(false);
+        int attempts = 0, callbacks = 0;
+        bool firstAccepted = false, secondAccepted = true;
+        const auto result = LocalOcrRecovery::recognize({ sampleImage() }, selected, cancel, { }, [&](const QVector<QImage> &, const OcrOptions &, const Cancellation &, const Progress &, const PageSink &sink) {
+                    ++attempts;
+                    QString error;
+                    firstAccepted = sink(page, &error);
+                    if (mode == QStringLiteral("duplicate"))
+                        secondAccepted = sink(page, &error);
+                    auto batch = syntheticAttempt(1, QStringLiteral("gpu:0"));
+                    batch.status = mode == QStringLiteral("cleanup") ? RecognitionStatus::CleanupFailed : RecognitionStatus::Failed;
+                    batch.error = QStringLiteral("synthetic execution failure");
+                    batch.validPages[0] = false; // Would authorize a retry if delivery failure were lost.
+                    return batch; }, [&](const NeuralPageEvidence &, QString *error) {
+                    ++callbacks;
+                    if (mode == QStringLiteral("cancel-reject"))
+                        cancel->store(true);
+                    if (mode == QStringLiteral("cancel-reject") || mode == QStringLiteral("cleanup")) {
+                        *error = QStringLiteral("synthetic receipt rejection");
+                        return false;
+                    }
+                    return true; });
+        QCOMPARE(attempts, 1);
+        QCOMPARE(result.status, mode == QStringLiteral("cleanup") ? RecognitionStatus::CleanupFailed : RecognitionStatus::DeliveryFailed);
+        QCOMPARE(callbacks, mode == QStringLiteral("bad-index") || mode == QStringLiteral("bad-hash") || mode == QStringLiteral("cpu-device") ? 0 : 1);
+        QCOMPARE(firstAccepted, mode == QStringLiteral("duplicate"));
+        if (mode == QStringLiteral("duplicate"))
+            QVERIFY(!secondAccepted);
+        QVERIFY(!result.error.isEmpty());
+    }
+}
+
 void LocalMetadataTest::recoveryFailureBoundaries_data()
 {
     QTest::addColumn<int>("status");
@@ -633,6 +753,7 @@ void LocalMetadataTest::recoveryFailureBoundaries_data()
     QTest::addColumn<bool>("allValid");
     QTest::newRow("exit-failed-after-all-output") << int(LocalMetadata::RecognitionStatus::Failed) << true << true;
     QTest::newRow("cancelled-with-partial-output") << int(LocalMetadata::RecognitionStatus::Cancelled) << true << false;
+    QTest::newRow("delivery-failed") << int(LocalMetadata::RecognitionStatus::DeliveryFailed) << true << false;
     QTest::newRow("cleanup-failed") << int(LocalMetadata::RecognitionStatus::CleanupFailed) << true << false;
     QTest::newRow("cpu-failure-no-recursion") << int(LocalMetadata::RecognitionStatus::Failed) << false << false;
     QTest::newRow("normal-success") << int(LocalMetadata::RecognitionStatus::Complete) << true << true;
@@ -652,7 +773,7 @@ void LocalMetadataTest::recoveryFailureBoundaries()
     first.validPages[4] = allValid;
     int calls = 0;
     const auto result = LocalOcrRecovery::recognize(recoveryImages(), { }, { }, { },
-                                                    [&](const QVector<QImage> &, const OcrOptions &, const Cancellation &, const Progress &) {
+                                                    [&](const QVector<QImage> &, const OcrOptions &, const Cancellation &, const Progress &, const PageSink &) {
                                                         ++calls;
                                                         return first;
                                                     });
@@ -679,7 +800,7 @@ void LocalMetadataTest::recoveryCpuFailurePreservesEvidence()
         }
         int calls = 0;
         auto result = LocalOcrRecovery::recognize(recoveryImages(), { }, { }, { },
-                                                  [&](const QVector<QImage> &, const OcrOptions &, const Cancellation &, const Progress &) {
+                                                  [&](const QVector<QImage> &, const OcrOptions &, const Cancellation &, const Progress &, const PageSink &) {
                                                       return ++calls == 1 ? first : second;
                                                   });
         QCOMPARE(calls, 2);
@@ -707,6 +828,9 @@ void LocalMetadataTest::recoveryLegacyRejectsSessionFailure()
         QCOMPARE(reading.error, batch.error);
         QCOMPARE(reading.device, QStringLiteral("gpu:0"));
     }
+    auto unsupported = recognizePagesWithOutcome({ sampleImage() }, { }, { }, { }, [](const NeuralPageEvidence &, QString *) { return true; });
+    QCOMPARE(unsupported.status, RecognitionStatus::DeliveryFailed);
+    QVERIFY(!unsupported.validPages[0]);
     // The outcome API retains valid data independent of the compatibility view.
     QVERIFY(batch.readings[0].error.isEmpty());
     QVERIFY(batch.validPages[1]);
@@ -721,7 +845,7 @@ void LocalMetadataTest::recoveryCancellationFromProgress()
     first.error = QStringLiteral("synthetic failure");
     first.validPages[4] = false;
     int calls = 0;
-    auto result = LocalOcrRecovery::recognize(recoveryImages(), { }, cancel, [&](int, int, const QString &) { cancel->store(true); }, [&](const QVector<QImage> &, const OcrOptions &, const Cancellation &, const Progress &) {
+    auto result = LocalOcrRecovery::recognize(recoveryImages(), { }, cancel, [&](int, int, const QString &) { cancel->store(true); }, [&](const QVector<QImage> &, const OcrOptions &, const Cancellation &, const Progress &, const PageSink &) {
                 ++calls;
                 return first; });
     QCOMPARE(calls, 1);
@@ -1050,7 +1174,7 @@ void LocalMetadataTest::preparationEvidenceValidation()
     first.evidence = { good };
     first.evidence[0]->selectedIndex = 2;
     const auto result = LocalOcrRecovery::recognize({ sampleImage() }, { }, { }, { },
-                                                    [&](const QVector<QImage> &, const OcrOptions &, const Cancellation &, const Progress &) { return first; });
+                                                    [&](const QVector<QImage> &, const OcrOptions &, const Cancellation &, const Progress &, const PageSink &) { return first; });
     QCOMPARE(result.status, RecognitionStatus::Failed);
     QVERIFY(!result.validPages[0]);
     QVERIFY(!result.evidence[0]);

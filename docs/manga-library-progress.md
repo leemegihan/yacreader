@@ -925,3 +925,20 @@ revalidation, shared physical GPU scheduling or restart UI. Next: connect a sing
 owned executor and explicit recovery in a separate small test library. Keep
 first/last-three routing, unresolved name review, original media and the operating
 installation unchanged. No full-library processing, bulk save or local installer.
+
+### 2026-09-10: incremental neural page delivery (validation pending)
+
+The neural outcome API accepts a synchronous page receiver. Validated exact
+response bytes are delivered during collection, before temporary files disappear.
+CPU retry deliveries retain the original selection index; completed GPU pages
+are not delivered again. Receiver rejection or exception produces DeliveryFailed,
+preserves in-memory evidence and closes the worker tree without another OCR retry.
+Cleanup failure retains priority. Cancellation suppresses subsequent deliveries.
+Tesseract explicitly rejects this neural evidence API before starting a process.
+
+Synthetic coverage adds receiver rejection, exception and cancellation while a
+worker is alive, rejection during CPU retry, blank-page delivery, and rejection
+after all outputs. Policy tests cover duplicate/malformed delivery, wrong CPU
+request device and cleanup priority. Windows build and packaged verification are
+pending for this change. This is an executor building block, not inspector cache
+wiring or restart UI; no new real-work accuracy claim is made.

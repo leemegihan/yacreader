@@ -331,7 +331,7 @@ static QByteArray runOcrTsv(const QImage &image, const OcrOptions &options, cons
     return process.readAllStandardOutput().left(4 * 1024 * 1024 + 1);
 }
 
-static RecognitionBatch recognizeNeuralAttempt(const QVector<QImage> &images, const OcrOptions &options, const Cancellation &cancel, const Progress &progress)
+static RecognitionBatch recognizeNeuralAttempt(const QVector<QImage> &images, const OcrOptions &options, const Cancellation &cancel, const Progress &progress, const PageSink &sink)
 {
     RecognitionBatch batch;
     batch.readings.resize(images.size());
@@ -411,6 +411,8 @@ static RecognitionBatch recognizeNeuralAttempt(const QVector<QImage> &images, co
     QString lastStage;
     QString error;
     QByteArray diagnostics;
+    QString deliveryError;
+    bool deliveryStopped = false;
     auto collect = [&] {
         for (int i = 0; i < readings.size(); ++i) {
             if (observed.at(i))
@@ -437,6 +439,10 @@ static RecognitionBatch recognizeNeuralAttempt(const QVector<QImage> &images, co
                 if (validNeuralEvidence(evidence)) {
                     batch.evidence[i] = std::move(evidence);
                     ++completed;
+                    if (sink && !deliveryStopped && !cancelled(cancel)) {
+                        if (!sink(*batch.evidence.at(i), &deliveryError))
+                            deliveryStopped = true;
+                    }
                 } else {
                     batch.validPages[i] = false;
                     readings[i].error = tr("Invalid OCR page evidence.");
@@ -463,7 +469,7 @@ static RecognitionBatch recognizeNeuralAttempt(const QVector<QImage> &images, co
     };
     while (!process.waitForFinished(100)) {
         collect();
-        if (cancelled(cancel) || timer.elapsed() > qMax(options.timeoutMs, 180000)) {
+        if (deliveryStopped || cancelled(cancel) || timer.elapsed() > qMax(options.timeoutMs, 180000)) {
             error = cancelled(cancel) ? tr("Cancelled") : tr("OCR timed out for this page.");
             QString cleanupError;
             if (!process.finishTree(&cleanupError))
@@ -477,6 +483,8 @@ static RecognitionBatch recognizeNeuralAttempt(const QVector<QImage> &images, co
         return fail(cleanupError, RecognitionStatus::CleanupFailed); // Never launch CPU retry while the GPU tree may remain.
     if (error.isEmpty() && (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0))
         error = tr("Local OCR failed: %1").arg(QString::fromUtf8(diagnostics).right(1500));
+    if (!deliveryError.isEmpty())
+        return fail(deliveryError, RecognitionStatus::DeliveryFailed);
     if (cancelled(cancel))
         return fail(tr("Cancelled"), RecognitionStatus::Cancelled);
     if (!error.isEmpty())
@@ -487,15 +495,20 @@ static RecognitionBatch recognizeNeuralAttempt(const QVector<QImage> &images, co
     return batch;
 }
 
-RecognitionBatch recognizePagesWithOutcome(const QVector<QImage> &images, const OcrOptions &options, const Cancellation &cancel, const Progress &progress)
+RecognitionBatch recognizePagesWithOutcome(const QVector<QImage> &images, const OcrOptions &options, const Cancellation &cancel, const Progress &progress, const PageSink &sink)
 {
     if (options.neural)
-        return LocalOcrRecovery::recognize(images, options, cancel, progress, recognizeNeuralAttempt);
+        return LocalOcrRecovery::recognize(images, options, cancel, progress, recognizeNeuralAttempt, sink);
     RecognitionBatch batch;
     batch.readings.resize(images.size());
     batch.evidence.resize(images.size());
     batch.validPages.fill(false, images.size());
     batch.status = RecognitionStatus::Complete;
+    if (sink) {
+        batch.status = RecognitionStatus::DeliveryFailed;
+        batch.error = tr("Page evidence delivery requires neural OCR.");
+        return batch;
+    }
     for (int i = 0; i < images.size(); ++i) {
         if (cancelled(cancel)) {
             batch.status = RecognitionStatus::Cancelled;

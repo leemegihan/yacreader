@@ -18,7 +18,7 @@ void normalize(RecognitionBatch &batch, int count)
         batch.evidence.fill(std::nullopt, count);
         batch.readings.resize(count);
         batch.validPages.fill(false, count);
-        if (batch.status != RecognitionStatus::CleanupFailed && batch.status != RecognitionStatus::Cancelled)
+        if (batch.status != RecognitionStatus::CleanupFailed && batch.status != RecognitionStatus::Cancelled && batch.status != RecognitionStatus::DeliveryFailed)
             batch.status = RecognitionStatus::Failed;
         batch.error = tr("Invalid OCR page completion record.");
     }
@@ -43,11 +43,57 @@ void normalize(RecognitionBatch &batch, int count)
 }
 
 RecognitionBatch recognize(const QVector<QImage> &images, const OcrOptions &options,
-                           const Cancellation &cancel, const Progress &progress, const Attempt &attempt)
+                           const Cancellation &cancel, const Progress &progress, const Attempt &attempt, const PageSink &sink)
 {
-    auto batch = attempt(images, options, cancel, progress);
+    QString deliveryError;
+    QVector<bool> delivered(images.size(), false);
+    const auto makeSink = [&](const QVector<int> &indexes, bool cpuOnly) -> PageSink {
+        if (!sink)
+            return { };
+        return [&, indexes, cpuOnly](const NeuralPageEvidence &page, QString *error) {
+            if (cancel && cancel->load())
+                return false;
+            if (deliveryError.isEmpty()) {
+                if (page.selectedIndex < 0 || page.selectedIndex >= indexes.size() || !validNeuralEvidence(page) || (cpuOnly && (page.requestedDevice != QStringLiteral("cpu") || page.actualDevice != QStringLiteral("cpu")))) {
+                    deliveryError = tr("Invalid OCR page delivery.");
+                } else {
+                    auto mapped = page;
+                    mapped.selectedIndex = indexes.at(page.selectedIndex);
+                    if (delivered.at(mapped.selectedIndex)) {
+                        deliveryError = tr("Duplicate OCR page delivery.");
+                    } else {
+                        QString reason;
+                        bool accepted = false;
+                        try {
+                            accepted = sink(mapped, &reason);
+                        } catch (...) {
+                            reason = tr("OCR page receiver raised an exception.");
+                        }
+                        if (accepted)
+                            delivered[mapped.selectedIndex] = true;
+                        else
+                            deliveryError = reason.isEmpty() ? tr("OCR page delivery failed.") : reason.left(1500);
+                    }
+                }
+            }
+            if (error)
+                *error = deliveryError;
+            return deliveryError.isEmpty();
+        };
+    };
+    const auto applyDeliveryFailure = [&](RecognitionBatch &outcome) {
+        if (!deliveryError.isEmpty() && outcome.status != RecognitionStatus::CleanupFailed) {
+            outcome.status = RecognitionStatus::DeliveryFailed;
+            outcome.error = deliveryError;
+        }
+    };
+    QVector<int> originalIndexes;
+    for (int i = 0; i < images.size(); ++i)
+        originalIndexes.append(i);
+    auto batch = attempt(images, options, cancel, progress, makeSink(originalIndexes, !options.gpu));
+    applyDeliveryFailure(batch);
     normalize(batch, images.size());
-    if (cancel && cancel->load() && batch.status != RecognitionStatus::CleanupFailed) {
+    if (cancel && cancel->load() && batch.status != RecognitionStatus::CleanupFailed && batch.status != RecognitionStatus::DeliveryFailed) {
         batch.status = RecognitionStatus::Cancelled;
         batch.error = tr("Cancelled");
     }
@@ -81,7 +127,8 @@ RecognitionBatch recognize(const QVector<QImage> &images, const OcrOptions &opti
         batch.error = tr("Cancelled");
         return batch;
     }
-    auto retried = attempt(remaining, fallback, cancel, retryProgress);
+    auto retried = attempt(remaining, fallback, cancel, retryProgress, makeSink(indexes, true));
+    applyDeliveryFailure(retried);
     normalize(retried, remaining.size());
     if (retried.gpuStarted) {
         retried.status = RecognitionStatus::Failed;
@@ -108,7 +155,7 @@ RecognitionBatch recognize(const QVector<QImage> &images, const OcrOptions &opti
     batch.attemptErrors.append(retried.attemptErrors);
     batch.status = retried.status;
     batch.error = retried.error;
-    if (cancel && cancel->load() && batch.status != RecognitionStatus::CleanupFailed) {
+    if (cancel && cancel->load() && batch.status != RecognitionStatus::CleanupFailed && batch.status != RecognitionStatus::DeliveryFailed) {
         batch.status = RecognitionStatus::Cancelled;
         batch.error = tr("Cancelled");
     }
