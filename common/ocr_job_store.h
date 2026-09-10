@@ -6,6 +6,7 @@
 #include <QString>
 #include <QVector>
 
+#include <functional>
 #include <optional>
 
 class QThread;
@@ -77,6 +78,9 @@ public:
     std::optional<Lease> claim(const QString &id, const QString &owner, qint64 nowMs, qint64 durationMs);
     bool heartbeat(const Lease &lease, qint64 nowMs, qint64 durationMs);
     bool recordPage(const Lease &lease, const PageReceipt &page, qint64 nowMs);
+    // Production clocks are sampled after acquiring the DB write transaction.
+    // The callback must not throw; the fixed-time overload supports logical tests.
+    bool recordPageWhenCurrent(const Lease &lease, const PageReceipt &page, const std::function<qint64()> &clock);
     bool finish(const Lease &lease, bool hasPageCandidates, qint64 nowMs);
     bool fail(const Lease &lease, const QString &message, qint64 nowMs);
     bool pause(const QString &id);

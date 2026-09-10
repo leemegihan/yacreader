@@ -474,14 +474,20 @@ bool Store::heartbeat(const Lease &lease, qint64 now, qint64 duration)
 
 bool Store::recordPage(const Lease &lease, const PageReceipt &page, qint64 now)
 {
+    return recordPageWhenCurrent(lease, page, [now] { return now; });
+}
+
+bool Store::recordPageWhenCurrent(const Lease &lease, const PageReceipt &page, const std::function<qint64()> &clock)
+{
     if (!ready())
         return false;
-    if (!fingerprint(page.cacheKey) || !fingerprint(page.resultSha256) || (page.actualDevice != QStringLiteral("cpu") && page.actualDevice != QStringLiteral("gpu:0"))) {
+    if (!clock || !fingerprint(page.cacheKey) || !fingerprint(page.resultSha256) || (page.actualDevice != QStringLiteral("cpu") && page.actualDevice != QStringLiteral("gpu:0"))) {
         error = QStringLiteral("Invalid validated-page receipt.");
         return false;
     }
     if (!begin())
         return false;
+    const qint64 now = clock(); // Never reuse a timestamp from before a blocking BEGIN.
     if (!fence(lease, now))
         return rollback(error);
     const auto job = get(lease.jobId);

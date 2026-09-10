@@ -277,3 +277,37 @@ shared-plugin and addon files and verify fingerprint separation/refusal. The
 opt-in runtimeSnapshotDeployed diagnostic writes its measurement outside the
 isolated application directory; its application hash identifies the diagnostic
 executable, not the GUI app. It performs no OCR and is not a GPU success test.
+
+## Cache-before-receipt connection
+
+LocalOcrPersistence binds a supplied, validated settings measurement and neural
+page evidence to an existing job's selected page. It derives the immutable cache
+identity from the exact PNG hash, preparation geometry/options and the interpreter
+that handled that attempt. A GPU interpreter that internally used CPU still uses
+the GPU package identity; a separate CPU retry uses the CPU package identity.
+Requested/actual devices and selected-page positions cannot be silently relabelled.
+
+recordPage validates the snapshot/job/page binding, saves the exact raw cache
+payload first, then asks the store for a lease-fenced receipt. The production clock
+is sampled after cache publication and after acquiring SQLite's write transaction,
+so a lease that expired while waiting for disk/DB access cannot use a stale
+pre-wait timestamp. The store's fixed-time overload remains for logical-time callers;
+production persistence uses recordPageWhenCurrent. Cancellation or a rejected lease
+may leave immutable cache data without a DB receipt. Preserve this artifact and
+explicitly resume with a fresh lease; no completed page may replace different
+committed evidence.
+
+The helper never finishes a job. Even all saved pages leave it Running until the
+executor records the separate batch outcome; failed worker exit must stay Failed,
+not become candidate-free success. Source identity/revalidation, stopped-runtime
+measurement, GPU ownership and validated cache reload are still caller obligations.
+This is not an inspector scheduler or a license to save unreviewed metadata.
+
+Geometry enters the preprocessing fingerprint; the existing cache stores raw OCR
+and prepared dimensions, not a full original-page overlay. On resume, recreate and
+verify preparation from the saved options/source before mapping cached regions.
+Synthetic tests cover cache refusal, mismatched settings, changed committed bytes,
+late/cancelled receipts, sparse page positions and unchanged raw data across an
+abrupt child exit after cache publication. A real SQLite writer holds the lock
+while the test clock advances beyond expiry, proving the post-lock clock boundary.
+These changes require Windows CI and exact downloaded-probe validation.

@@ -5,6 +5,7 @@
 #include "library_maintenance_lock.h"
 #include "local_metadata.h"
 #include "local_ocr_cache.h"
+#include "local_ocr_persistence.h"
 #include "local_ocr_process.h"
 #include "local_ocr_recovery.h"
 #include "local_ocr_runtime.h"
@@ -50,6 +51,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <limits>
+#include <thread>
 #ifdef Q_OS_WIN
 #include <qt_windows.h>
 #endif
@@ -153,6 +155,9 @@ private slots:
     void preparationEvidenceValidation();
     void runtimeSnapshotMeasuresFiles();
     void runtimeSnapshotDeployed();
+    void cacheReceiptOrdering();
+    void cacheReceiptCrash();
+    void cacheReceiptClockAfterContention();
     void regionCoordinatesAndCandidatePrefill();
     void spacedColophonAndPublisher();
     void dialogueAndLabelBoundaries();
@@ -1172,6 +1177,251 @@ void LocalMetadataTest::runtimeSnapshotDeployed()
     QVERIFY(file.open(QIODevice::WriteOnly));
     QCOMPARE(file.write(bytes), bytes.size());
     QVERIFY(file.commit());
+}
+
+namespace {
+LocalOcrRuntime::Measurement persistenceSettings(const QString &root)
+{
+    const QJsonObject cpu { { "executable", root + "/cpu/python.exe" }, { "dataPath", root + "/models" }, { "executableSha256", QString(64, u'1') }, { "workerSha256", QString(64, u'2') }, { "modelManifestSha256", QString(64, u'3') }, { "packageManifestSha256", QString(64, u'4') } };
+    auto gpu = cpu;
+    gpu["executable"] = root + "/gpu/python.exe";
+    gpu["packageManifestSha256"] = QString(64, u'6');
+    const QJsonObject snapshot {
+        { "version", 1 },
+        { "options", QJsonObject { { "neural", true }, { "gpu", true }, { "cpuThreads", 8 }, { "executable", "" }, { "dataPath", "" }, { "language", "auto" }, { "vertical", false }, { "segmentation", 11 }, { "rotation", 0 }, { "invert", false }, { "adaptiveThreshold", false }, { "timeoutMs", 90000 } } },
+        { "environment", QJsonObject { { "platform", "windows-x64" }, { "applicationSha256", QString(64, u'7') }, { "preprocessingRevision", "decoded-gray-border-v1" }, { "cpu", cpu }, { "gpu", gpu } } }
+    };
+    // Synthetic supplied measurements; this test does not claim deployed files.
+    return { snapshot, OcrJobs::settingsFingerprint(snapshot), { } };
+}
+LocalMetadata::NeuralPageEvidence persistencePage()
+{
+    QImage image(80, 40, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    const auto prepared = LocalMetadata::prepareOcrPage(image, { });
+    QByteArray png;
+    QBuffer buffer(&png);
+    buffer.open(QIODevice::WriteOnly);
+    prepared.image.save(&buffer, "PNG");
+    const auto hash = [](const QByteArray &bytes) { return QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex()); };
+    const QByteArray raw = R"({"version":1,"engine":"paddle-regions","device":"cpu","language":"auto","lines":[]})";
+    return { 0, prepared.geometry, hash(png), raw, hash(raw), QStringLiteral("cpu"), QStringLiteral("cpu") };
+}
+OcrJobs::Spec persistenceSpec(const QString &root, const LocalOcrRuntime::Measurement &settings)
+{
+    return { QStringLiteral("synthetic-generation"), QStringLiteral("42"), QString(64, u'a'), QJsonObject { { "path", root + "/synthetic.cbz" }, { "libraryRoot", root }, { "sourceKind", "archive" } }, settings.settingsSnapshot, settings.settingsFingerprint, 2, { 1, 2 } };
+}
+int persistenceLockHelper(const QStringList &args)
+{
+    if (args.size() != 5)
+        return 90;
+    auto db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("synthetic-locker"));
+    db.setDatabaseName(args[2]);
+    if (!db.open())
+        return 91;
+    QSqlQuery query(db);
+    if (!query.exec(QStringLiteral("BEGIN IMMEDIATE")))
+        return 92;
+    QFile ready(args[3]);
+    if (!ready.open(QIODevice::WriteOnly | QIODevice::NewOnly) || ready.write("locked") != 6)
+        return 93;
+    ready.close();
+    QElapsedTimer timer;
+    timer.start();
+    while (!QFile::exists(args[4]) && timer.elapsed() < 10000)
+        QThread::msleep(10);
+    return QFile::exists(args[4]) && query.exec(QStringLiteral("COMMIT")) ? 0 : 94;
+}
+
+int persistenceCrashHelper(const QStringList &args)
+{
+    if (args.size() != 7)
+        return 80;
+    OcrJobs::Store store;
+    if (!store.open(args[2]))
+        return 81;
+    const auto job = store.get(args[4]);
+    if (!job)
+        return 82;
+    const LocalOcrRuntime::Measurement settings { job->spec.settingsSnapshot, job->spec.settingsFingerprint, { } };
+    LocalOcrPersistence::recordPage(store, { args[4], args[5], args[6] }, settings, persistencePage(), args[3], { }, []() -> qint64 { std::_Exit(86); });
+    return 83; // The clock seam is reached only after atomic cache publication.
+}
+}
+
+void LocalMetadataTest::cacheReceiptOrdering()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    OcrJobs::Store store;
+    QVERIFY(store.open(temporary.filePath("ocr-jobs.sqlite")));
+    const auto settings = persistenceSettings(temporary.path());
+    const auto id = store.enqueue(persistenceSpec(temporary.path(), settings));
+    QVERIFY(id.has_value());
+    const auto lease = store.claim(*id, QStringLiteral("synthetic-owner"), 1000, 100);
+    QVERIFY(lease.has_value());
+    const auto page = persistencePage();
+    const auto cache = temporary.filePath("cache");
+    QVERIFY(QDir().mkdir(cache));
+    auto save = [&](const LocalOcrRuntime::Measurement &s, const LocalMetadata::NeuralPageEvidence &p, const QString &root, qint64 now) {
+        return LocalOcrPersistence::recordPage(store, *lease, s, p, root, { }, [=] { return now; });
+    };
+    const auto missing = save(settings, page, temporary.filePath("missing-cache"), 1001);
+    QVERIFY(!missing.cacheSaved && !missing.receiptSaved && !missing.error.isEmpty());
+    QVERIFY(store.get(*id)->pages.isEmpty());
+    auto wrong = settings;
+    auto options = wrong.settingsSnapshot["options"].toObject();
+    options["rotation"] = 90;
+    wrong.settingsSnapshot["options"] = options;
+    wrong.settingsFingerprint = OcrJobs::settingsFingerprint(wrong.settingsSnapshot);
+    QVERIFY(!save(wrong, page, cache, 1001).cacheSaved);
+    auto outside = page;
+    outside.selectedIndex = 2;
+    QVERIFY(!save(settings, outside, cache, 1001).cacheSaved);
+    auto corrupt = page;
+    corrupt.rawResult.append(' ');
+    QVERIFY(!save(settings, corrupt, cache, 1001).cacheSaved);
+    QVERIFY(QDir(cache).entryList(QDir::Files).isEmpty());
+    const auto expired = save(settings, page, cache, 1101);
+    QVERIFY(expired.cacheSaved && !expired.receiptSaved && !expired.error.isEmpty());
+    QVERIFY(store.get(*id)->pages.isEmpty());
+    QString error;
+    const auto identity = LocalOcrPersistence::identity(settings, page, &error);
+    QVERIFY(identity.has_value());
+    const auto orphan = LocalOcrCache::load(cache, *identity, &error);
+    QVERIFY(orphan.has_value());
+    QCOMPARE(orphan->rawResult, page.rawResult);
+    QVERIFY(store.interruptExpired(1101));
+    QVERIFY(store.resume(*id));
+    const auto current = store.claim(*id, QStringLiteral("new-owner"), 2000, 1000);
+    QVERIFY(current.has_value());
+    auto cancel = std::make_shared<std::atomic_bool>(false);
+    const auto cancelled = LocalOcrPersistence::recordPage(store, *current, settings, page, cache, cancel, [&] {
+        cancel->store(true); // Cancellation between cache publication and receipt.
+        return 2001;
+    });
+    QVERIFY(cancelled.cacheSaved && !cancelled.receiptSaved);
+    QVERIFY(store.get(*id)->pages.isEmpty());
+    const auto saved = LocalOcrPersistence::recordPage(store, *current, settings, page, cache, { }, [] { return 2002; });
+    QVERIFY(saved.cacheSaved && saved.receiptSaved && saved.error.isEmpty());
+    QCOMPARE(store.get(*id)->pages.size(), 1);
+    QCOMPARE(store.get(*id)->pages[0].page, 1);
+    QCOMPARE(store.get(*id)->pages[0].cacheKey, saved.cacheKey);
+    auto replacement = page;
+    replacement.rawResult.append(' ');
+    replacement.resultSha256 = QString::fromLatin1(QCryptographicHash::hash(replacement.rawResult, QCryptographicHash::Sha256).toHex());
+    QVERIFY(!LocalOcrPersistence::recordPage(store, *current, settings, replacement, cache, { }, [] { return 2003; }).cacheSaved);
+    QCOMPARE(LocalOcrCache::load(cache, *identity, &error)->rawResult, page.rawResult);
+    auto second = page;
+    second.selectedIndex = 1;
+    QVERIFY(LocalOcrPersistence::recordPage(store, *current, settings, second, cache, { }, [] { return 2004; }).receiptSaved);
+    QCOMPARE(store.get(*id)->pages.size(), 2);
+    QCOMPARE(store.get(*id)->state, OcrJobs::State::Running); // Persisting all pages never finishes a session.
+    QVERIFY(store.fail(*current, QStringLiteral("synthetic worker failed after all output"), 2005));
+    QCOMPARE(store.get(*id)->state, OcrJobs::State::Failed);
+    QCOMPARE(store.get(*id)->pages.size(), 2);
+    auto gpuRuntimeOnCpu = page;
+    gpuRuntimeOnCpu.requestedDevice = QStringLiteral("gpu:0");
+    const auto gpuIdentity = LocalOcrPersistence::identity(settings, gpuRuntimeOnCpu, &error);
+    QVERIFY(gpuIdentity.has_value());
+    QCOMPARE(gpuIdentity->packageManifestSha256, QString(64, u'6'));
+    QCOMPARE(identity->packageManifestSha256, QString(64, u'4'));
+}
+
+void LocalMetadataTest::cacheReceiptCrash()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto database = temporary.filePath("ocr-jobs.sqlite");
+    const auto cache = temporary.filePath("cache");
+    QVERIFY(QDir().mkdir(cache));
+    OcrJobs::Store store;
+    QVERIFY(store.open(database));
+    const auto settings = persistenceSettings(temporary.path());
+    const auto id = store.enqueue(persistenceSpec(temporary.path(), settings));
+    QVERIFY(id.has_value());
+    const auto lease = store.claim(*id, QStringLiteral("crash-owner"), 1000, 100);
+    QVERIFY(lease.has_value());
+    QProcess process;
+#ifdef Q_OS_WIN
+    process.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *args) { args->flags |= CREATE_NO_WINDOW; });
+#endif
+    const auto cleanup = qScopeGuard([&] {
+        if (process.state() != QProcess::NotRunning) {
+            process.kill();
+            process.waitForFinished(5000);
+        }
+    });
+    process.start(QCoreApplication::applicationFilePath(), { "--ocr-persist-crash", database, cache, *id, lease->token, lease->owner });
+    QVERIFY(process.waitForFinished(10000));
+    QCOMPARE(process.exitCode(), 86);
+    QVERIFY(store.get(*id)->pages.isEmpty());
+    QString error;
+    const auto page = persistencePage();
+    const auto identity = LocalOcrPersistence::identity(settings, page, &error);
+    QVERIFY(identity.has_value());
+    const auto orphan = LocalOcrCache::load(cache, *identity, &error);
+    QVERIFY(orphan.has_value());
+    QCOMPARE(orphan->rawResult, page.rawResult);
+    OcrJobs::Store reopened;
+    QVERIFY(reopened.open(database));
+    QVERIFY(reopened.interruptExpired(1101));
+    QVERIFY(reopened.resume(*id));
+    const auto current = reopened.claim(*id, QStringLiteral("restarted-owner"), 2000, 1000);
+    QVERIFY(current.has_value());
+    const auto saved = LocalOcrPersistence::recordPage(reopened, *current, settings, page, cache, { }, [] { return 2001; });
+    QVERIFY(saved.receiptSaved);
+    QCOMPARE(reopened.get(*id)->pages.size(), 1);
+}
+
+void LocalMetadataTest::cacheReceiptClockAfterContention()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto database = temporary.filePath("ocr-jobs.sqlite");
+    const auto cache = temporary.filePath("cache");
+    const auto ready = temporary.filePath("locked");
+    const auto release = temporary.filePath("release");
+    QVERIFY(QDir().mkdir(cache));
+    OcrJobs::Store store;
+    QVERIFY(store.open(database));
+    const auto settings = persistenceSettings(temporary.path());
+    const auto id = store.enqueue(persistenceSpec(temporary.path(), settings));
+    QVERIFY(id.has_value());
+    const auto lease = store.claim(*id, QStringLiteral("waiting-owner"), 1000, 100);
+    QVERIFY(lease.has_value());
+    QProcess locker;
+#ifdef Q_OS_WIN
+    locker.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *args) { args->flags |= CREATE_NO_WINDOW; });
+#endif
+    const auto cleanup = qScopeGuard([&] {
+        if (locker.state() != QProcess::NotRunning) {
+            locker.kill();
+            locker.waitForFinished(5000);
+        }
+    });
+    locker.start(QCoreApplication::applicationFilePath(), { "--ocr-persist-lock", database, ready, release });
+    QElapsedTimer timer;
+    timer.start();
+    while (!QFile::exists(ready) && timer.elapsed() < 5000)
+        QTest::qWait(10);
+    QVERIFY(QFile::exists(ready));
+    std::atomic<qint64> logicalTime { 1001 };
+    std::thread releaseWriter([&] {
+        QThread::msleep(200);
+        logicalTime.store(1101);
+        QFile file(release);
+        if (file.open(QIODevice::WriteOnly | QIODevice::NewOnly))
+            file.write("release");
+    });
+    const auto result = LocalOcrPersistence::recordPage(store, *lease, settings, persistencePage(), cache, { }, [&] { return logicalTime.load(); });
+    releaseWriter.join();
+    QVERIFY(locker.waitForFinished(10000));
+    QCOMPARE(locker.exitCode(), 0);
+    QVERIFY(result.cacheSaved);
+    QVERIFY(!result.receiptSaved); // A timestamp sampled before the blocked BEGIN would wrongly pass.
+    QVERIFY(!result.error.isEmpty());
+    QVERIFY(store.get(*id)->pages.isEmpty());
 }
 
 void LocalMetadataTest::regionCoordinatesAndCandidatePrefill()
@@ -2938,6 +3188,14 @@ int localOcrCacheProbe(const QStringList &args)
 
 int main(int argc, char **argv)
 {
+    if (argc > 1 && QByteArray(argv[1]) == "--ocr-persist-lock") {
+        QCoreApplication app(argc, argv);
+        return persistenceLockHelper(app.arguments());
+    }
+    if (argc > 1 && QByteArray(argv[1]) == "--ocr-persist-crash") {
+        QCoreApplication app(argc, argv);
+        return persistenceCrashHelper(app.arguments());
+    }
     if (argc > 1 && QByteArray(argv[1]).startsWith("--ocr-tree-")) {
         QCoreApplication app(argc, argv);
         return processTreeHelper(app.arguments());
