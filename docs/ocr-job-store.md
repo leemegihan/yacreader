@@ -519,3 +519,32 @@ receipts, corruption and competing device results. The actual neural resume
 check now pauses after publishing its first synthetic page but before its DB
 receipt, then remeasures source/runtime and processes only the second page.
 Windows and physical-device validation for this latest repair is pending.
+
+
+### Completed review restoration (validation pending)
+
+The executor's read-only restoreReview adapter accepts only PageReview or
+FilenameReview jobs with no recorded execution error. The caller must supply a
+fresh selected-library binding, selected source snapshot and stopped-runtime
+measurement. Shared selection checks cover the source plan and prepared bytes;
+all saved page receipts are then validated. A missing, duplicate, changed or
+corrupt receipt returns no successful review, even if other pages were valid.
+It neither adopts unrecorded caches nor claims, finishes or writes a job.
+
+The restored result retains raw responses, geometry, device and original OCR
+timing. Its separate restoreMs covers preparation and cache reading, not a new
+inference benchmark. Candidate reconstruction must agree with the saved review
+classification; a mismatch remains an error instead of changing durable state.
+This snapshot does not authorize metadata saving or lock a library after it is
+read. Inspector UI integration and fresh checks at save time remain required.
+
+Fourteen synthetic cases cover successful filename/page review, failed/paused
+jobs, missing/duplicate receipts, corrupt caches, changed input/settings/library/
+row/path, classification mismatch and cancellation. They compare test DB/cache
+bytes before and after restoration. Packaged Windows and local verification are
+pending; no original media, operating database or whole library is processed.
+
+The opt-in actual neural check also reloads the completed review after fresh
+source/runtime measurements, without another inference. Device and original
+raw/timing evidence must match. Its library selection is synthetic; it does not
+open an operating library or replace the separate filesystem binding tests.

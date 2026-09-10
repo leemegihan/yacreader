@@ -1053,3 +1053,19 @@ Library-binding code21550882 passed its initial Windows native stage and an exac
 local early diagnostic artifact: eight binding cases plus deterministic file
 sharing readiness (11 Qt totals) passed. This early artifact is distinct from the
 still-running full Windows build and installer validation.
+
+
+### 2026-09-10: verified completion runtime; saved review restoration prepared
+
+Completion/inspector code7b081790 passed Windows34457303541:13CTest, worker21,
+staged8, installed21, downloaded75, store25 and simulated faults18. Exact full
+local artifacts passed native46, store25, actual CPU4, actual GPU4 and simulated
+fault18, with three owned GPU workers independently observed by NVIDIA telemetry.
+The frozen preparations and saved-result candidate replay for the fixed16 real
+works were unchanged; this is not a new real-work accuracy or speed measurement.
+
+A read-only completed-review adapter now reconstructs all validated page evidence
+without OCR or job/cache writes. It requires the fresh selected-library identity,
+source and runtime and refuses partial/corrupt/mismatched or failed-session data.
+Fourteen synthetic regression cases are added. This new change awaits Windows
+and local validation and is not yet exposed as inspector restart UI.
