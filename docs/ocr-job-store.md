@@ -311,3 +311,23 @@ late/cancelled receipts, sparse page positions and unchanged raw data across an
 abrupt child exit after cache publication. A real SQLite writer holds the lock
 while the test clock advances beyond expiry, proving the post-lock clock boundary.
 These changes require Windows CI and exact downloaded-probe validation.
+
+## Current clocks for all lease lifecycle operations
+
+The production claimWhenCurrent, heartbeatWhenCurrent, finishWhenCurrent,
+failWhenCurrent and interruptExpiredWhenCurrent methods sample a nonthrowing clock
+after BEGIN IMMEDIATE acquires the write lock, matching recordPageWhenCurrent.
+Fixed-time overloads delegate with a constant clock for existing logical-time
+callers; a production executor must use the current-clock entry points.
+
+A blocked claim must not start with a lease already expired because of DB waiting.
+A blocked heartbeat must not revive an expired lease, nor may finish/fail use an
+old timestamp to change its state. Expiry scanning also samples after the lock,
+so an old pre-lock time cannot masquerade as a backwards clock jump against a
+newer owner. Empty clocks and invalid sampled times are refused transactionally.
+
+Five synthetic contention cases use another SQLite writer and advance a logical
+clock while it holds the real write lock. They cover claim, renewal, completion,
+failure and interruption, including rollback and retained receipts. No worker,
+original media or library database is involved. This still does not serialize
+physical GPU access or connect an executor to the inspector.

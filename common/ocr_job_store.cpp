@@ -410,14 +410,28 @@ QVector<Job> Store::list()
 
 std::optional<Lease> Store::claim(const QString &id, const QString &owner, qint64 now, qint64 duration)
 {
+    return claimWhenCurrent(id, owner, duration, [now] { return now; });
+}
+
+std::optional<Lease> Store::claimWhenCurrent(const QString &id, const QString &owner, qint64 duration, const std::function<qint64()> &clock)
+{
     if (!ready())
         return { };
-    if (owner.trimmed().isEmpty() || owner.size() > 256 || !validTime(now, duration)) {
-        error = QStringLiteral("Invalid owner or lease duration.");
+    if (!clock || owner.trimmed().isEmpty() || owner.size() > 256) {
+        error = QStringLiteral("Invalid owner or lease clock.");
         return { };
     }
-    if (!get(id))
+    if (!begin())
         return { };
+    const qint64 now = clock();
+    if (!validTime(now, duration)) {
+        rollback(QStringLiteral("Invalid lease time or duration."));
+        return { };
+    }
+    if (!get(id)) {
+        rollback(error);
+        return { };
+    }
     Lease lease { id, QUuid::createUuid().toString(QUuid::WithoutBraces), owner };
     QSqlQuery q(db);
     q.prepare(QStringLiteral("UPDATE jobs SET state=?,attempts=attempts+1,token=?,owner=?,lease_start=?,expires=?,error='' WHERE id=? AND state=?"));
@@ -429,10 +443,10 @@ std::optional<Lease> Store::claim(const QString &id, const QString &owner, qint6
     q.addBindValue(id);
     q.addBindValue(int(State::Queued));
     if (!q.exec() || q.numRowsAffected() != 1) {
-        error = q.lastError().isValid() ? q.lastError().text() : QStringLiteral("Job is not queued.");
+        rollback(q.lastError().isValid() ? q.lastError().text() : QStringLiteral("Job is not queued."));
         return { };
     }
-    return lease;
+    return commit() ? std::optional<Lease>(lease) : std::nullopt;
 }
 
 bool Store::fence(const Lease &lease, qint64 now)
@@ -453,14 +467,22 @@ bool Store::fence(const Lease &lease, qint64 now)
 
 bool Store::heartbeat(const Lease &lease, qint64 now, qint64 duration)
 {
+    return heartbeatWhenCurrent(lease, duration, [now] { return now; });
+}
+
+bool Store::heartbeatWhenCurrent(const Lease &lease, qint64 duration, const std::function<qint64()> &clock)
+{
     if (!ready())
         return false;
-    if (!validTime(now, duration)) {
-        error = QStringLiteral("Invalid lease duration.");
+    if (!clock) {
+        error = QStringLiteral("A lease clock is required.");
         return false;
     }
     if (!begin())
         return false;
+    const qint64 now = clock();
+    if (!validTime(now, duration))
+        return rollback(QStringLiteral("Invalid lease time or duration."));
     if (!fence(lease, now))
         return rollback(error);
     QSqlQuery q(db);
@@ -526,9 +548,20 @@ bool Store::setFinished(const Lease &lease, State state, const QString &message)
 
 bool Store::finish(const Lease &lease, bool hasPageCandidates, qint64 now)
 {
-    if (!ready() || !begin())
+    return finishWhenCurrent(lease, hasPageCandidates, [now] { return now; });
+}
+
+bool Store::finishWhenCurrent(const Lease &lease, bool hasPageCandidates, const std::function<qint64()> &clock)
+{
+    if (!ready())
         return false;
-    if (!fence(lease, now))
+    if (!clock) {
+        error = QStringLiteral("A lease clock is required.");
+        return false;
+    }
+    if (!begin())
+        return false;
+    if (!fence(lease, clock()))
         return rollback(error);
     const auto job = get(lease.jobId);
     if (!job || job->pages.size() != job->spec.pages.size())
@@ -538,15 +571,20 @@ bool Store::finish(const Lease &lease, bool hasPageCandidates, qint64 now)
 
 bool Store::fail(const Lease &lease, const QString &message, qint64 now)
 {
+    return failWhenCurrent(lease, message, [now] { return now; });
+}
+
+bool Store::failWhenCurrent(const Lease &lease, const QString &message, const std::function<qint64()> &clock)
+{
     if (!ready())
         return false;
-    if (message.trimmed().isEmpty() || message.size() > 16384) {
-        error = QStringLiteral("A bounded failure message is required.");
+    if (!clock || message.trimmed().isEmpty() || message.size() > 16384) {
+        error = QStringLiteral("A clock and bounded failure message are required.");
         return false;
     }
     if (!begin())
         return false;
-    if (!fence(lease, now))
+    if (!fence(lease, clock()))
         return rollback(error);
     return setFinished(lease, State::Failed, message);
 }
@@ -589,12 +627,22 @@ bool Store::resume(const QString &id)
 
 bool Store::interruptExpired(qint64 now)
 {
+    return interruptExpiredWhenCurrent([now] { return now; });
+}
+
+bool Store::interruptExpiredWhenCurrent(const std::function<qint64()> &clock)
+{
     if (!ready())
         return false;
-    if (now < 0) {
-        error = QStringLiteral("Invalid recovery time.");
+    if (!clock) {
+        error = QStringLiteral("A recovery clock is required.");
         return false;
     }
+    if (!begin())
+        return false;
+    const qint64 now = clock();
+    if (now < 0)
+        return rollback(QStringLiteral("Invalid recovery time."));
     QSqlQuery q(db);
     // A backwards wall-clock jump is also interrupted rather than extending ownership.
     q.prepare(QStringLiteral("UPDATE jobs SET state=?,token='',owner='',expires=0,error=? WHERE state=? AND (expires<=? OR lease_start>?)"));
@@ -603,9 +651,8 @@ bool Store::interruptExpired(qint64 now)
     q.addBindValue(int(State::Running));
     q.addBindValue(now);
     q.addBindValue(now);
-    if (q.exec())
-        return true;
-    error = q.lastError().text();
-    return false;
+    if (!q.exec())
+        return rollback(q.lastError().text());
+    return commit();
 }
 }

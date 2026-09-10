@@ -77,6 +77,12 @@ public:
     QVector<Job> list();
     std::optional<Lease> claim(const QString &id, const QString &owner, qint64 nowMs, qint64 durationMs);
     bool heartbeat(const Lease &lease, qint64 nowMs, qint64 durationMs);
+    // Production entry points sample a nonthrowing clock after the write lock.
+    // Fixed-time overloads preserve deterministic logical-time callers.
+    std::optional<Lease> claimWhenCurrent(const QString &id, const QString &owner, qint64 durationMs, const std::function<qint64()> &clock);
+    bool heartbeatWhenCurrent(const Lease &lease, qint64 durationMs, const std::function<qint64()> &clock);
+    bool finishWhenCurrent(const Lease &lease, bool hasPageCandidates, const std::function<qint64()> &clock);
+    bool failWhenCurrent(const Lease &lease, const QString &message, const std::function<qint64()> &clock);
     bool recordPage(const Lease &lease, const PageReceipt &page, qint64 nowMs);
     // Production clocks are sampled after acquiring the DB write transaction.
     // The callback must not throw; the fixed-time overload supports logical tests.
@@ -91,6 +97,7 @@ public:
     // Before explicitly resuming, the executor must confirm the old OS worker exited.
     // Database leases alone do not provide physical GPU process exclusivity.
     bool interruptExpired(qint64 nowMs);
+    bool interruptExpiredWhenCurrent(const std::function<qint64()> &clock);
 
 private:
     bool ready();

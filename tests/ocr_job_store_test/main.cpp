@@ -7,11 +7,13 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QProcess>
+#include <QScopeGuard>
 #include <QSqlQuery>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QThread>
 
+#include <atomic>
 #include <cstdlib>
 #include <thread>
 
@@ -143,6 +145,8 @@ private slots:
     void rejectsForeignAndFutureDatabases();
     void corruptRecordsAreRejected();
     void lockedWritesDoNotAdvanceState();
+    void currentClocksAfterContention_data();
+    void currentClocksAfterContention();
     void wrongThreadIsRejected();
     void competingProcesses();
     void abruptExitAndStaleProcess();
@@ -633,6 +637,102 @@ void OcrJobStoreTest::lockedWritesDoNotAdvanceState()
     blocker.close();
     blocker = QSqlDatabase();
     QSqlDatabase::removeDatabase(QStringLiteral("write-blocker"));
+}
+
+void OcrJobStoreTest::currentClocksAfterContention_data()
+{
+    QTest::addColumn<QString>("operation");
+    for (const auto &name : { "claim", "heartbeat", "finish", "fail", "interrupt" })
+        QTest::newRow(name) << QString::fromLatin1(name);
+}
+
+void OcrJobStoreTest::currentClocksAfterContention()
+{
+    QFETCH(QString, operation);
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    Store store;
+    QVERIFY(store.open(database(dir)));
+    const auto id = store.enqueue(sample());
+    QVERIFY(id);
+    std::optional<Lease> lease;
+    if (operation != "claim") {
+        lease = store.claim(*id, QStringLiteral("owner"), 1000, 100);
+        QVERIFY(lease);
+        for (const int page : sample().pages)
+            QVERIFY(store.recordPage(*lease, receipt(page), 1001));
+    }
+    // Empty clocks must fail before acquiring a transaction or changing state.
+    QVERIFY(!store.claimWhenCurrent(*id, QStringLiteral("owner"), 100, { }));
+    QVERIFY(!store.heartbeatWhenCurrent(lease.value_or(Lease { }), 100, { }));
+    QVERIFY(!store.finishWhenCurrent(lease.value_or(Lease { }), false, { }));
+    QVERIFY(!store.failWhenCurrent(lease.value_or(Lease { }), QStringLiteral("failure"), { }));
+    QVERIFY(!store.interruptExpiredWhenCurrent({ }));
+
+    std::atomic<int> ready { 0 };
+    std::atomic_bool proceed { false }, writerOk { false };
+    std::atomic<qint64> now { operation == "interrupt" ? 999 : 1001 };
+    const auto dbPath = database(dir);
+    std::thread writer([&] {
+        const auto connection = QStringLiteral("clock-blocker");
+        {
+            auto db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connection);
+            db.setDatabaseName(dbPath);
+            const bool opened = db.open();
+            QSqlQuery query(db);
+            if (!opened || !query.exec(QStringLiteral("BEGIN IMMEDIATE"))) {
+                ready.store(-1);
+            } else {
+                ready.store(1);
+                QElapsedTimer timer;
+                timer.start();
+                while (!proceed.load() && timer.elapsed() < 5000)
+                    QThread::msleep(1);
+                QThread::msleep(200);
+                now.store(operation == "interrupt" ? 1001 : 1101);
+                writerOk.store(query.exec(QStringLiteral("COMMIT")));
+            }
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(connection);
+    });
+    const auto join = qScopeGuard([&] {
+        proceed.store(true);
+        if (writer.joinable())
+            writer.join();
+    });
+    QElapsedTimer timer;
+    timer.start();
+    while (ready.load() == 0 && timer.elapsed() < 5000)
+        QThread::msleep(1);
+    QCOMPARE(ready.load(), 1);
+    int samples = 0;
+    const auto clock = [&] { ++samples; return now.load(); };
+    proceed.store(true);
+    if (operation == "claim") {
+        const auto claimed = store.claimWhenCurrent(*id, QStringLiteral("new-owner"), 100, clock);
+        QVERIFY(claimed);
+        // A pre-lock timestamp would create a lease already expired at 1102.
+        QVERIFY(store.recordPage(*claimed, receipt(1), 1102));
+    } else if (operation == "interrupt") {
+        QVERIFY(store.interruptExpiredWhenCurrent(clock));
+        // The old pre-lock time 999 would falsely look like a backwards clock jump.
+        QCOMPARE(store.get(*id)->state, State::Running);
+    } else {
+        const bool changed = operation == "heartbeat" ? store.heartbeatWhenCurrent(*lease, 1000, clock)
+                : operation == "finish"               ? store.finishWhenCurrent(*lease, false, clock)
+                                                      : store.failWhenCurrent(*lease, QStringLiteral("failure"), clock);
+        QVERIFY(!changed);
+        QVERIFY(!store.lastError().isEmpty());
+        QCOMPARE(store.get(*id)->state, State::Running);
+        QCOMPARE(store.get(*id)->pages.size(), sample().pages.size());
+        // A rejected write must leave no transaction behind.
+        QVERIFY(store.interruptExpired(1101));
+        QCOMPARE(store.get(*id)->state, State::Interrupted);
+    }
+    writer.join();
+    QVERIFY(writerOk.load());
+    QCOMPARE(samples, 1);
 }
 
 void OcrJobStoreTest::wrongThreadIsRejected()
