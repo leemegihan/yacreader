@@ -153,6 +153,7 @@ Outcome executeClaimed(OcrJobs::Store &store, const OcrJobs::Lease &lease,
     const auto &inputs = *preparedInputs;
     const auto options = optionsFrom(runtime.settingsSnapshot["options"].toObject());
     QVector<int> missing;
+    QVector<QVector<int>> targets;
     QVector<QImage> images;
     for (int i = 0; i < count; ++i) {
         if (flag->load())
@@ -187,8 +188,20 @@ Outcome executeClaimed(OcrJobs::Store &store, const OcrJobs::Lease &lease,
                 ++out.cachedPages;
                 ++out.recoveredUnrecordedPages;
             } else {
-                missing.append(i);
-                images.append(page.image);
+                int matching = -1;
+                for (int group = 0; group < missing.size(); ++group)
+                    if (sameInput(input, inputs.at(missing.at(group)))) {
+                        matching = group;
+                        break;
+                    }
+                if (matching >= 0) {
+                    targets[matching].append(i);
+                    ++out.repeatedInputPages;
+                } else {
+                    missing.append(i);
+                    targets.append({ i });
+                    images.append(page.image);
+                }
             }
         }
     }
@@ -196,13 +209,14 @@ Outcome executeClaimed(OcrJobs::Store &store, const OcrJobs::Lease &lease,
     if (missing.isEmpty())
         return fail(QStringLiteral("Saved pages alone cannot prove successful execution; review the previous session."));
     QString ownershipError;
-    const Progress pulse = [&](int completed, int, const QString &stage) {
+    int deliveredSelectedPages = 0;
+    const Progress pulse = [&](int, int, const QString &stage) {
         if (!flag->load() && !store.heartbeatWhenCurrent(lease, 300000, now)) {
             ownershipError = store.lastError();
             flag->store(true);
         }
         if (progress)
-            progress(out.cachedPages + qBound(0, completed, int(missing.size())), count, stage);
+            progress(out.cachedPages + deliveredSelectedPages, count, stage);
     };
     QVector<std::optional<NeuralPageEvidence>> accepted(count);
     QString deliveryError;
@@ -223,21 +237,25 @@ Outcome executeClaimed(OcrJobs::Store &store, const OcrJobs::Lease &lease,
         if (page.selectedIndex < 0 || page.selectedIndex >= missing.size() || !validNeuralEvidence(page)) {
             return reject(QStringLiteral("Invalid page from the selected OCR execution."));
         }
-        auto mapped = page;
-        mapped.selectedIndex = missing.at(page.selectedIndex);
-        if (accepted.at(mapped.selectedIndex) || !sameInput(mapped, inputs.at(mapped.selectedIndex))) {
-            return reject(QStringLiteral("Duplicate or changed prepared page delivery."));
-        }
-        const auto saved = LocalOcrPersistence::recordPage(store, lease, runtime, mapped, cacheRoot, flag, now);
-        if (!saved.receiptSaved) {
-            if (flag->load()) {
-                if (error)
-                    *error = saved.error;
-                return false;
+        const auto &group = targets.at(page.selectedIndex);
+        for (const int original : group)
+            if (accepted.at(original) || !sameInput(page, inputs.at(original)))
+                return reject(QStringLiteral("Duplicate or changed prepared page delivery."));
+        for (const int original : group) {
+            auto mapped = page;
+            mapped.selectedIndex = original;
+            const auto saved = LocalOcrPersistence::recordPage(store, lease, runtime, mapped, cacheRoot, flag, now);
+            if (!saved.receiptSaved) {
+                if (flag->load()) {
+                    if (error)
+                        *error = saved.error;
+                    return false;
+                }
+                return reject(saved.error.isEmpty() ? QStringLiteral("Page persistence failed.") : saved.error);
             }
-            return reject(saved.error.isEmpty() ? QStringLiteral("Page persistence failed.") : saved.error);
+            accepted[original] = mapped;
+            ++deliveredSelectedPages;
         }
-        accepted[mapped.selectedIndex] = mapped;
         return true;
     };
     RecognitionBatch result;
@@ -257,30 +275,31 @@ Outcome executeClaimed(OcrJobs::Store &store, const OcrJobs::Lease &lease,
     out.batch.gpuStarted = result.gpuStarted;
     out.batch.attemptErrors = result.attemptErrors;
     for (int i = 0; i < missing.size(); ++i) {
-        const int original = missing.at(i);
-        out.batch.readings[original] = result.readings.at(i);
-        out.batch.evidence[original] = result.evidence.at(i);
-        if (out.batch.evidence.at(original))
-            out.batch.evidence[original]->selectedIndex = original;
-        out.batch.validPages[original] = result.validPages.at(i) && out.batch.evidence.at(original).has_value() && validNeuralEvidence(*out.batch.evidence.at(original)) && sameInput(*out.batch.evidence.at(original), inputs.at(original));
-        if (out.batch.validPages.at(original) && accepted.at(original)) {
-            const auto &saved = *accepted.at(original);
-            const auto &completed = *out.batch.evidence.at(original);
-            if (saved.rawResult != completed.rawResult || saved.resultSha256 != completed.resultSha256 || saved.requestedDevice != completed.requestedDevice || saved.actualDevice != completed.actualDevice) {
-                out.batch.validPages[original] = false;
-                deliveryError = QStringLiteral("Completion evidence differs from the accepted page receipt.");
+        for (const int original : targets.at(i)) {
+            out.batch.readings[original] = result.readings.at(i);
+            out.batch.evidence[original] = result.evidence.at(i);
+            if (out.batch.evidence.at(original))
+                out.batch.evidence[original]->selectedIndex = original;
+            out.batch.validPages[original] = result.validPages.at(i) && out.batch.evidence.at(original).has_value() && validNeuralEvidence(*out.batch.evidence.at(original)) && sameInput(*out.batch.evidence.at(original), inputs.at(original));
+            if (out.batch.validPages.at(original) && accepted.at(original)) {
+                const auto &saved = *accepted.at(original);
+                const auto &completed = *out.batch.evidence.at(original);
+                if (saved.rawResult != completed.rawResult || saved.resultSha256 != completed.resultSha256 || saved.requestedDevice != completed.requestedDevice || saved.actualDevice != completed.actualDevice) {
+                    out.batch.validPages[original] = false;
+                    deliveryError = QStringLiteral("Completion evidence differs from the accepted page receipt.");
+                }
             }
-        }
-        if (out.batch.validPages.at(original)) {
-            // Candidate text comes from the validated raw response, never a
-            // divergent presentation string supplied by a runner.
-            const auto &page = *out.batch.evidence.at(original);
-            out.batch.readings[original] = parseNeuralReading(page.rawResult, page.geometry.preparedSize);
-            out.batch.readings[original].warning = result.readings.at(i).warning;
-        }
-        if (out.batch.status == RecognitionStatus::Complete && (!out.batch.validPages.at(original) || !accepted.at(original))) {
-            out.batch.status = RecognitionStatus::DeliveryFailed;
-            out.batch.error = QStringLiteral("A completed page was not durably accepted.");
+            if (out.batch.validPages.at(original)) {
+                // Candidate text comes from the validated raw response, never a
+                // divergent presentation string supplied by a runner.
+                const auto &page = *out.batch.evidence.at(original);
+                out.batch.readings[original] = parseNeuralReading(page.rawResult, page.geometry.preparedSize);
+                out.batch.readings[original].warning = result.readings.at(i).warning;
+            }
+            if (out.batch.status == RecognitionStatus::Complete && (!out.batch.validPages.at(original) || !accepted.at(original))) {
+                out.batch.status = RecognitionStatus::DeliveryFailed;
+                out.batch.error = QStringLiteral("A completed page was not durably accepted.");
+            }
         }
     }
     if (!deliveryError.isEmpty() && out.batch.status != RecognitionStatus::CleanupFailed) {

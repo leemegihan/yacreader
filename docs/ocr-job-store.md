@@ -574,3 +574,24 @@ review. Its generated Korean/Japanese fixtures still execute the actual neural
 runtime, and library DB bytes must stay unchanged. This replaces the supplied
 synthetic binding in that check; it is not an operating-library test. Validation
 of these added assertions is pending.
+
+
+### Repeated selected inputs (validation pending)
+
+Identical selected images previously entered one OCR batch twice. Their raw
+responses could differ only in timing, yet immutable cache publication would
+reject the second response under the same key. The executor now groups exact
+prepared PNG hashes AND geometry before launching missing inputs. One current
+response is mapped to each original page through its own fenced DB receipt.
+Different pixels or geometry are not grouped. Repeated input count is distinct
+from old cache hits; progress counts accepted selected pages rather than unique
+model inputs. Original raw/device/timing is shared without claiming a second
+inference took place.
+
+Five synthetic cases cover fresh grouping, a cached middle page, cancellation,
+a lease expiring between two receipts and subsequent repair, plus distinct
+pixels. The actual CPU/GPU check now uses Korean/Japanese/Korean selected pages:
+it publishes the Japanese page before its receipt, pauses, runs only the unique
+Korean input on resume, and reloads all three pages with a fresh library/source/
+runtime preflight. Two original fixture types remain; the third page is a copy.
+This change still awaits Windows and physical-device validation.

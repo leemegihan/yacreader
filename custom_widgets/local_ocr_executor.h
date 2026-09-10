@@ -11,6 +11,7 @@ struct Outcome {
     LocalMetadata::Result metadata;
     int cachedPages = 0;
     int recoveredUnrecordedPages = 0;
+    int repeatedInputPages = 0; // Planned exact duplicates sharing a current inference, not old cache hits.
     QVector<bool> cacheHits; // Per selected page; device/timing may be from an older attempt.
     qint64 cacheReadMs = 0; // Preparation/cache recovery phase, separate from original OCR time.
     bool stateSaved = false;

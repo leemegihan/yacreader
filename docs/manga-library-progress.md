@@ -1083,3 +1083,14 @@ Completed-review codef35c0342 passed its initial Windows stage and an exact loca
 early diagnostic:38pass/0fail/0skip. Its full build and installer validation is
 still running. This early result does not establish a full-package or updated
 physical-device pass. Inspector restart UI remains the next integration boundary.
+
+
+### 2026-09-10: avoid immutable-cache conflicts for repeated pages
+
+Code review found that repeated prepared pages could be inferred twice in one
+batch, then collide in immutable cache storage because raw timings differ.
+Exact prepared input/geometry groups now share one inference with independent
+fenced receipts. Five regression cases include cancellation and partial receipt
+failure/recovery. The actual neural check also uses a repeated Korean page around
+its cached Japanese page. Validation for these changes is pending; no new real
+work accuracy or timing claim is made.
