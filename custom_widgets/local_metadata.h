@@ -98,6 +98,7 @@ struct Page {
     QString error;
     Reading reading;
     PageKind kind = PageKind::Unknown;
+    QString sourceSha256; // Exact encoded page bytes, before decoding.
 };
 
 struct SuggestionEvidence {
@@ -124,6 +125,7 @@ struct Result {
     QVector<Suggestion> suggestions;
     int pageCount = 0;
     QString error;
+    QStringList pageNames; // Complete ordered image-entry list, kept private.
 };
 
 struct OcrOptions {

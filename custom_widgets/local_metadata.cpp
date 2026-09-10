@@ -126,6 +126,7 @@ Result readPages(const QString &path, int perEnd, const Cancellation &cancel)
         std::sort(names.begin(), names.end(), naturalSortLessThanCI);
     }
     result.pageCount = names.size();
+    result.pageNames = names;
     for (const auto index : sampleIndexes(result.pageCount, perEnd)) {
         if (cancelled(cancel))
             return result;
@@ -140,8 +141,10 @@ Result readPages(const QString &path, int perEnd, const Cancellation &cancel)
             if (file.size() <= 64 * 1024 * 1024 && file.open(QIODevice::ReadOnly))
                 bytes = file.readAll();
         }
-        if (bytes.size() <= 64 * 1024 * 1024)
+        if (!bytes.isEmpty() && bytes.size() <= 64 * 1024 * 1024) {
+            page.sourceSha256 = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
             page.image = decode(bytes);
+        }
         if (page.image.isNull())
             page.error = tr("Page could not be decoded or exceeds the safety limit.");
         result.pages.append(page);

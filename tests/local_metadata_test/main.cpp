@@ -9,6 +9,7 @@
 #include "local_ocr_process.h"
 #include "local_ocr_recovery.h"
 #include "local_ocr_runtime.h"
+#include "local_ocr_source.h"
 #include "ocr_job_store.h"
 #include "ocr_page_view.h"
 #include "yacreader_archive_inspector_dialog.h"
@@ -58,6 +59,9 @@
 #endif
 
 namespace {
+LocalOcrRuntime::Measurement persistenceSettings(const QString &root);
+OcrJobs::Spec persistenceSpec(const QString &root, const LocalOcrRuntime::Measurement &settings);
+
 QByteArray tsvFor(const QStringList &lines, int confidence = 90)
 {
     QByteArray result = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
@@ -135,6 +139,7 @@ private slots:
     void isolatedSettingsPaths();
     void sampling();
     void folderAndArchiveUseSamePageOrder();
+    void sourceSnapshotValidation();
     void collectionFolderIsNotAComic();
     void labelledCandidatesAreNotTranslators();
     void neuralRecoveryWorkerFaults_data();
@@ -158,6 +163,7 @@ private slots:
     void runtimeSnapshotMeasuresFiles();
     void runtimeSnapshotDeployed();
     void cacheReceiptOrdering();
+    void cacheReceiptRecovery();
     void cacheReceiptCrash();
     void cacheReceiptClockAfterContention();
     void regionCoordinatesAndCandidatePrefill();
@@ -376,6 +382,85 @@ void LocalMetadataTest::folderAndArchiveUseSamePageOrder()
     QCOMPARE(viewer->getIndex(), 1U);
 }
 
+void LocalMetadataTest::sourceSnapshotValidation()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto folder = temporary.filePath("synthetic-pages");
+    QVERIFY(QDir().mkdir(folder));
+    QImage image(80, 40, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    const auto encoded = [](const QImage &input) {
+        QByteArray bytes;
+        QBuffer buffer(&bytes);
+        if (buffer.open(QIODevice::WriteOnly))
+            input.save(&buffer, "PNG");
+        return bytes;
+    };
+    const auto png = encoded(image);
+    QVERIFY(!png.isEmpty());
+    QList<QPair<QString, QByteArray>> files;
+    for (int i = 1; i <= 10; ++i) {
+        const auto name = QStringLiteral("%1.png").arg(i);
+        QFile file(QDir(folder).filePath(name));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write(png), png.size());
+        files.append({ name, png });
+    }
+    const auto archive = temporary.filePath("synthetic.cbz");
+    QVERIFY(writeZip(archive, files));
+    QString error;
+    const auto first = LocalOcrSource::read(folder, 3, { }, &error);
+    QVERIFY2(first.has_value(), qPrintable(error));
+    const auto repeated = LocalOcrSource::read(folder, 3, { }, &error);
+    QVERIFY(repeated.has_value());
+    QCOMPARE(first->fingerprint, repeated->fingerprint);
+    QCOMPARE(first->source.pageNames.size(), 10);
+    QCOMPARE(first->source.pages.size(), 6);
+    QCOMPARE(first->source.pages[3].number, 8);
+    const auto zipped = LocalOcrSource::read(archive, 3, { }, &error);
+    QVERIFY2(zipped.has_value(), qPrintable(error));
+    QCOMPARE(zipped->source.pageNames, first->source.pageNames);
+    QCOMPARE(zipped->manifest["sourceKind"].toString(), QStringLiteral("archive"));
+    QVERIFY(zipped->fingerprint != first->fingerprint); // Location and source kind belong to identity.
+    for (int i = 0; i < 6; ++i)
+        QCOMPARE(zipped->source.pages[i].sourceSha256, first->source.pages[i].sourceSha256);
+    QVERIFY(!LocalOcrSource::read(folder, 4, { }, &error));
+    QVERIFY(!error.isEmpty());
+    auto cancel = std::make_shared<std::atomic_bool>(true);
+    QVERIFY(!LocalOcrSource::read(folder, 3, cancel, &error));
+    QVERIFY(!error.isEmpty());
+    // Identical decoded pixels with different encoded metadata must invalidate
+    // source identity even if their prepared OCR PNG could be reused.
+    image.setText(QStringLiteral("Comment"), QStringLiteral("synthetic changed metadata"));
+    const auto changedPng = encoded(image);
+    QVERIFY(changedPng != png);
+    QFile selected(QDir(folder).filePath("1.png"));
+    QVERIFY(selected.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(selected.write(changedPng), changedPng.size());
+    selected.close();
+    const auto changed = LocalOcrSource::read(folder, 3, { }, &error);
+    QVERIFY(changed.has_value());
+    QVERIFY(changed->fingerprint != first->fingerprint);
+    QCOMPARE(LocalMetadata::prepareOcrImage(changed->source.pages[0].image, { }), LocalMetadata::prepareOcrImage(first->source.pages[0].image, { }));
+    QVERIFY(QFile::rename(QDir(folder).filePath("5.png"), QDir(folder).filePath("5-renamed.png")));
+    const auto renamed = LocalOcrSource::read(folder, 3, { }, &error);
+    QVERIFY(renamed.has_value());
+    QVERIFY(renamed->fingerprint != changed->fingerprint); // Interior page names still affect the plan.
+    files.append(files[0]);
+    const auto duplicate = temporary.filePath("duplicate.cbz");
+    QVERIFY(writeZip(duplicate, files));
+    QVERIFY(!LocalOcrSource::read(duplicate, 3, { }, &error));
+    QVERIFY(!error.isEmpty());
+    QVERIFY(selected.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(selected.write("bad image"), qint64(9));
+    selected.close();
+    QVERIFY(!LocalOcrSource::read(folder, 3, { }, &error));
+    QVERIFY(!error.isEmpty());
+    QVERIFY(!LocalOcrSource::read(temporary.path(), 3, { }, &error)); // Collection root.
+    QVERIFY(!error.isEmpty());
+}
+
 void LocalMetadataTest::collectionFolderIsNotAComic()
 {
     QTemporaryDir temporary;
@@ -487,6 +572,16 @@ void LocalMetadataTest::neuralRecoveryWorkerFaults()
     OcrOptions options;
     options.neural = options.gpu = true;
     auto cancel = std::make_shared<std::atomic_bool>(false);
+    OcrJobs::Store store;
+    QVERIFY(store.open(temporary.filePath("ocr-jobs.sqlite")));
+    const auto settings = persistenceSettings(temporary.path());
+    const auto jobId = store.enqueue(persistenceSpec(temporary.path(), settings));
+    QVERIFY(jobId.has_value());
+    const auto lease = store.claim(*jobId, QStringLiteral("synthetic-stream-owner"), 1000, 1000);
+    QVERIFY(lease.has_value());
+    const auto cache = temporary.filePath("cache");
+    QVERIFY(QDir().mkdir(cache));
+    QVector<int> persistedIndexes;
     QVector<NeuralPageEvidence> deliveries;
     bool deliveredBeforeCleanup = true;
     QElapsedTimer elapsed;
@@ -507,14 +602,20 @@ void LocalMetadataTest::neuralRecoveryWorkerFaults()
                                                       const auto outputs = liveCall["outputs"].toArray();
                                                       if (attemptIndex >= outputs.size() || !QFile::exists(outputs[attemptIndex].toString()))
                                                           deliveredBeforeCleanup = false;
-                                                      if (action == QStringLiteral("cancel"))
-                                                          cancel->store(true);
                                                       if (action == QStringLiteral("throw"))
                                                           throw std::runtime_error("synthetic receiver exception");
                                                       if (action == QStringLiteral("reject") || (action == QStringLiteral("reject-cpu") && page.requestedDevice == QStringLiteral("cpu"))) {
                                                           *error = QStringLiteral("synthetic receipt rejection");
                                                           return false;
                                                       }
+                                                      const auto saved = LocalOcrPersistence::recordPage(store, *lease, settings, page, cache, cancel, [] { return 1001; });
+                                                      if (!saved.receiptSaved) {
+                                                          *error = saved.error;
+                                                          return false;
+                                                      }
+                                                      persistedIndexes.append(page.selectedIndex);
+                                                      if (action == QStringLiteral("cancel"))
+                                                          cancel->store(true);
                                                       return true; });
     QVERIFY(deliveredBeforeCleanup);
     if (mode == QStringLiteral("cancel-after-page"))
@@ -566,6 +667,19 @@ void LocalMetadataTest::neuralRecoveryWorkerFaults()
         QCOMPARE(evidence.rawResult, exact);
         QVERIFY(!QFile::exists(call["outputs"].toArray()[attemptIndex].toString())); // Temp directory is gone.
     }
+    const auto persistedJob = store.get(*jobId);
+    QVERIFY(persistedJob.has_value());
+    QCOMPARE(persistedJob->state, OcrJobs::State::Running); // Receipts never finish a batch.
+    QCOMPARE(persistedJob->pages.size(), persistedIndexes.size());
+    for (const int index : persistedIndexes) {
+        QVERIFY(result.evidence[index].has_value());
+        const auto &page = *result.evidence[index];
+        QString error;
+        const auto recovered = LocalOcrPersistence::restorePage(*persistedJob, settings, index, page.geometry, page.imageSha256, cache, &error);
+        QVERIFY2(recovered.has_value(), qPrintable(error));
+        QCOMPARE(recovered->rawResult, page.rawResult);
+        QCOMPARE(recovered->requestedDevice, page.requestedDevice);
+    }
     QVector<int> deliveredIndexes;
     for (const auto &page : deliveries) {
         deliveredIndexes.append(page.selectedIndex);
@@ -578,6 +692,10 @@ void LocalMetadataTest::neuralRecoveryWorkerFaults()
         QCOMPARE(deliveredIndexes, action.isEmpty() ? QVector<int>({ 0, 1 }) : QVector<int>({ 0 }));
     else
         QCOMPARE(deliveredIndexes, retry ? QVector<int>({ 1, 0 }) : QVector<int>({ 1 }));
+    auto expectedPersisted = deliveredIndexes;
+    if (action == QStringLiteral("reject") || action == QStringLiteral("throw") || action == QStringLiteral("reject-cpu"))
+        expectedPersisted.removeLast();
+    QCOMPARE(persistedIndexes, expectedPersisted);
     if (!action.isEmpty()) {
         QCOMPARE(result.status, action == QStringLiteral("cancel") ? RecognitionStatus::Cancelled : RecognitionStatus::DeliveryFailed);
         QVERIFY(!result.error.isEmpty());
@@ -1457,6 +1575,109 @@ void LocalMetadataTest::cacheReceiptOrdering()
     QVERIFY(gpuIdentity.has_value());
     QCOMPARE(gpuIdentity->packageManifestSha256, QString(64, u'6'));
     QCOMPARE(identity->packageManifestSha256, QString(64, u'4'));
+}
+
+void LocalMetadataTest::cacheReceiptRecovery()
+{
+    for (const QString mode : { "cpu", "gpu", "gpu-package-cpu" }) {
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        OcrJobs::Store store;
+        QVERIFY(store.open(temporary.filePath("ocr-jobs.sqlite")));
+        const auto settings = persistenceSettings(temporary.path());
+        const auto id = store.enqueue(persistenceSpec(temporary.path(), settings));
+        QVERIFY(id.has_value());
+        const auto lease = store.claim(*id, QStringLiteral("synthetic-owner"), 1000, 1000);
+        QVERIFY(lease.has_value());
+        auto page = persistencePage();
+        page.selectedIndex = 1; // A receipt for page 2, not array position 0.
+        if (mode != QStringLiteral("cpu"))
+            page.requestedDevice = QStringLiteral("gpu:0");
+        if (mode == QStringLiteral("gpu")) {
+            page.actualDevice = QStringLiteral("gpu:0");
+            page.rawResult.replace("cpu", "gpu:0");
+            page.resultSha256 = QString::fromLatin1(QCryptographicHash::hash(page.rawResult, QCryptographicHash::Sha256).toHex());
+        }
+        const auto cache = temporary.filePath("cache");
+        QVERIFY(QDir().mkdir(cache));
+        const auto saved = LocalOcrPersistence::recordPage(store, *lease, settings, page, cache, { }, [] { return 1001; });
+        QVERIFY2(saved.receiptSaved, qPrintable(saved.error));
+        QVERIFY(store.fail(*lease, QStringLiteral("synthetic batch failure"), 1002));
+        const auto job = store.get(*id);
+        QVERIFY(job.has_value());
+        QString error;
+        const auto restored = LocalOcrPersistence::restorePage(*job, settings, 1, page.geometry, page.imageSha256, cache, &error);
+        QVERIFY2(restored.has_value(), qPrintable(error));
+        QVERIFY(error.isEmpty());
+        QCOMPARE(restored->selectedIndex, 1);
+        QCOMPARE(restored->rawResult, page.rawResult);
+        QCOMPARE(restored->resultSha256, page.resultSha256);
+        QCOMPARE(restored->requestedDevice, page.requestedDevice);
+        QCOMPARE(restored->actualDevice, page.actualDevice);
+        QVERIFY(LocalMetadata::parseNeuralReading(restored->rawResult, restored->geometry.preparedSize).text.isEmpty());
+        auto checkRejected = [&](const OcrJobs::Job &j, const LocalOcrRuntime::Measurement &m, int index,
+                                 const LocalMetadata::OcrGeometry &geometry, const QString &hash, const QString &root) {
+            error.clear();
+            const auto value = LocalOcrPersistence::restorePage(j, m, index, geometry, hash, root, &error);
+            QVERIFY(!value.has_value());
+            QVERIFY(!error.isEmpty());
+        };
+        checkRejected(*job, settings, -1, page.geometry, page.imageSha256, cache);
+        checkRejected(*job, settings, 2, page.geometry, page.imageSha256, cache);
+        checkRejected(*job, settings, 0, page.geometry, page.imageSha256, cache); // Missing receipt.
+        checkRejected(*job, settings, 1, page.geometry, QString(64, u'f'), cache);
+        checkRejected(*job, settings, 1, { }, page.imageSha256, cache);
+        auto geometry = page.geometry;
+        geometry.inputToPrepared.translate(1, 0);
+        checkRejected(*job, settings, 1, geometry, page.imageSha256, cache);
+        checkRejected(*job, settings, 1, page.geometry, page.imageSha256, temporary.filePath("missing-cache"));
+        auto changed = settings;
+        auto environment = changed.settingsSnapshot["environment"].toObject();
+        environment["applicationSha256"] = QString(64, u'f');
+        changed.settingsSnapshot["environment"] = environment;
+        changed.settingsFingerprint = OcrJobs::settingsFingerprint(changed.settingsSnapshot);
+        checkRejected(*job, changed, 1, page.geometry, page.imageSha256, cache);
+        // Even when supplied job/settings agree, changed package identity cannot
+        // reuse an old receipt's cache key.
+        environment = settings.settingsSnapshot["environment"].toObject();
+        auto runtime = environment[page.requestedDevice == QStringLiteral("cpu") ? "cpu" : "gpu"].toObject();
+        runtime["packageManifestSha256"] = QString(64, u'f');
+        environment[page.requestedDevice == QStringLiteral("cpu") ? "cpu" : "gpu"] = runtime;
+        changed = settings;
+        changed.settingsSnapshot["environment"] = environment;
+        changed.settingsFingerprint = OcrJobs::settingsFingerprint(changed.settingsSnapshot);
+        auto alteredJob = *job;
+        alteredJob.spec.settingsSnapshot = changed.settingsSnapshot;
+        alteredJob.spec.settingsFingerprint = changed.settingsFingerprint;
+        checkRejected(alteredJob, changed, 1, page.geometry, page.imageSha256, cache);
+        for (int field = 0; field < 4; ++field) {
+            alteredJob = *job;
+            if (field == 0)
+                alteredJob.pages[0].resultSha256 = QString(64, u'f');
+            else if (field == 1)
+                alteredJob.pages[0].cacheKey = QString(64, u'f');
+            else if (field == 2)
+                alteredJob.pages[0].actualDevice = QStringLiteral("invalid");
+            else
+                alteredJob.pages.append(alteredJob.pages[0]);
+            checkRejected(alteredJob, settings, 1, page.geometry, page.imageSha256, cache);
+        }
+        auto cancel = std::make_shared<std::atomic_bool>(true);
+        QVERIFY(!LocalOcrPersistence::restorePage(*job, settings, 1, page.geometry, page.imageSha256, cache, &error, cancel));
+        QVERIFY(!error.isEmpty());
+        // A damaged cache is retained for review, never deleted or replaced.
+        const auto cachePath = QDir(cache).filePath(saved.cacheKey + QStringLiteral(".json"));
+        QFile damaged(cachePath);
+        QVERIFY(damaged.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QCOMPARE(damaged.write("synthetic damage"), qint64(16));
+        damaged.close();
+        checkRejected(*job, settings, 1, page.geometry, page.imageSha256, cache);
+        QVERIFY(damaged.open(QIODevice::ReadOnly));
+        QCOMPARE(damaged.readAll(), QByteArray("synthetic damage"));
+        QCOMPARE(store.get(*id)->state, OcrJobs::State::Failed);
+        QCOMPARE(store.get(*id)->pages[0].resultSha256, page.resultSha256);
+        QCOMPARE(QDir(cache).entryList(QDir::Files).size(), 1);
+    }
 }
 
 void LocalMetadataTest::cacheReceiptCrash()

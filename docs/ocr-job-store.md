@@ -354,3 +354,33 @@ cached artifacts; retain corrupt or mismatched evidence for explicit recovery.
 Physical GPU ownership must outlive an individual dialog and must verify old
 worker exit before handing off. Only then add explicit restart/review UI in a
 separate test library. No automatic metadata save or full-library execution.
+
+## Revalidating selected source pages and durable cache receipts
+
+LocalOcrSource::read accepts one absolute folder/archive and first/last one to
+three pages. It reuses the existing decoder, retains exact selected encoded-page
+SHA256 values and the complete naturally sorted image-entry list, then compares
+source location, kind, entry list and file stamps before/after reading. Duplicate
+archive entry names, unreadable selected pages, cancellation and changed sources
+are refused. The private fingerprint includes location, kind, selection, all page
+names and selected raw hashes. It does not hash or OCR the unselected interior
+pages. This is a captured input identity, not a filesystem lock for later writes;
+explicit resume must capture again and compare before using the old job.
+
+LocalOcrPersistence::restorePage is read-only. Given a checked Job, newly prepared
+geometry/exact PNG hash and a fresh runtime measurement, it matches the durable
+receipt key against possible requested CPU/GPU package identities. A GPU package
+returning CPU remains distinct from the CPU package. The cache envelope, parser,
+actual device, language and raw response digest must also match. Missing receipts,
+changed inputs/settings, corrupt caches and cancellation return an error without
+changing evidence. Restoring a blank response from a failed job does not turn
+that job into a successful or candidate-free session.
+
+Synthetic tests cover folder/archive ordering, same pixels with different encoded
+metadata, interior-page rename, duplicate entries, invalid pages, all three
+package/device combinations and damaged cache preservation. The synthetic worker
+fault suite also connects each accepted live page delivery through cache/save,
+SQLite receipt and validated reload. Runtime measurements in this suite are
+synthetic fixtures, not claims of actual GPU inference. Windows validation for
+this integration is pending. A production owned executor and explicit UI resume
+remain subsequent work.

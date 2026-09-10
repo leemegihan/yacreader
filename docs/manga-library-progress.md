@@ -942,3 +942,14 @@ after all outputs. Policy tests cover duplicate/malformed delivery, wrong CPU
 request device and cleanup priority. Windows build and packaged verification are
 pending for this change. This is an executor building block, not inspector cache
 wiring or restart UI; no new real-work accuracy claim is made.
+
+### 2026-09-10: source and receipt revalidation (validation pending)
+
+Added a read-only first/last-three source snapshot and durable cache receipt
+reload. The snapshot checks ordered image names, selected encoded bytes and
+before/after source stamps; it does not read interior pages for extra OCR.
+Receipt reload checks prepared PNG/geometry, measured settings, requested package,
+actual device and raw response hash. Invalid evidence remains available for review.
+Synthetic worker callbacks now exercise cache publication, DB receipt creation
+and exact reload together. No inspector scheduler, automatic metadata save,
+whole-library processing or new real-work benchmark is included in this change.
