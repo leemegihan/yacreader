@@ -138,6 +138,7 @@ private slots:
     void duplicateRegistrationAndContext();
     void boundedPlanValidation();
     void pauseAndResumePersist();
+    void workerPauseFencesNewOwner();
     void completionRequiresEveryPage();
     void failureAndCancellationAreNotReview();
     void leaseFencingAndClockChanges();
@@ -639,10 +640,34 @@ void OcrJobStoreTest::lockedWritesDoNotAdvanceState()
     QSqlDatabase::removeDatabase(QStringLiteral("write-blocker"));
 }
 
+void OcrJobStoreTest::workerPauseFencesNewOwner()
+{
+    QTemporaryDir dir;
+    Store store;
+    QVERIFY(store.open(database(dir)));
+    const auto id = store.enqueue(sample());
+    QVERIFY(id);
+    const auto old = store.claim(*id, QStringLiteral("old-owner"), 1000, 1000);
+    QVERIFY(old);
+    QVERIFY(store.recordPage(*old, receipt(1), 1001));
+    QVERIFY(store.pauseWhenCurrent(*old, [] { return 1002; }));
+    QCOMPARE(store.get(*id)->state, State::Paused);
+    QVERIFY(store.resume(*id));
+    const auto current = store.claim(*id, QStringLiteral("new-owner"), 1100, 1000);
+    QVERIFY(current);
+    QVERIFY(!store.pauseWhenCurrent(*old, [] { return 1101; }));
+    QCOMPARE(store.get(*id)->state, State::Running);
+    QVERIFY(store.recordPage(*current, receipt(2), 1102));
+    QVERIFY(store.pauseWhenCurrent(*current, [] { return 1103; }));
+    QCOMPARE(store.get(*id)->state, State::Paused);
+    QCOMPARE(store.get(*id)->pages.size(), 2);
+    QVERIFY(!store.recordPage(*current, receipt(3), 1104));
+}
+
 void OcrJobStoreTest::currentClocksAfterContention_data()
 {
     QTest::addColumn<QString>("operation");
-    for (const auto &name : { "claim", "heartbeat", "finish", "fail", "interrupt" })
+    for (const auto &name : { "claim", "heartbeat", "finish", "fail", "pause", "interrupt" })
         QTest::newRow(name) << QString::fromLatin1(name);
 }
 
@@ -667,6 +692,7 @@ void OcrJobStoreTest::currentClocksAfterContention()
     QVERIFY(!store.heartbeatWhenCurrent(lease.value_or(Lease { }), 100, { }));
     QVERIFY(!store.finishWhenCurrent(lease.value_or(Lease { }), false, { }));
     QVERIFY(!store.failWhenCurrent(lease.value_or(Lease { }), QStringLiteral("failure"), { }));
+    QVERIFY(!store.pauseWhenCurrent(lease.value_or(Lease { }), { }));
     QVERIFY(!store.interruptExpiredWhenCurrent({ }));
 
     std::atomic<int> ready { 0 };
@@ -721,6 +747,7 @@ void OcrJobStoreTest::currentClocksAfterContention()
     } else {
         const bool changed = operation == "heartbeat" ? store.heartbeatWhenCurrent(*lease, 1000, clock)
                 : operation == "finish"               ? store.finishWhenCurrent(*lease, false, clock)
+                : operation == "pause"                ? store.pauseWhenCurrent(*lease, clock)
                                                       : store.failWhenCurrent(*lease, QStringLiteral("failure"), clock);
         QVERIFY(!changed);
         QVERIFY(!store.lastError().isEmpty());

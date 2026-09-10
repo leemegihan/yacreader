@@ -5,6 +5,7 @@
 #include "library_maintenance_lock.h"
 #include "local_metadata.h"
 #include "local_ocr_cache.h"
+#include "local_ocr_executor.h"
 #include "local_ocr_persistence.h"
 #include "local_ocr_process.h"
 #include "local_ocr_recovery.h"
@@ -166,6 +167,8 @@ private slots:
     void runtimeSnapshotMeasuresFiles();
     void runtimeSnapshotDeployed();
     void cacheReceiptOrdering();
+    void claimedExecutor_data();
+    void claimedExecutor();
     void cacheReceiptRecovery();
     void cacheReceiptCrash();
     void cacheReceiptClockAfterContention();
@@ -1623,6 +1626,191 @@ int persistenceCrashHelper(const QStringList &args)
     LocalOcrPersistence::recordPage(store, { args[4], args[5], args[6] }, settings, page, args[3], { }, []() -> qint64 { std::_Exit(86); });
     return 83; // The clock seam is reached only after atomic cache publication.
 }
+}
+
+void LocalMetadataTest::claimedExecutor_data()
+{
+    QTest::addColumn<QString>("mode");
+    for (const auto &mode : { "fresh", "resume", "page-candidate", "cancel", "worker-failure", "missing-delivery", "lease-expired", "changed-source", "changed-settings", "damaged-cache", "all-recorded", "changed-delivery", "callback-throw", "stale-owner" })
+        QTest::newRow(mode) << QString::fromLatin1(mode);
+}
+
+void LocalMetadataTest::claimedExecutor()
+{
+    using namespace LocalMetadata;
+    QFETCH(QString, mode);
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto folder = temporary.filePath("synthetic-executor");
+    const auto cache = temporary.filePath("cache");
+    QVERIFY(QDir().mkdir(folder));
+    QVERIFY(QDir().mkdir(cache));
+    for (int i = 0; i < 2; ++i) {
+        QImage image(80 + i * 10, 40, QImage::Format_RGB32);
+        image.fill(Qt::white);
+        QVERIFY(image.save(QDir(folder).filePath(QStringLiteral("%1.png").arg(i + 1)), "PNG"));
+    }
+    QString error;
+    const auto source = LocalOcrSource::read(folder, 3, { }, &error);
+    QVERIFY2(source.has_value(), qPrintable(error));
+    const auto settings = persistenceSettings(temporary.path());
+    auto spec = persistenceSpec(temporary.path(), settings);
+    spec.sourceSnapshot = source->fingerprint;
+    spec.sourceContext = { { "path", source->manifest["path"] }, { "sourceKind", "folder" }, { "libraryRoot", temporary.path() } };
+    OcrJobs::Store store;
+    QVERIFY(store.open(temporary.filePath("ocr-jobs.sqlite")));
+    const auto id = store.enqueue(spec);
+    QVERIFY(id.has_value());
+    const auto lease = store.claim(*id, QStringLiteral("synthetic-owner"), 1000, 1000);
+    QVERIFY(lease.has_value());
+    const auto evidenceFor = [](const QImage &image, int selectedIndex, const OcrOptions &options) {
+        const auto prepared = prepareOcrPage(image, options);
+        QByteArray png;
+        QBuffer buffer(&png);
+        buffer.open(QIODevice::WriteOnly);
+        prepared.image.save(&buffer, "PNG");
+        const auto hash = [](const QByteArray &bytes) { return QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex()); };
+        const QByteArray raw = R"({"version":1,"engine":"paddle-regions","device":"cpu","language":"auto","lines":[]})";
+        return NeuralPageEvidence { selectedIndex, prepared.geometry, hash(png), raw, hash(raw), QStringLiteral("cpu"), QStringLiteral("cpu") };
+    };
+    QString firstKey;
+    if (mode != QStringLiteral("fresh")) {
+        const auto saved = LocalOcrPersistence::recordPage(store, *lease, settings, evidenceFor(source->source.pages[0].image, 0, { }), cache, { }, [] { return 1001; });
+        QVERIFY2(saved.receiptSaved, qPrintable(saved.error));
+        firstKey = saved.cacheKey;
+    }
+    if (mode == QStringLiteral("all-recorded"))
+        QVERIFY(LocalOcrPersistence::recordPage(store, *lease, settings, evidenceFor(source->source.pages[1].image, 1, { }), cache, { }, [] { return 1001; }).receiptSaved);
+    if (mode == QStringLiteral("damaged-cache")) {
+        QFile file(QDir(cache).filePath(firstKey + QStringLiteral(".json")));
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QCOMPARE(file.write("bad cache"), qint64(9));
+    }
+    if (mode == QStringLiteral("stale-owner")) {
+        QVERIFY(store.pause(*id));
+        QVERIFY(store.resume(*id));
+        QVERIFY(store.claim(*id, QStringLiteral("successor"), 1002, 1000));
+    }
+    auto currentSource = *source;
+    auto currentSettings = settings;
+    if (mode == QStringLiteral("changed-source"))
+        currentSource.fingerprint = QString(64, u'f');
+    if (mode == QStringLiteral("changed-settings")) {
+        auto environment = currentSettings.settingsSnapshot["environment"].toObject();
+        environment["applicationSha256"] = QString(64, u'f');
+        currentSettings.settingsSnapshot["environment"] = environment;
+        currentSettings.settingsFingerprint = OcrJobs::settingsFingerprint(currentSettings.settingsSnapshot);
+    }
+    auto cancel = std::make_shared<std::atomic_bool>(false);
+    qint64 now = 1003;
+    int calls = 0;
+    QVector<int> widths;
+    bool correctOptions = true;
+    const auto out = LocalOcrExecutor::executeClaimed(store, *lease, currentSource, currentSettings, cache, cancel, { }, [&] { return now; }, [&](const QVector<QImage> &images, const OcrOptions &options, const Cancellation &flag, const Progress &progress, const PageSink &sink) {
+                ++calls;
+                correctOptions = options.neural && options.gpu && options.cpuThreads == 8 && options.language == QStringLiteral("auto");
+                RecognitionBatch result;
+                result.readings.resize(images.size());
+                result.evidence.resize(images.size());
+                result.validPages.fill(false, images.size());
+                result.status = RecognitionStatus::Complete;
+                if (mode == QStringLiteral("lease-expired")) {
+                    now = 400000;
+                    progress(0, images.size(), QStringLiteral("synthetic lease expiry"));
+                    result.status = RecognitionStatus::Cancelled;
+                    result.error = QStringLiteral("synthetic cancellation");
+                    return result;
+                }
+                for (int i = 0; i < images.size(); ++i) {
+                    widths.append(images[i].width());
+                    auto page = evidenceFor(images[i], i, options);
+                    if (mode == QStringLiteral("page-candidate")) {
+                        page.rawResult = R"({"version":1,"engine":"paddle-regions","device":"cpu","language":"auto","lines":[{"text":"Author: Alice Example","confidence":99,"box":[1,1,150,20],"language":"jpn"}]})";
+                        page.resultSha256 = QString::fromLatin1(QCryptographicHash::hash(page.rawResult, QCryptographicHash::Sha256).toHex());
+                    }
+                    if (mode == QStringLiteral("changed-delivery"))
+                        page.imageSha256 = QString(64, u'f');
+                    result.evidence[i] = page;
+                    result.readings[i] = parseNeuralReading(page.rawResult, page.geometry.preparedSize);
+                    result.readings[i].text = QStringLiteral("Author: Unverified Runner Text");
+                    result.validPages[i] = true;
+                    QString error;
+                    if (mode != QStringLiteral("missing-delivery") && !sink(page, &error)) {
+                        result.status = RecognitionStatus::DeliveryFailed;
+                        result.error = error;
+                        break;
+                    }
+                    if (mode == QStringLiteral("callback-throw"))
+                        throw std::runtime_error("synthetic runner failure after receipt");
+                    if (mode == QStringLiteral("cancel")) {
+                        flag->store(true);
+                        result.status = RecognitionStatus::Cancelled;
+                        result.error = QStringLiteral("synthetic cancellation");
+                        break;
+                    }
+                    progress(i + 1, images.size(), QStringLiteral("synthetic page"));
+                }
+                if (mode == QStringLiteral("worker-failure")) {
+                    result.status = RecognitionStatus::Failed;
+                    result.error = QStringLiteral("synthetic nonzero exit after all outputs");
+                }
+                return result; });
+    QVERIFY(correctOptions);
+    const bool rejected = mode == QStringLiteral("changed-source") || mode == QStringLiteral("changed-settings") || mode == QStringLiteral("damaged-cache") || mode == QStringLiteral("all-recorded") || mode == QStringLiteral("stale-owner");
+    QCOMPARE(calls, rejected ? 0 : 1);
+    if (!rejected && mode != QStringLiteral("lease-expired"))
+        QCOMPARE(widths, mode == QStringLiteral("fresh") ? QVector<int>({ 80, 90 }) : QVector<int>({ 90 }));
+    QVERIFY(out.state.has_value());
+    const auto savedJob = store.get(*id);
+    QVERIFY(savedJob.has_value());
+    if (mode == QStringLiteral("fresh") || mode == QStringLiteral("resume") || mode == QStringLiteral("page-candidate")) {
+        QCOMPARE(out.batch.status, RecognitionStatus::Complete);
+        QCOMPARE(*out.state, mode == QStringLiteral("page-candidate") ? OcrJobs::State::PageReview : OcrJobs::State::FilenameReview);
+        QCOMPARE(out.cachedPages, mode == QStringLiteral("fresh") ? 0 : 1);
+        QCOMPARE(out.cacheHits, mode == QStringLiteral("fresh") ? QVector<bool>({ false, false }) : QVector<bool>({ true, false }));
+        QVERIFY(out.stateSaved && out.stateError.isEmpty());
+        QVERIFY(out.metadata.error.isEmpty());
+        if (mode == QStringLiteral("page-candidate")) {
+            QVERIFY(out.metadata.pages[1].text.contains(QStringLiteral("Alice Example")));
+            bool author = false;
+            for (const auto &candidate : out.metadata.suggestions)
+                author = author || (candidate.field == Suggestion::Author && candidate.value == QStringLiteral("Alice Example") && candidate.page > 0);
+            QVERIFY(author);
+        } else {
+            QVERIFY(out.metadata.pages[1].text.isEmpty());
+        }
+        QCOMPARE(savedJob->pages.size(), 2);
+    } else if (mode == QStringLiteral("cancel")) {
+        QCOMPARE(out.batch.status, RecognitionStatus::Cancelled);
+        QCOMPARE(*out.state, OcrJobs::State::Paused);
+        QVERIFY(out.stateSaved);
+        QCOMPARE(savedJob->pages.size(), 2);
+    } else if (mode == QStringLiteral("lease-expired") || mode == QStringLiteral("stale-owner")) {
+        QCOMPARE(*out.state, OcrJobs::State::Running);
+        QVERIFY(!out.stateSaved && !out.stateError.isEmpty());
+        QCOMPARE(savedJob->pages.size(), 1);
+    } else {
+        QCOMPARE(*out.state, OcrJobs::State::Failed);
+        QVERIFY(out.stateSaved);
+        QVERIFY(!out.batch.error.isEmpty());
+        if (mode == QStringLiteral("callback-throw"))
+            QCOMPARE(out.batch.status, RecognitionStatus::CleanupFailed);
+        else if (mode == QStringLiteral("missing-delivery") || mode == QStringLiteral("changed-delivery"))
+            QCOMPARE(out.batch.status, RecognitionStatus::DeliveryFailed);
+        else
+            QCOMPARE(out.batch.status, RecognitionStatus::Failed);
+        QCOMPARE(savedJob->pages.size(), mode == QStringLiteral("worker-failure") || mode == QStringLiteral("all-recorded") || mode == QStringLiteral("callback-throw") ? 2 : 1);
+    }
+    if (mode == QStringLiteral("changed-delivery"))
+        QVERIFY(out.metadata.pages[1].text.isEmpty()); // Invalid evidence never supplies candidate text.
+    if (mode == QStringLiteral("damaged-cache")) {
+        QFile file(QDir(cache).filePath(firstKey + QStringLiteral(".json")));
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), QByteArray("bad cache"));
+    }
+    const auto unchanged = LocalOcrSource::read(folder, 3, { }, &error);
+    QVERIFY(unchanged.has_value());
+    QCOMPARE(unchanged->fingerprint, source->fingerprint);
 }
 
 void LocalMetadataTest::cacheReceiptOrdering()

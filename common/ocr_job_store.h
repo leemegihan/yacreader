@@ -83,6 +83,8 @@ public:
     bool heartbeatWhenCurrent(const Lease &lease, qint64 durationMs, const std::function<qint64()> &clock);
     bool finishWhenCurrent(const Lease &lease, bool hasPageCandidates, const std::function<qint64()> &clock);
     bool failWhenCurrent(const Lease &lease, const QString &message, const std::function<qint64()> &clock);
+    // Worker cancellation must not pause a successor that owns a newer token.
+    bool pauseWhenCurrent(const Lease &lease, const std::function<qint64()> &clock);
     bool recordPage(const Lease &lease, const PageReceipt &page, qint64 nowMs);
     // Production clocks are sampled after acquiring the DB write transaction.
     // The callback must not throw; the fixed-time overload supports logical tests.

@@ -412,3 +412,35 @@ subsequent work.
 
 Primary Windows semantics: [Job objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
 and [mutex wait results](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject).
+
+## Executing one already-claimed selected work
+
+LocalOcrExecutor::executeClaimed connects the source/runtime adapters, validated
+receipt reload, neural runner, page sink and job state. It must run on the Store's
+owning thread. The caller still verifies the current library generation, captures
+the source, measures a stopped runtime and explicitly claims/resumes the job.
+This function does not enqueue jobs, measure files, open a library DB or provide
+restart UI. Those caller/UI boundaries remain required before production use.
+
+It checks the saved source/selection/settings, prepares exact input identities,
+restores only matching receipts and runs only the missing selected images. Two
+index mappings compose: CPU retry maps to the missing-image vector, then the
+executor maps to the full selected plan before cache and DB persistence. Each
+page's cache-hit flag and total cache-read time are separate from original cached
+OCR device/timing. Candidate text is reparsed from validated raw evidence; an
+invalid or divergent runner display string cannot create a candidate.
+
+A current-clock heartbeat fences the start and progress. Worker cancellation uses
+pauseWhenCurrent, which checks the lease after the SQLite write lock, so an old
+worker cannot pause a successor. Receipt failure, ownership loss, invalid results
+and nonzero exits cannot enter review. Even all cached receipts are insufficient
+to infer successful completion of an earlier interrupted/failed session; this
+case keeps the work for explicit review without automatically repeating all OCR.
+Only a successful, fully persisted execution enters page or filename review.
+Metadata still requires user review/save through the existing workflow.
+
+Synthetic executor cases cover fresh/mixed-cache processing, page versus filename
+review, cancellation, lease expiry and stale owners, changed source/settings,
+missing delivery, corrupt cache, changed prepared input, exceptions and failure
+after all outputs. The store also tests stale-worker pause and real SQLite lock
+contention for pause. These new integration tests await Windows/package validation.

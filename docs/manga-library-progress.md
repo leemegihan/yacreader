@@ -972,3 +972,18 @@ and verify old process exit. The same-thread recursive-mutex case is explicitly
 blocked until the previous object finishes. Synthetic crash tests retain old
 kernel handles so abandonment alone cannot stand in for actual worker cleanup.
 This ownership change still needs complete Windows and local verification.
+
+### 2026-09-10: one claimed work executor (validation pending)
+
+The selected-work executor now binds source/settings checks, cache reload, missing-
+page recognition, durable callbacks and fenced job completion/pause. It exposes
+per-page cache hits and separate cache-read timing, preserves batch failure, and
+uses validated raw evidence for candidate text. All previously recorded pages do
+not automatically make an interrupted session successful. The new current-clock
+worker pause cannot pause a successor with a different lease token.
+
+Fourteen synthetic executor cases and additional pause/contention cases are added.
+The caller's source/runtime preflight and library-generation validation, actual
+worker-thread ownership and explicit inspector restart UI are still required.
+No library scan, original write, unreviewed save or new real OCR run is enabled by
+this adapter. Windows and exact local executable validation are pending.

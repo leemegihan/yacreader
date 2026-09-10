@@ -589,6 +589,21 @@ bool Store::failWhenCurrent(const Lease &lease, const QString &message, const st
     return setFinished(lease, State::Failed, message);
 }
 
+bool Store::pauseWhenCurrent(const Lease &lease, const std::function<qint64()> &clock)
+{
+    if (!ready())
+        return false;
+    if (!clock) {
+        error = QStringLiteral("A lease clock is required.");
+        return false;
+    }
+    if (!begin())
+        return false;
+    if (!fence(lease, clock()))
+        return rollback(error);
+    return setFinished(lease, State::Paused, { });
+}
+
 bool Store::transition(const QString &id, State target)
 {
     if (!ready() || !begin())
