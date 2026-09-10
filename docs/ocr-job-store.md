@@ -172,3 +172,42 @@ job-store checks. The exact new diagnostic executable also passed all 18 checks
 locally with zero skips in a composed deployment using previously verified Qt/SQL
 dependencies. This was a synthetic temporary-DB check, not OCR inference or a
 byte-for-byte validation of the complete new runtime artifact.
+
+## Next executor boundary (planned, not implemented)
+
+The storage and in-memory recovery checks do not yet create a durable executor.
+Introduce the following connection in small steps before exposing restart UI:
+
+1. Capture exact prepared PNG bytes, SHA256, dimensions, input dimensions and an
+   input-to-prepared transform. Record the complete preprocessing version. The
+   input is the decoded image shown by the inspector; file EXIF/scaled decode and
+   any crop offset are additional context, not an identity transform. Cache-hit
+   regions must not be drawn on an original page until that mapping is validated.
+2. Capture the raw parsed response before its temporary directory disappears,
+   with original selected-page index and actual device. A valid blank page counts
+   as completed data. The separate batch status still controls session success;
+   valid page files cannot turn a failed worker into candidate-free completion.
+3. Build the saved settings snapshot from resolved runtime paths and actual file
+   measurements. Verify manifests against the files they describe, including CPU
+   fallback dependencies. Recheck source, settings and cache evidence on resume;
+   a saved fingerprint is not proof that installed files remain unchanged.
+4. Save the validated immutable cache payload first, then record its DB receipt
+   with the current lease. A failed cache write cannot create a receipt. A late
+   result after lease expiry may leave an orphan cache artifact but cannot advance
+   the job. An invalid cached artifact requires explicit recovery/invalidation;
+   never overwrite an immutable receipt to conceal changed evidence.
+5. Persist execution failure separately even when all page artifacts are present.
+   Explicit recovery must acknowledge the prior failed attempt and verified worker
+   exit; a cached-page count alone must not erase that failure. Lease fencing also
+   does not serialize physical GPU workers across independent app instances.
+6. Connect the inspector only after the above contracts pass synthetic tests.
+   Use a separate test library for import/save tests: YACREADER_DATA_DIR isolates
+   settings but does not by itself isolate a library DB or its covers.
+
+Acceptance cases include quarter-turn/scaled/cropped geometry round trips,
+unchanged prepared pixels, one valid blank page, sparse outputs, raw JSON/hash
+mismatch, a failed cache write, a stale lease, crash after cache save but before
+receipt, changed runtime files and a worker failure after all outputs. Retained
+GPU pages must stay unchanged when CPU handles the remaining pages. These tests
+must not enumerate more original works, expand the first/last-three-page limit,
+start whole-library processing or authorize automatic metadata saves.

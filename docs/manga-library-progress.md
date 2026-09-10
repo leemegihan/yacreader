@@ -855,3 +855,33 @@ failed fixture logs. The fixture now lives with the tests and runs in a separate
 CI downloaded package using CPU Python for simulated GPU-labelled responses;
 it does not claim actual GPU execution. The original worker is restored afterward.
 New packaged and local fault-fixture validation is pending.
+
+### Completed recovery verification
+
+Test/fixture code 1d5f367a passed
+[Windows run34425792725](https://github.com/leemegihan/yacreader/actions/runs/34425792725):
+13 CTest suites, 21 worker tests, staged neural checks (8), installed OCR checks
+(21), downloaded OCR/process checks (22), job-store checks (18) and the synthetic
+worker fault suite (6). Required packaged checks had no failures/skips. The normal
+prerequisite-stage skips remain separate from the explicitly invoked fault suite.
+
+The exact new probe also passed all six local fault-suite checks after completing
+its private Python standard-library deployment. The initial reduced deployment
+lacked Lib/encodings; preserve that harness failure separately from the earlier
+Unicode environment failure. This fixture uses CPU Python and simulated device
+labels, not GPU inference. The previously verified c672913f real-worker CPU/GPU
+and 42 native checks remain separate evidence; the latest changes affect tests
+and workflow transport, not the production recovery code.
+
+The complete 1d5f367a runtime artifact was successfully downloaded and its published
+SHA256 verified. Its worker matches source, both probes match the small artifact,
+nine model files match the prior verified files and hidden model metadata is
+present. In this complete deployment, both viewer and library created Qt windows
+and stayed alive through the isolated startup check. Only test-owned processes
+were closed. No local installer was run. This closes the earlier full-runtime
+transfer/local GUI gap for this source revision; it is not a complete interactive
+UI test or a new full-artifact GPU benchmark.
+
+Original media, the operating library and current installed app were preserved.
+The durable executor, measured settings bridge, cache callbacks and restart UI
+remain unconnected; the next boundary is described in the job-store document.
