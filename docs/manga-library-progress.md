@@ -809,5 +809,31 @@ Queued jobs now require the complete supported OCR options and a versioned
 CPU/GPU environment snapshot, verified against their canonical settings hash.
 The private schema advances to 2; older fingerprint-only databases are preserved
 and refused rather than supplied with guessed settings. The storage layer still
-does not execute OCR or offer restart UI. New Windows validation is pending.
+does not execute OCR or offer restart UI. Windows run34377207382 passed all
+13 CTest suites, 21 worker tests and required staged/installed/artifact checks.
+The new diagnostic executable also passed 18 local synthetic job-store checks
+with zero skips using a separately composed, verified Qt/SQL runtime.
 See [the snapshot contract](ocr-job-store.md#recoverable-settings-snapshot-version-1).
+
+## Preserve completed pages across GPU retry
+
+Neural OCR now reports page validity separately from session completion, failure,
+cancellation and cleanup failure. Valid completed pages, including empty pages,
+stay in their original positions with their original device and timing. Once the
+GPU process tree is confirmed stopped, only failed/unread pages are retried once
+on CPU. Progress includes the retained pages. Missing earlier outputs no longer
+hide valid later outputs.
+
+A worker that fails after publishing all valid page outputs remains a failed
+session; it is not converted to filename review by repeating every page. Cancel
+and failed cleanup cannot launch CPU retry. Failed CPU retry preserves both the
+earlier GPU evidence and any valid CPU evidence without reporting completion.
+The inspector receives session errors, and the legacy vector API attaches session
+failure to its compatibility results while preserving text/device.
+
+Synthetic policy tests cover sparse/malformed pages, blank results, failure after
+all outputs, cancellation, cleanup failure, CPU failure, unexpected GPU-labelled
+CPU responses and cancellation from a progress callback. New Windows validation
+and local packaged checks for this execution change are pending. These tests do
+not establish new real-work speed or accuracy. Durable raw-result callbacks,
+cache-before-receipt persistence and restart UI remain follow-up work.

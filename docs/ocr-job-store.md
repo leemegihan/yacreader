@@ -120,11 +120,11 @@ then remeasure and compare its fingerprint before offering application restart/r
 full original-to-prepared transforms must accompany completion payloads before
 drawing cached regions over an original page.
 
-The current GPU wrapper retries the complete input on CPU after a GPU failure.
-A durable completion callback must first define how already committed GPU pages
-and later CPU retries are reconciled. Preserve validated completed pages and
-reprocess remaining pages in the intended integration; do not overwrite receipts
-or relabel CPU execution as GPU. Cache elapsedMs is historical inference data,
+The GPU wrapper now preserves validated completed pages in memory and retries
+only failed/unread pages on CPU after verified worker cleanup. Its separate
+execution status preserves cancellation, cleanup failure and nonzero exit after
+all outputs. Durable page callbacks and cache-before-receipt writes still need
+integration; do not treat these in-memory completion flags as stored evidence. Cache elapsedMs is historical inference data,
 not a fresh cache-hit duration.
 
 
@@ -167,4 +167,8 @@ Prepared-page geometry/transforms and physical GPU scheduling remain separate wo
 Synthetic checks cover non-default settings across close/reopen and lease recovery,
 absent GPU and Tesseract snapshots, missing fields, type/range/version errors,
 stale fingerprints, changed runtime hashes and preservation of an older database.
-Windows build and packaged execution results must be recorded after the new run.
+Snapshot code 9873b369 passed Windows run34377207382, including 18 downloaded
+job-store checks. The exact new diagnostic executable also passed all 18 checks
+locally with zero skips in a composed deployment using previously verified Qt/SQL
+dependencies. This was a synthetic temporary-DB check, not OCR inference or a
+byte-for-byte validation of the complete new runtime artifact.

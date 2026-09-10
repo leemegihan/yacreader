@@ -6,6 +6,7 @@
 #include "local_metadata.h"
 #include "local_ocr_cache.h"
 #include "local_ocr_process.h"
+#include "local_ocr_recovery.h"
 #include "ocr_page_view.h"
 #include "yacreader_archive_inspector_dialog.h"
 #include "yacreader_global.h"
@@ -128,6 +129,12 @@ private slots:
     void folderAndArchiveUseSamePageOrder();
     void collectionFolderIsNotAComic();
     void labelledCandidatesAreNotTranslators();
+    void recoveryRetainsCompletedPages();
+    void recoveryFailureBoundaries_data();
+    void recoveryFailureBoundaries();
+    void recoveryCpuFailurePreservesEvidence();
+    void recoveryLegacyRejectsSessionFailure();
+    void recoveryCancellationFromProgress();
     void ocrProcessAndCancellation();
     void ocrProcessTreeCleanup_data();
     void ocrProcessTreeCleanup();
@@ -382,6 +389,197 @@ void LocalMetadataTest::labelledCandidatesAreNotTranslators()
     }
     QCOMPARE(imageEvidence, 7); // Five author/title credits and two publisher/circle hints.
     QVERIFY(suggestions.last().page == 0);
+}
+
+namespace {
+LocalMetadata::RecognitionBatch syntheticAttempt(int count, const QString &device)
+{
+    LocalMetadata::RecognitionBatch result;
+    result.status = LocalMetadata::RecognitionStatus::Complete;
+    result.gpuStarted = device == QStringLiteral("gpu:0");
+    result.validPages.fill(true, count);
+    for (int i = 0; i < count; ++i) {
+        LocalMetadata::Reading reading;
+        reading.device = device;
+        reading.text = QStringLiteral("Synthetic page %1").arg(i);
+        reading.reviewRequired = true;
+        result.readings.append(reading);
+    }
+    return result;
+}
+QVector<QImage> recoveryImages()
+{
+    QVector<QImage> images;
+    for (int i = 1; i <= 6; ++i) {
+        QImage image(i, 1, QImage::Format_RGB32);
+        image.fill(Qt::white);
+        images.append(image);
+    }
+    return images;
+}
+}
+
+void LocalMetadataTest::recoveryRetainsCompletedPages()
+{
+    using namespace LocalMetadata;
+    const auto images = recoveryImages();
+    auto gpu = syntheticAttempt(6, QStringLiteral("gpu:0"));
+    gpu.status = RecognitionStatus::Failed;
+    gpu.error = QStringLiteral("synthetic worker failed");
+    gpu.validPages[1] = gpu.validPages[4] = false;
+    gpu.readings[1].error = QStringLiteral("malformed page");
+    gpu.readings[4] = { };
+    gpu.readings[2].text.clear(); // Successful blank page is not missing.
+    gpu.readings[0].elapsedMs = 123;
+    auto cpu = syntheticAttempt(2, QStringLiteral("cpu"));
+    cpu.readings[0].text = QStringLiteral("recovered second");
+    cpu.readings[1].text = QStringLiteral("recovered fifth");
+    OcrOptions options;
+    options.neural = options.gpu = true;
+    options.cpuThreads = 4;
+    options.rotation = 90;
+    auto cancel = std::make_shared<std::atomic_bool>(false);
+    int calls = 0;
+    QVector<int> retriedWidths, progressCounts;
+    QVector<OcrOptions> receivedOptions;
+    auto result = LocalOcrRecovery::recognize(images, options, cancel, [&](int complete, int total, const QString &) {
+                progressCounts.append(complete);
+                QCOMPARE(total, 6); }, [&](const QVector<QImage> &input, const OcrOptions &received, const Cancellation &, const Progress &progress) {
+                receivedOptions.append(received);
+                if (++calls == 1)
+                    return gpu;
+                for (const auto &image : input)
+                    retriedWidths.append(image.width());
+                progress(1, 2, QStringLiteral("synthetic retry"));
+                progress(2, 2, QStringLiteral("synthetic retry done"));
+                return cpu; });
+    QCOMPARE(calls, 2);
+    QCOMPARE(retriedWidths, QVector<int>({ 2, 5 }));
+    QCOMPARE(receivedOptions.size(), 2);
+    QVERIFY(receivedOptions.first().gpu);
+    QVERIFY(!receivedOptions.last().gpu);
+    QCOMPARE(receivedOptions.last().cpuThreads, 4);
+    QCOMPARE(receivedOptions.last().rotation, 90);
+    QCOMPARE(progressCounts, QVector<int>({ 4, 5, 6 }));
+    QCOMPARE(result.status, RecognitionStatus::Complete);
+    QVERIFY(result.error.isEmpty());
+    QCOMPARE(result.attemptErrors, QStringList { gpu.error });
+    for (int i : { 0, 2, 3, 5 }) {
+        QCOMPARE(result.readings.at(i).text, gpu.readings.at(i).text);
+        QCOMPARE(result.readings.at(i).device, QStringLiteral("gpu:0"));
+        QVERIFY(result.readings.at(i).warning.isEmpty());
+        QVERIFY(result.validPages.at(i));
+    }
+    QCOMPARE(result.readings[0].elapsedMs, 123);
+    QCOMPARE(result.readings[1].text, cpu.readings[0].text);
+    QCOMPARE(result.readings[4].text, cpu.readings[1].text);
+    QCOMPARE(result.readings[4].device, QStringLiteral("cpu"));
+    QVERIFY(!result.readings[4].warning.isEmpty());
+}
+
+void LocalMetadataTest::recoveryFailureBoundaries_data()
+{
+    QTest::addColumn<int>("status");
+    QTest::addColumn<bool>("gpuStarted");
+    QTest::addColumn<bool>("allValid");
+    QTest::newRow("exit-failed-after-all-output") << int(LocalMetadata::RecognitionStatus::Failed) << true << true;
+    QTest::newRow("cancelled-with-partial-output") << int(LocalMetadata::RecognitionStatus::Cancelled) << true << false;
+    QTest::newRow("cleanup-failed") << int(LocalMetadata::RecognitionStatus::CleanupFailed) << true << false;
+    QTest::newRow("cpu-failure-no-recursion") << int(LocalMetadata::RecognitionStatus::Failed) << false << false;
+    QTest::newRow("normal-success") << int(LocalMetadata::RecognitionStatus::Complete) << true << true;
+}
+
+void LocalMetadataTest::recoveryFailureBoundaries()
+{
+    using namespace LocalMetadata;
+    QFETCH(int, status);
+    QFETCH(bool, gpuStarted);
+    QFETCH(bool, allValid);
+    auto first = syntheticAttempt(6, gpuStarted ? QStringLiteral("gpu:0") : QStringLiteral("cpu"));
+    first.status = RecognitionStatus(status);
+    first.gpuStarted = gpuStarted;
+    if (first.status != RecognitionStatus::Complete)
+        first.error = QStringLiteral("synthetic failure");
+    first.validPages[4] = allValid;
+    int calls = 0;
+    const auto result = LocalOcrRecovery::recognize(recoveryImages(), { }, { }, { },
+                                                    [&](const QVector<QImage> &, const OcrOptions &, const Cancellation &, const Progress &) {
+                                                        ++calls;
+                                                        return first;
+                                                    });
+    QCOMPARE(calls, 1);
+    QCOMPARE(result.status, first.status);
+    QCOMPARE(result.error, first.error);
+    QCOMPARE(result.readings[0].text, first.readings[0].text);
+    QCOMPARE(result.validPages, first.validPages);
+}
+
+void LocalMetadataTest::recoveryCpuFailurePreservesEvidence()
+{
+    using namespace LocalMetadata;
+    for (const bool unexpectedGpu : { false, true }) {
+        auto first = syntheticAttempt(6, QStringLiteral("gpu:0"));
+        first.status = RecognitionStatus::Failed;
+        first.error = QStringLiteral("synthetic GPU failure");
+        first.validPages[1] = first.validPages[4] = false;
+        auto second = syntheticAttempt(2, unexpectedGpu ? QStringLiteral("gpu:0") : QStringLiteral("cpu"));
+        second.gpuStarted = false;
+        if (!unexpectedGpu) {
+            second.status = RecognitionStatus::Failed;
+            second.error = QStringLiteral("synthetic CPU failure after output");
+        }
+        int calls = 0;
+        auto result = LocalOcrRecovery::recognize(recoveryImages(), { }, { }, { },
+                                                  [&](const QVector<QImage> &, const OcrOptions &, const Cancellation &, const Progress &) {
+                                                      return ++calls == 1 ? first : second;
+                                                  });
+        QCOMPARE(calls, 2);
+        QCOMPARE(result.status, RecognitionStatus::Failed);
+        QVERIFY(!result.error.isEmpty());
+        QCOMPARE(result.readings[0].text, first.readings[0].text);
+        QCOMPARE(result.readings[0].device, QStringLiteral("gpu:0"));
+        QCOMPARE(result.validPages[1], !unexpectedGpu);
+        QCOMPARE(result.validPages[4], !unexpectedGpu);
+        QCOMPARE(result.readings[1].text, second.readings[0].text);
+    }
+}
+
+void LocalMetadataTest::recoveryLegacyRejectsSessionFailure()
+{
+    using namespace LocalMetadata;
+    auto batch = syntheticAttempt(2, QStringLiteral("gpu:0"));
+    batch.status = RecognitionStatus::Failed;
+    batch.error = QStringLiteral("synthetic failure after all output");
+    batch.readings[1].text.clear();
+    auto result = LocalOcrRecovery::legacyReadings(batch);
+    QCOMPARE(result[0].text, batch.readings[0].text);
+    QVERIFY(result[1].text.isEmpty());
+    for (const auto &reading : result) {
+        QCOMPARE(reading.error, batch.error);
+        QCOMPARE(reading.device, QStringLiteral("gpu:0"));
+    }
+    // The outcome API retains valid data independent of the compatibility view.
+    QVERIFY(batch.readings[0].error.isEmpty());
+    QVERIFY(batch.validPages[1]);
+}
+
+void LocalMetadataTest::recoveryCancellationFromProgress()
+{
+    using namespace LocalMetadata;
+    auto cancel = std::make_shared<std::atomic_bool>(false);
+    auto first = syntheticAttempt(6, QStringLiteral("gpu:0"));
+    first.status = RecognitionStatus::Failed;
+    first.error = QStringLiteral("synthetic failure");
+    first.validPages[4] = false;
+    int calls = 0;
+    auto result = LocalOcrRecovery::recognize(recoveryImages(), { }, cancel, [&](int, int, const QString &) { cancel->store(true); }, [&](const QVector<QImage> &, const OcrOptions &, const Cancellation &, const Progress &) {
+                ++calls;
+                return first; });
+    QCOMPARE(calls, 1);
+    QCOMPARE(result.status, RecognitionStatus::Cancelled);
+    QVERIFY(!result.error.isEmpty());
+    QVERIFY(result.validPages[0]);
+    QCOMPARE(result.readings[0].text, first.readings[0].text);
 }
 
 void LocalMetadataTest::ocrProcessAndCancellation()

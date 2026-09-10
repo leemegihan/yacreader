@@ -5,6 +5,7 @@
 #include "compressed_archive.h"
 #include "library_maintenance_lock.h"
 #include "local_ocr_process.h"
+#include "local_ocr_recovery.h"
 #include "qnaturalsorting.h"
 #include "yacreader_global.h"
 
@@ -271,19 +272,25 @@ static QByteArray runOcrTsv(const QImage &image, const OcrOptions &options, cons
     return process.readAllStandardOutput().left(4 * 1024 * 1024 + 1);
 }
 
-static QVector<Reading> recognizeNeuralPages(const QVector<QImage> &images, const OcrOptions &options, const Cancellation &cancel, const Progress &progress)
+static RecognitionBatch recognizeNeuralAttempt(const QVector<QImage> &images, const OcrOptions &options, const Cancellation &cancel, const Progress &progress)
 {
-    QVector<Reading> readings(images.size());
+    RecognitionBatch batch;
+    batch.readings.resize(images.size());
+    batch.validPages.fill(false, images.size());
+    auto &readings = batch.readings;
     for (auto &reading : readings)
         reading.reviewRequired = true;
-    auto fail = [&](const QString &error) {
-        for (auto &reading : readings)
-            if (reading.text.isEmpty() && reading.error.isEmpty())
-                reading.error = error;
-        return readings;
+    auto fail = [&](const QString &error, RecognitionStatus status = RecognitionStatus::Failed) {
+        batch.status = status;
+        batch.error = error;
+        return batch;
     };
-    if (images.isEmpty() || cancelled(cancel))
-        return readings;
+    if (cancelled(cancel))
+        return fail(tr("Cancelled"), RecognitionStatus::Cancelled);
+    if (images.isEmpty()) {
+        batch.status = RecognitionStatus::Complete;
+        return batch;
+    }
     if (images.size() > 12)
         return fail(tr("한 번에 최대 12장까지 읽을 수 있습니다."));
     const QDir root(QCoreApplication::applicationDirPath() + QStringLiteral("/ocr-neural"));
@@ -302,7 +309,7 @@ static QVector<Reading> recognizeNeuralPages(const QVector<QImage> &images, cons
     QVector<QSize> sizes;
     for (int i = 0; i < images.size(); ++i) {
         if (cancelled(cancel))
-            return readings;
+            return fail(tr("Cancelled"), RecognitionStatus::Cancelled);
         const auto prepared = prepareOcrImage(images.at(i), options);
         const auto input = temporary.filePath(QStringLiteral("page-%1.png").arg(i));
         const auto output = temporary.filePath(QStringLiteral("result-%1.json").arg(i));
@@ -330,24 +337,31 @@ static QVector<Reading> recognizeNeuralPages(const QVector<QImage> &images, cons
     QString startError;
     if (!process.startOcr(python, arguments, &startError))
         return fail(startError);
+    batch.gpuStarted = gpu;
     QElapsedTimer timer;
     timer.start();
     int completed = 0;
+    QVector<bool> observed(images.size(), false);
     QString lastStage;
     QString error;
     QByteArray diagnostics;
     auto collect = [&] {
-        while (completed < readings.size()) {
-            QFile file(temporary.filePath(QStringLiteral("result-%1.json").arg(completed)));
+        for (int i = 0; i < readings.size(); ++i) {
+            if (observed.at(i))
+                continue;
+            QFile file(temporary.filePath(QStringLiteral("result-%1.json").arg(i)));
             if (!file.exists())
-                break;
+                continue; // Later valid outputs survive even if an earlier page is absent.
+            observed[i] = true;
             if (!file.open(QIODevice::ReadOnly) || file.size() > 4 * 1024 * 1024)
-                readings[completed].error = tr("영역 OCR 결과를 읽지 못했습니다.");
+                readings[i].error = tr("영역 OCR 결과를 읽지 못했습니다.");
             else
-                readings[completed] = parseNeuralReading(file.readAll(), sizes.at(completed));
+                readings[i] = parseNeuralReading(file.readAll(), sizes.at(i));
             if (options.gpu && !gpu)
-                readings[completed].warning = tr("GPU 추가 구성 요소가 없어 CPU로 처리했습니다.");
-            ++completed;
+                readings[i].warning = tr("GPU 추가 구성 요소가 없어 CPU로 처리했습니다.");
+            batch.validPages[i] = readings.at(i).error.isEmpty() && (readings.at(i).device == QStringLiteral("cpu") || readings.at(i).device == QStringLiteral("gpu:0"));
+            if (batch.validPages.at(i))
+                ++completed;
             timer.restart(); // Per-page bound; progress heartbeats cannot extend it.
         }
         QFile file(temporary.filePath("progress.json"));
@@ -373,52 +387,61 @@ static QVector<Reading> recognizeNeuralPages(const QVector<QImage> &images, cons
             error = cancelled(cancel) ? tr("Cancelled") : tr("OCR timed out for this page.");
             QString cleanupError;
             if (!process.finishTree(&cleanupError))
-                return fail(cleanupError);
+                return fail(cleanupError, RecognitionStatus::CleanupFailed);
             break;
         }
     }
     collect();
     QString cleanupError;
     if (!process.finishTree(&cleanupError))
-        return fail(cleanupError); // Never launch CPU retry while the GPU tree may remain.
+        return fail(cleanupError, RecognitionStatus::CleanupFailed); // Never launch CPU retry while the GPU tree may remain.
     if (error.isEmpty() && (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0))
         error = tr("Local OCR failed: %1").arg(QString::fromUtf8(diagnostics).right(1500));
-    if (gpu && !cancelled(cancel) && (!error.isEmpty() || std::any_of(readings.cbegin(), readings.cend(), [](const Reading &r) { return !r.error.isEmpty(); }))) {
-        auto fallback = options;
-        fallback.gpu = false;
-        if (progress)
-            progress(0, images.size(), tr("GPU 실행 실패 · CPU로 다시 읽는 중"));
-        auto recovered = recognizeNeuralPages(images, fallback, cancel, progress);
-        for (auto &reading : recovered)
-            reading.warning = tr("GPU 실행에 실패하여 CPU로 처리했습니다.");
-        return recovered;
-    }
+    if (cancelled(cancel))
+        return fail(tr("Cancelled"), RecognitionStatus::Cancelled);
     if (!error.isEmpty())
         return fail(error);
     if (completed != readings.size())
         return fail(tr("일부 페이지의 OCR 결과가 없습니다."));
-    return readings;
+    batch.status = RecognitionStatus::Complete;
+    return batch;
+}
+
+RecognitionBatch recognizePagesWithOutcome(const QVector<QImage> &images, const OcrOptions &options, const Cancellation &cancel, const Progress &progress)
+{
+    if (options.neural)
+        return LocalOcrRecovery::recognize(images, options, cancel, progress, recognizeNeuralAttempt);
+    RecognitionBatch batch;
+    batch.readings.resize(images.size());
+    batch.validPages.fill(false, images.size());
+    batch.status = RecognitionStatus::Complete;
+    for (int i = 0; i < images.size(); ++i) {
+        if (cancelled(cancel)) {
+            batch.status = RecognitionStatus::Cancelled;
+            batch.error = tr("Cancelled");
+            break;
+        }
+        if (progress)
+            progress(i, images.size(), tr("글자 읽는 중"));
+        batch.readings[i] = recognizePage(images.at(i), options, cancel);
+        batch.validPages[i] = batch.readings.at(i).error.isEmpty() && !cancelled(cancel);
+        if (!batch.validPages.at(i)) {
+            batch.status = cancelled(cancel) ? RecognitionStatus::Cancelled : RecognitionStatus::Failed;
+            batch.error = cancelled(cancel) ? tr("Cancelled") : batch.readings.at(i).error;
+        }
+    }
+    return batch;
 }
 
 QVector<Reading> recognizePages(const QVector<QImage> &images, const OcrOptions &options, const Cancellation &cancel, const Progress &progress)
 {
-    if (options.neural)
-        return recognizeNeuralPages(images, options, cancel, progress);
-    QVector<Reading> readings;
-    for (const auto &image : images) {
-        if (cancelled(cancel))
-            break;
-        if (progress)
-            progress(readings.size(), images.size(), tr("글자 읽는 중"));
-        readings.append(recognizePage(image, options, cancel));
-    }
-    return readings;
+    return LocalOcrRecovery::legacyReadings(recognizePagesWithOutcome(images, options, cancel, progress));
 }
 
 Reading recognizePage(const QImage &image, const OcrOptions &options, const Cancellation &cancel)
 {
     if (options.neural)
-        return recognizeNeuralPages({ image }, options, cancel, { }).first();
+        return recognizePages({ image }, options, cancel).first();
     const QStringList languages = options.language == "auto"
             ? QStringList { options.vertical || options.segmentation == 5 ? "jpn_vert+eng" : "jpn+eng", "kor+eng" }
             : QStringList { options.language };
@@ -469,7 +492,10 @@ Result analyze(const QString &path, int perEnd, const OcrOptions &options, const
             indexes.append(i);
         }
     }
-    const auto readings = recognizePages(images, options, cancel, progress);
+    const auto batch = recognizePagesWithOutcome(images, options, cancel, progress);
+    const auto &readings = batch.readings;
+    if (result.error.isEmpty() && batch.status != RecognitionStatus::Complete)
+        result.error = batch.error;
     for (int i = 0; i < readings.size(); ++i) {
         auto &page = result.pages[indexes.at(i)];
         page.reading = readings.at(i);

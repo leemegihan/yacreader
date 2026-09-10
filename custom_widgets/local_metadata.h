@@ -41,6 +41,22 @@ struct Reading {
     qint64 initializationMs = 0;
 };
 
+enum class RecognitionStatus { Complete,
+                               Failed,
+                               Cancelled,
+                               CleanupFailed };
+
+// In-memory execution outcome, not a durable cache receipt. Valid blank pages
+// remain valid even when the worker later fails. Callers must check status.
+struct RecognitionBatch {
+    QVector<Reading> readings;
+    QVector<bool> validPages;
+    RecognitionStatus status = RecognitionStatus::Failed;
+    QString error;
+    QStringList attemptErrors;
+    bool gpuStarted = false;
+};
+
 struct Page {
     int number = 0;
     QString name;
@@ -103,6 +119,7 @@ Reading parseNeuralReading(const QByteArray &json, const QSize &imageSize);
 Reading parseTsv(const QByteArray &tsv, const QString &language);
 Reading chooseReading(const QVector<Reading> &readings);
 Reading recognizePage(const QImage &image, const OcrOptions &options, const Cancellation &cancel);
+RecognitionBatch recognizePagesWithOutcome(const QVector<QImage> &images, const OcrOptions &options, const Cancellation &cancel, const Progress &progress = { });
 QVector<Reading> recognizePages(const QVector<QImage> &images, const OcrOptions &options, const Cancellation &cancel, const Progress &progress = { });
 OcrOptions defaultOcrOptions();
 QImage prepareOcrImage(const QImage &image, const OcrOptions &options);
