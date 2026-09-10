@@ -112,6 +112,49 @@ std::optional<LocalMetadata::NeuralPageEvidence> restorePage(const OcrJobs::Job 
     return result;
 }
 
+PageLookup findUnrecordedPage(const LocalOcrRuntime::Measurement &measurement, int selectedIndex,
+                              const LocalMetadata::OcrGeometry &geometry, const QString &imageSha256,
+                              const QString &cacheRoot, const LocalMetadata::Cancellation &cancel)
+{
+    const auto failed = [](const QString &error) { return PageLookup { std::nullopt, error }; };
+    if (selectedIndex < 0)
+        return failed(QStringLiteral("Invalid selected cache page."));
+    PageLookup result;
+    int eligible = 0;
+    for (const QString requested : { "cpu", "gpu:0" }) {
+        for (const QString actual : { "cpu", "gpu:0" }) {
+            if (cancel && cancel->load())
+                return failed(QStringLiteral("Cache recovery cancelled."));
+            const LocalMetadata::NeuralPageEvidence input { selectedIndex, geometry, imageSha256, { }, { }, requested, actual };
+            const auto candidate = inputIdentity(measurement, input, nullptr);
+            if (!candidate)
+                continue;
+            ++eligible;
+            QString error;
+            const auto exists = LocalOcrCache::entryExists(cacheRoot, *candidate, &error);
+            if (!exists)
+                return failed(error);
+            if (!*exists)
+                continue;
+            const auto cached = LocalOcrCache::load(cacheRoot, *candidate, &error);
+            if (!cached)
+                return failed(error);
+            LocalMetadata::NeuralPageEvidence page { selectedIndex, geometry, imageSha256, cached->rawResult,
+                                                     cached->resultSha256, requested, actual };
+            if (!LocalMetadata::validNeuralEvidence(page))
+                return failed(QStringLiteral("Invalid unrecorded cache evidence."));
+            if (result.page)
+                return failed(QStringLiteral("Several eligible cached device results require review."));
+            result.page = page;
+        }
+    }
+    if (cancel && cancel->load())
+        return failed(QStringLiteral("Cache recovery cancelled."));
+    if (!eligible)
+        return failed(QStringLiteral("Invalid source geometry or measured cache settings."));
+    return result;
+}
+
 Result recordPage(OcrJobs::Store &store, const OcrJobs::Lease &lease,
                   const LocalOcrRuntime::Measurement &measurement, const LocalMetadata::NeuralPageEvidence &page,
                   const QString &cacheRoot, const LocalMetadata::Cancellation &cancel, const Clock &clock)

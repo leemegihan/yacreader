@@ -1926,8 +1926,10 @@ void LocalMetadataTest::claimedExecutorNeural()
     QCOMPARE(first.status, RecognitionStatus::Complete);
     QVERIFY(first.evidence[0].has_value());
     QCOMPARE(first.evidence[0]->actualDevice, expected);
-    const auto saved = LocalOcrPersistence::recordPage(store, *firstLease, *measured, *first.evidence[0], cache, { }, now);
-    QVERIFY2(saved.receiptSaved, qPrintable(saved.error));
+    const auto identity = LocalOcrPersistence::identity(*measured, *first.evidence[0], &error);
+    QVERIFY2(identity.has_value(), qPrintable(error));
+    QVERIFY(LocalOcrCache::save(cache, *identity, first.evidence[0]->rawResult, &error));
+    QVERIFY(store.get(*id)->pages.isEmpty()); // Interrupt after cache publication, before the page receipt.
     QVERIFY(store.pauseWhenCurrent(*firstLease, now));
     // Both input and deployed runtime are remeasured after the first worker exit.
     const auto currentSource = LocalOcrSource::read(folder, 3, { }, &error);
@@ -1943,6 +1945,7 @@ void LocalMetadataTest::claimedExecutorNeural()
     QCOMPARE(out.batch.status, RecognitionStatus::Complete);
     QVERIFY2(out.stateSaved, qPrintable(out.stateError));
     QCOMPARE(out.cachedPages, 1);
+    QCOMPARE(out.recoveredUnrecordedPages, 1);
     QCOMPARE(out.cacheHits, QVector<bool>({ true, false }));
     QCOMPARE(out.batch.validPages, QVector<bool>({ true, true }));
     QCOMPARE(out.batch.evidence[0]->rawResult, first.evidence[0]->rawResult);
@@ -1961,7 +1964,7 @@ void LocalMetadataTest::claimedExecutorNeural()
         QCOMPARE(recovered->rawResult, page.rawResult);
         QCOMPARE(recovered->actualDevice, expected);
     }
-    qInfo("Actual executor device=%s cached=%d cache-read=%lld ms remaining-page-ocr=%lld ms",
+    qInfo("Actual executor device=%s cached=%d cache-phase=%lld ms remaining-page-ocr=%lld ms",
           qPrintable(expected), out.cachedPages, out.cacheReadMs, out.batch.readings[1].elapsedMs);
 }
 
@@ -2099,7 +2102,7 @@ void LocalMetadataTest::claimedExecutorWorker()
 void LocalMetadataTest::claimedExecutor_data()
 {
     QTest::addColumn<QString>("mode");
-    for (const auto &mode : { "fresh", "resume", "page-candidate", "cancel", "worker-failure", "missing-delivery", "lease-expired", "changed-source", "changed-settings", "damaged-cache", "all-recorded", "changed-delivery", "changed-completion", "callback-throw", "stale-owner" })
+    for (const auto &mode : { "fresh", "resume", "orphan-first", "orphan-all", "orphan-damaged", "orphan-ambiguous", "page-candidate", "cancel", "worker-failure", "missing-delivery", "lease-expired", "changed-source", "changed-settings", "damaged-cache", "all-recorded", "changed-delivery", "changed-completion", "callback-throw", "stale-owner" })
         QTest::newRow(mode) << QString::fromLatin1(mode);
 }
 
@@ -2142,14 +2145,38 @@ void LocalMetadataTest::claimedExecutor()
         return NeuralPageEvidence { selectedIndex, prepared.geometry, hash(png), raw, hash(raw), QStringLiteral("cpu"), QStringLiteral("cpu") };
     };
     QString firstKey;
-    if (mode != QStringLiteral("fresh")) {
+    const bool orphanMode = mode.startsWith(QStringLiteral("orphan-"));
+    if (mode != QStringLiteral("fresh") && !orphanMode) {
         const auto saved = LocalOcrPersistence::recordPage(store, *lease, settings, evidenceFor(source->source.pages[0].image, 0, { }), cache, { }, [] { return 1001; });
         QVERIFY2(saved.receiptSaved, qPrintable(saved.error));
         firstKey = saved.cacheKey;
     }
+    if (orphanMode) {
+        auto first = evidenceFor(source->source.pages[0].image, 0, { });
+        first.rawResult.replace("\"lines\":[]", "\"elapsedMs\":7,\"lines\":[]");
+        first.resultSha256 = QString::fromLatin1(QCryptographicHash::hash(first.rawResult, QCryptographicHash::Sha256).toHex());
+        const auto identity = LocalOcrPersistence::identity(settings, first, &error);
+        QVERIFY(identity.has_value());
+        QVERIFY(LocalOcrCache::save(cache, *identity, first.rawResult, &error));
+        firstKey = LocalOcrCache::key(*identity);
+        if (mode == QStringLiteral("orphan-all")) {
+            const auto second = evidenceFor(source->source.pages[1].image, 1, { });
+            const auto other = LocalOcrPersistence::identity(settings, second, &error);
+            QVERIFY(other.has_value());
+            QVERIFY(LocalOcrCache::save(cache, *other, second.rawResult, &error));
+        } else if (mode == QStringLiteral("orphan-ambiguous")) {
+            first.requestedDevice = first.actualDevice = QStringLiteral("gpu:0");
+            first.rawResult.replace("cpu", "gpu:0");
+            first.resultSha256 = QString::fromLatin1(QCryptographicHash::hash(first.rawResult, QCryptographicHash::Sha256).toHex());
+            const auto other = LocalOcrPersistence::identity(settings, first, &error);
+            QVERIFY(other.has_value());
+            QVERIFY(LocalOcrCache::save(cache, *other, first.rawResult, &error));
+        }
+        QVERIFY(store.get(*id)->pages.isEmpty()); // Model output exists, DB receipt does not.
+    }
     if (mode == QStringLiteral("all-recorded"))
         QVERIFY(LocalOcrPersistence::recordPage(store, *lease, settings, evidenceFor(source->source.pages[1].image, 1, { }), cache, { }, [] { return 1001; }).receiptSaved);
-    if (mode == QStringLiteral("damaged-cache")) {
+    if (mode == QStringLiteral("damaged-cache") || mode == QStringLiteral("orphan-damaged")) {
         QFile file(QDir(cache).filePath(firstKey + QStringLiteral(".json")));
         QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
         QCOMPARE(file.write("bad cache"), qint64(9));
@@ -2230,18 +2257,21 @@ void LocalMetadataTest::claimedExecutor()
                 }
                 return result; });
     QVERIFY(correctOptions);
-    const bool rejected = mode == QStringLiteral("changed-source") || mode == QStringLiteral("changed-settings") || mode == QStringLiteral("damaged-cache") || mode == QStringLiteral("all-recorded") || mode == QStringLiteral("stale-owner");
+    const bool rejected = mode == QStringLiteral("orphan-all") || mode == QStringLiteral("orphan-damaged") || mode == QStringLiteral("orphan-ambiguous") || mode == QStringLiteral("changed-source") || mode == QStringLiteral("changed-settings") || mode == QStringLiteral("damaged-cache") || mode == QStringLiteral("all-recorded") || mode == QStringLiteral("stale-owner");
     QCOMPARE(calls, rejected ? 0 : 1);
     if (!rejected && mode != QStringLiteral("lease-expired"))
         QCOMPARE(widths, mode == QStringLiteral("fresh") ? QVector<int>({ 80, 90 }) : QVector<int>({ 90 }));
     QVERIFY(out.state.has_value());
     const auto savedJob = store.get(*id);
     QVERIFY(savedJob.has_value());
-    if (mode == QStringLiteral("fresh") || mode == QStringLiteral("resume") || mode == QStringLiteral("page-candidate")) {
+    if (mode == QStringLiteral("fresh") || mode == QStringLiteral("resume") || mode == QStringLiteral("page-candidate") || mode == QStringLiteral("orphan-first")) {
         QCOMPARE(out.batch.status, RecognitionStatus::Complete);
         QCOMPARE(*out.state, mode == QStringLiteral("page-candidate") ? OcrJobs::State::PageReview : OcrJobs::State::FilenameReview);
         QCOMPARE(out.cachedPages, mode == QStringLiteral("fresh") ? 0 : 1);
         QCOMPARE(out.cacheHits, mode == QStringLiteral("fresh") ? QVector<bool>({ false, false }) : QVector<bool>({ true, false }));
+        QCOMPARE(out.recoveredUnrecordedPages, mode == QStringLiteral("orphan-first") ? 1 : 0);
+        if (mode == QStringLiteral("orphan-first"))
+            QCOMPARE(out.batch.readings[0].elapsedMs, qint64(7)); // Preserve the cached measurement, do not relabel it as fresh OCR.
         QVERIFY(out.stateSaved && out.stateError.isEmpty());
         QVERIFY(out.metadata.error.isEmpty());
         if (mode == QStringLiteral("page-candidate")) {
@@ -2273,11 +2303,19 @@ void LocalMetadataTest::claimedExecutor()
             QCOMPARE(out.batch.status, RecognitionStatus::DeliveryFailed);
         else
             QCOMPARE(out.batch.status, RecognitionStatus::Failed);
-        QCOMPARE(savedJob->pages.size(), mode == QStringLiteral("worker-failure") || mode == QStringLiteral("all-recorded") || mode == QStringLiteral("callback-throw") || mode == QStringLiteral("changed-completion") ? 2 : 1);
+        const int expectedPages = orphanMode ? (mode == QStringLiteral("orphan-all") ? 2 : 0) : (mode == QStringLiteral("worker-failure") || mode == QStringLiteral("all-recorded") || mode == QStringLiteral("callback-throw") || mode == QStringLiteral("changed-completion") ? 2 : 1);
+        QCOMPARE(savedJob->pages.size(), expectedPages);
     }
+    if (mode == QStringLiteral("orphan-all")) {
+        QCOMPARE(out.cachedPages, 2);
+        QCOMPARE(out.recoveredUnrecordedPages, 2);
+        QCOMPARE(out.batch.status, RecognitionStatus::Failed); // Cache pages alone do not prove a prior session succeeded.
+    }
+    if (mode == QStringLiteral("orphan-ambiguous"))
+        QCOMPARE(QDir(cache).entryList(QDir::Files).size(), 2);
     if (mode == QStringLiteral("changed-delivery") || mode == QStringLiteral("changed-completion"))
         QVERIFY(out.metadata.pages[1].text.isEmpty()); // Invalid evidence never supplies candidate text.
-    if (mode == QStringLiteral("damaged-cache")) {
+    if (mode == QStringLiteral("damaged-cache") || mode == QStringLiteral("orphan-damaged")) {
         QFile file(QDir(cache).filePath(firstKey + QStringLiteral(".json")));
         QVERIFY(file.open(QIODevice::ReadOnly));
         QCOMPARE(file.readAll(), QByteArray("bad cache"));

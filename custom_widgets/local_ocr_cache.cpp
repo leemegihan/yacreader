@@ -48,12 +48,12 @@ QString path(const QString &root, const Identity &i, QString *error)
 {
     failure(error, { });
     const QFileInfo directory(root);
-    if (!directory.isAbsolute() || !directory.isDir() || directory.isSymLink() || !valid(i)) {
+    if (!directory.isAbsolute() || !directory.isDir() || directory.isSymLink() || directory.isJunction() || !valid(i)) {
         failure(error, QStringLiteral("Invalid private cache directory or complete OCR identity."));
         return { };
     }
     const QString result = QDir(directory.canonicalFilePath()).filePath(key(i) + QStringLiteral(".json"));
-    if (QFileInfo(result).isSymLink()) {
+    if (QFileInfo(result).isSymLink() || QFileInfo(result).isJunction()) {
         failure(error, QStringLiteral("Refusing a linked cache entry."));
         return { };
     }
@@ -77,6 +77,21 @@ std::optional<Entry> validate(const Identity &i, const QByteArray &bytes, QStrin
 QString key(const Identity &i)
 {
     return valid(i) ? digest(QJsonDocument(metadata(i)).toJson(QJsonDocument::Compact)) : QString();
+}
+
+std::optional<bool> entryExists(const QString &root, const Identity &i, QString *error)
+{
+    const auto filename = path(root, i, error);
+    if (filename.isEmpty())
+        return std::nullopt;
+    const QFileInfo info(filename);
+    if (!info.exists())
+        return false;
+    if (!info.isFile()) {
+        failure(error, QStringLiteral("OCR cache entry is not an ordinary file."));
+        return std::nullopt;
+    }
+    return true;
 }
 
 std::optional<Entry> load(const QString &root, const Identity &i, QString *error)

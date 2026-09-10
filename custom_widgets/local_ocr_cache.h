@@ -28,6 +28,9 @@ struct Entry {
     QString resultSha256;
 };
 QString key(const Identity &identity);
+// False means absent; no value means an invalid path/identity/file type. This
+// does not validate an existing entry's content; callers must still load it.
+std::optional<bool> entryExists(const QString &root, const Identity &identity, QString *error);
 // Root must be an existing absolute private cache directory. Missing, invalid or
 // mismatched entries return no value. Loading never creates files or runs OCR.
 std::optional<Entry> load(const QString &root, const Identity &identity, QString *error);

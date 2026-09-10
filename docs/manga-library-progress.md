@@ -1039,3 +1039,17 @@ A deterministic Windows readiness test now holds the published file without read
 sharing, proves immediate open fails, then releases it and requires the bounded
 readiness helper to succeed. This checks the observed failure class without
 claiming which external process caused the original intermittent failures.
+
+### 2026-09-10: receipt-gap recovery prepared (validation pending)
+
+The executor now validates and adopts a unique eligible cache result left before
+DB receipt publication, avoiding a redundant inference that would conflict with
+immutable cached timing bytes. Corrupt or ambiguous device results remain review
+failures. Recovered pages retain their original device/timing and are reported
+as cache hits. All cached pages alone still do not prove a failed session succeeded.
+Four regression cases and the actual neural pause/resume check cover this gap.
+
+Library-binding code21550882 passed its initial Windows native stage and an exact
+local early diagnostic artifact: eight binding cases plus deterministic file
+sharing readiness (11 Qt totals) passed. This early artifact is distinct from the
+still-running full Windows build and installer validation.

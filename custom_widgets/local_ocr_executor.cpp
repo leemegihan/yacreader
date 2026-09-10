@@ -146,8 +146,23 @@ Outcome executeClaimed(OcrJobs::Store &store, const OcrJobs::Lease &lease,
             out.cacheHits[i] = true;
             ++out.cachedPages;
         } else {
-            missing.append(i);
-            images.append(page.image);
+            const auto found = LocalOcrPersistence::findUnrecordedPage(runtime, i, prepared.geometry, inputs.last().imageSha256, cacheRoot, flag);
+            if (!found.error.isEmpty())
+                return fail(found.error, flag->load() ? RecognitionStatus::Cancelled : RecognitionStatus::Failed);
+            if (found.page) {
+                const auto saved = LocalOcrPersistence::recordPage(store, lease, runtime, *found.page, cacheRoot, flag, now);
+                if (!saved.receiptSaved)
+                    return fail(saved.error, flag->load() ? RecognitionStatus::Cancelled : RecognitionStatus::DeliveryFailed);
+                out.batch.evidence[i] = *found.page;
+                out.batch.readings[i] = parseNeuralReading(found.page->rawResult, found.page->geometry.preparedSize);
+                out.batch.validPages[i] = true;
+                out.cacheHits[i] = true;
+                ++out.cachedPages;
+                ++out.recoveredUnrecordedPages;
+            } else {
+                missing.append(i);
+                images.append(page.image);
+            }
         }
     }
     out.cacheReadMs = cacheTimer.elapsed();

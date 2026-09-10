@@ -25,6 +25,17 @@ std::optional<LocalMetadata::NeuralPageEvidence> restorePage(const OcrJobs::Job 
                                                              const LocalOcrRuntime::Measurement &measurement, int selectedIndex,
                                                              const LocalMetadata::OcrGeometry &geometry, const QString &imageSha256,
                                                              const QString &cacheRoot, QString *error, const LocalMetadata::Cancellation &cancel = { });
+struct PageLookup {
+    std::optional<LocalMetadata::NeuralPageEvidence> page;
+    QString error; // Both empty means no eligible entry; errors are not misses.
+};
+// Read-only discovery for a selected page with no DB receipt. Validates complete
+// input/package/device identity and raw response. Multiple eligible device
+// results are ambiguous, not permission to choose or replace one. A found page
+// still needs recordPage with a current lease before it counts as persisted.
+PageLookup findUnrecordedPage(const LocalOcrRuntime::Measurement &measurement, int selectedIndex,
+                              const LocalMetadata::OcrGeometry &geometry, const QString &imageSha256,
+                              const QString &cacheRoot, const LocalMetadata::Cancellation &cancel = { });
 // Never finishes a job or hides batch failure. A late/cancelled result may leave
 // immutable orphan cache data; expired leases are rejected at the DB write lock.
 Result recordPage(OcrJobs::Store &store, const OcrJobs::Lease &lease,

@@ -494,3 +494,28 @@ result; its exact SHA and validation stage must be reported separately.
 
 Windows identity semantics: [FILE_ID_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info),
 [CreateFileW sharing](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew).
+
+
+## Recovering cache publication before a page receipt
+
+A crash can leave a valid immutable cache entry without its DB receipt. Re-running
+the image first can produce different timing bytes and then conflict with that
+entry. The executor now checks exact eligible cache identities before starting a
+missing page. One fully validated result is recorded under the current lease and
+marked as a cache hit; its original raw result, device and timing are retained.
+The recoveredUnrecordedPages count distinguishes this repair from an existing
+receipt. cacheReadMs describes the preparation/cache recovery phase, including
+receipt repair, not a fresh inference measurement.
+
+A missing entry permits OCR. Invalid roots, linked/non-file entries, corrupt
+content and multiple eligible device results are failures for review, never
+permission to overwrite evidence or choose a preferred answer. Cache discovery
+is read-only; only the normal fenced recordPage path adopts a result. Cancellation
+or a stale lease cannot create a valid late receipt. If every page is cached, the
+old failed/interrupted session still is not automatically declared successful.
+
+Four synthetic executor cases cover one recovered entry, all entries without
+receipts, corruption and competing device results. The actual neural resume
+check now pauses after publishing its first synthetic page but before its DB
+receipt, then remeasures source/runtime and processes only the second page.
+Windows and physical-device validation for this latest repair is pending.

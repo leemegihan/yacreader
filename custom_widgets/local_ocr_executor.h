@@ -9,8 +9,9 @@ struct Outcome {
     LocalMetadata::RecognitionBatch batch;
     LocalMetadata::Result metadata;
     int cachedPages = 0;
+    int recoveredUnrecordedPages = 0;
     QVector<bool> cacheHits; // Per selected page; device/timing may be from an older attempt.
-    qint64 cacheReadMs = 0; // Separate from the cached reading's original OCR time.
+    qint64 cacheReadMs = 0; // Preparation/cache recovery phase, separate from original OCR time.
     bool stateSaved = false;
     std::optional<OcrJobs::State> state;
     QString stateError;
