@@ -99,6 +99,7 @@ target_link_libraries(metadata_widgets PUBLIC
     Qt6::Widgets
     Qt6::Network
     Qt6::Sql
+    ocr_job_store
     comic_backend
 )
 
@@ -144,6 +145,7 @@ target_link_libraries(custom_widgets_library PUBLIC
     Qt6::Widgets
     Qt6::Network
     Qt6::Sql
+    ocr_job_store
     comic_backend
     common_gui
     rhi_flow_library
