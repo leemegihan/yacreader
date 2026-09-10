@@ -211,3 +211,37 @@ receipt, changed runtime files and a worker failure after all outputs. Retained
 GPU pages must stay unchanged when CPU handles the remaining pages. These tests
 must not enumerate more original works, expand the first/last-three-page limit,
 start whole-library processing or authorize automatic metadata saves.
+
+
+## Prepared geometry and raw neural evidence
+
+The in-memory RecognitionBatch now has optional per-page NeuralPageEvidence.
+The production neural runner retains exact raw JSON (bounded to 4 MiB), its hash,
+the hash of the exact PNG sent to the worker, preparation geometry and requested/
+actual device. PNG bytes are encoded once, written and hashed, then released per
+page. Preparation reports the decoded input size, final size, preprocessing
+revision and Qt's adjusted input-to-prepared transform. Existing prepared pixels
+and Reading bounds are preserved; the latter still drive candidate interpretation.
+
+Coordinates start at the decoded input, after EXIF/scaled decoding. A crop is
+additional caller context: mapOcrBoundsToPage requires a matching decoded page size
+and crop rectangle, rejects padding-only/out-of-range regions and maps pixel edges
+for presentation. It does not reconstruct original encoded-file coordinates or
+connect overlays to the inspector yet. Actual integer scaling ratios and
+QImage::trueMatrix preserve quarter-turn translations and rounding.
+
+Valid blank responses retain evidence. Failed or invalid responses cannot supply
+valid page evidence. Recovery preserves completed GPU payloads unchanged and
+remaps CPU retry evidence to the original selected index. requestedDevice records
+the per-attempt device (cpu for a CPU retry); the user's original GPU preference
+belongs in the job settings. A valid payload does not erase a failed session,
+cancellation or cleanup failure. Tesseract and legacy injected runners may omit
+neural evidence. Hash validation detects accidental mismatches, not authenticity.
+
+This is still in-memory retention: it survives temporary-directory cleanup but
+not an app crash. Raw callbacks, measured runtime snapshots, cache-before-receipt
+writes, physical GPU scheduling and durable inspector resume remain separate.
+Synthetic geometry and worker-failure tests cover mapping, sparse retries, blank
+and malformed responses and exact raw bytes after temporary cleanup. Windows CI
+and local downloaded-artifact verification must pass before calling this change
+validated. No original works or private OCR outputs are included in these tests.

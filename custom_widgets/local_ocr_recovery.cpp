@@ -12,7 +12,10 @@ QString tr(const char *text)
 
 void normalize(RecognitionBatch &batch, int count)
 {
-    if (batch.readings.size() != count || batch.validPages.size() != count) {
+    if (batch.evidence.isEmpty())
+        batch.evidence.resize(count); // Legacy synthetic runners may omit evidence.
+    if (batch.readings.size() != count || batch.validPages.size() != count || batch.evidence.size() != count) {
+        batch.evidence.fill(std::nullopt, count);
         batch.readings.resize(count);
         batch.validPages.fill(false, count);
         if (batch.status != RecognitionStatus::CleanupFailed && batch.status != RecognitionStatus::Cancelled)
@@ -23,6 +26,10 @@ void normalize(RecognitionBatch &batch, int count)
     for (int i = 0; i < count; ++i) {
         const auto &reading = batch.readings.at(i);
         batch.validPages[i] = batch.validPages.at(i) && reading.error.isEmpty() && (reading.device == QStringLiteral("cpu") || reading.device == QStringLiteral("gpu:0"));
+        if (batch.evidence.at(i) && (batch.evidence.at(i)->selectedIndex != i || batch.evidence.at(i)->actualDevice != reading.device || !validNeuralEvidence(*batch.evidence.at(i))))
+            batch.validPages[i] = false;
+        if (!batch.validPages.at(i))
+            batch.evidence[i].reset();
         allValid = allValid && batch.validPages.at(i);
     }
     if (batch.status == RecognitionStatus::Complete && (!allValid || !batch.error.isEmpty())) {
@@ -93,6 +100,9 @@ RecognitionBatch recognize(const QVector<QImage> &images, const OcrOptions &opti
         reading.warning = reading.warning.isEmpty() ? warning : reading.warning + u'\n' + warning;
         batch.readings[indexes.at(i)] = reading;
         batch.validPages[indexes.at(i)] = retried.validPages.at(i);
+        batch.evidence[indexes.at(i)] = retried.validPages.at(i) ? retried.evidence.at(i) : std::nullopt;
+        if (batch.evidence.at(indexes.at(i)))
+            batch.evidence[indexes.at(i)]->selectedIndex = indexes.at(i);
     }
     batch.attemptErrors.append(initialError);
     batch.attemptErrors.append(retried.attemptErrors);

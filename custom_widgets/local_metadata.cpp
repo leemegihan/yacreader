@@ -11,6 +11,7 @@
 
 #include <QBuffer>
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
@@ -31,6 +32,7 @@
 #include <QUuid>
 
 #include <algorithm>
+#include <cmath>
 
 namespace LocalMetadata {
 namespace {
@@ -166,7 +168,7 @@ OcrOptions defaultOcrOptions()
     return options;
 }
 
-QImage prepareOcrImage(const QImage &image, const OcrOptions &options)
+PreparedOcrPage prepareOcrPage(const QImage &image, const OcrOptions &options)
 {
     if (image.isNull())
         return { };
@@ -175,27 +177,84 @@ QImage prepareOcrImage(const QImage &image, const OcrOptions &options)
     QImage source = image;
     if (source.width() > 4000 || source.height() > 4000)
         source = source.scaled(4000, 4000, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    QTransform mapping = QTransform::fromScale(double(source.width()) / image.width(), double(source.height()) / image.height());
     QImage flat(source.size(), QImage::Format_RGB32);
     flat.fill(Qt::white);
     {
         QPainter painter(&flat);
         painter.drawImage(0, 0, source);
     }
-    if (options.rotation % 360 != 0)
-        flat = flat.transformed(QTransform().rotate(options.rotation), Qt::SmoothTransformation);
+    if (options.rotation % 360 != 0) {
+        const auto rotation = QTransform().rotate(options.rotation);
+        mapping *= QImage::trueMatrix(rotation, flat.width(), flat.height());
+        flat = flat.transformed(rotation, Qt::SmoothTransformation);
+    }
     if (options.invert)
         flat.invertPixels();
     // Small credit regions benefit from rescaling. Bound both dimensions so a
     // narrow, tall selection cannot allocate an unbounded bitmap.
-    if (qMax(flat.width(), flat.height()) < 2000)
+    if (qMax(flat.width(), flat.height()) < 2000) {
         flat = flat.scaled(flat.size() * 2, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        mapping *= QTransform::fromScale(2, 2);
+    }
     QImage bordered(flat.size() + QSize(40, 40), QImage::Format_RGB32);
     bordered.fill(Qt::white);
     {
         QPainter painter(&bordered);
         painter.drawImage(20, 20, flat);
     }
-    return bordered.convertToFormat(QImage::Format_Grayscale8);
+    mapping *= QTransform::fromTranslate(20, 20);
+    return { bordered.convertToFormat(QImage::Format_Grayscale8),
+             { image.size(), bordered.size(), mapping, QStringLiteral("decoded-gray-border-v1") } };
+}
+
+QImage prepareOcrImage(const QImage &image, const OcrOptions &options)
+{
+    return prepareOcrPage(image, options).image;
+}
+
+bool validOcrGeometry(const OcrGeometry &geometry)
+{
+    const auto &m = geometry.inputToPrepared;
+    for (const auto value : { m.m11(), m.m12(), m.m13(), m.m21(), m.m22(), m.m23(), m.m31(), m.m32(), m.m33() })
+        if (!std::isfinite(value))
+            return false;
+    if (geometry.revision != QStringLiteral("decoded-gray-border-v1") || geometry.inputSize.width() <= 0 || geometry.inputSize.height() <= 0 || geometry.preparedSize.width() <= 40 || geometry.preparedSize.height() <= 40 || !m.isAffine() || !m.isInvertible())
+        return false;
+    const auto content = m.mapRect(QRectF(QPointF(), geometry.inputSize));
+    const QRectF canvas(QPointF(), geometry.preparedSize);
+    return !content.isEmpty() && canvas.adjusted(-0.00001, -0.00001, 0.00001, 0.00001).contains(content);
+}
+
+std::optional<QRectF> mapOcrBoundsToPage(const OcrGeometry &geometry, const QRectF &bounds,
+                                         const QSize &decodedSize, const QRect &crop)
+{
+    if (!validOcrGeometry(geometry) || bounds.isEmpty())
+        return std::nullopt;
+    for (const auto value : { bounds.x(), bounds.y(), bounds.width(), bounds.height() })
+        if (!std::isfinite(value))
+            return std::nullopt;
+    if (!QRectF(QPointF(), geometry.preparedSize).contains(bounds))
+        return std::nullopt;
+    const QRect page(QPoint(), decodedSize);
+    // Only the default null rectangle means "whole page"; malformed crops fail.
+    const QRect input = crop == QRect() ? page : crop;
+    if (page.isEmpty() || input.isEmpty() || !page.contains(input) || input.size() != geometry.inputSize)
+        return std::nullopt;
+    auto mapped = geometry.inputToPrepared.inverted().mapRect(bounds);
+    mapped = mapped.intersected(QRectF(QPointF(), geometry.inputSize));
+    if (mapped.isEmpty())
+        return std::nullopt; // Padding has no corresponding source region.
+    return mapped.translated(input.topLeft());
+}
+
+bool validNeuralEvidence(const NeuralPageEvidence &evidence)
+{
+    static const QRegularExpression hash(QStringLiteral("^[0-9a-f]{64}$"));
+    if (evidence.selectedIndex < 0 || !validOcrGeometry(evidence.geometry) || !hash.match(evidence.imageSha256).hasMatch() || evidence.rawResult.isEmpty() || evidence.rawResult.size() > 4 * 1024 * 1024 || evidence.resultSha256 != QString::fromLatin1(QCryptographicHash::hash(evidence.rawResult, QCryptographicHash::Sha256).toHex()) || (evidence.requestedDevice != QStringLiteral("cpu") && evidence.requestedDevice != QStringLiteral("gpu:0")) || (evidence.actualDevice != QStringLiteral("cpu") && evidence.actualDevice != QStringLiteral("gpu:0")) || (evidence.requestedDevice == QStringLiteral("cpu") && evidence.actualDevice != QStringLiteral("cpu")))
+        return false;
+    const auto parsed = parseNeuralReading(evidence.rawResult, evidence.geometry.preparedSize);
+    return parsed.error.isEmpty() && parsed.device == evidence.actualDevice;
 }
 
 static QByteArray runOcrTsv(const QImage &image, const OcrOptions &options, const Cancellation &cancel, QString *error)
@@ -276,6 +335,7 @@ static RecognitionBatch recognizeNeuralAttempt(const QVector<QImage> &images, co
 {
     RecognitionBatch batch;
     batch.readings.resize(images.size());
+    batch.evidence.resize(images.size());
     batch.validPages.fill(false, images.size());
     auto &readings = batch.readings;
     for (auto &reading : readings)
@@ -306,16 +366,22 @@ static RecognitionBatch recognizeNeuralAttempt(const QVector<QImage> &images, co
     if (!temporary.isValid())
         return fail(tr("Could not create the temporary OCR image."));
     QJsonArray jobs;
-    QVector<QSize> sizes;
+    QVector<OcrGeometry> geometries;
+    QVector<QString> imageHashes;
     for (int i = 0; i < images.size(); ++i) {
         if (cancelled(cancel))
             return fail(tr("Cancelled"), RecognitionStatus::Cancelled);
-        const auto prepared = prepareOcrImage(images.at(i), options);
+        const auto prepared = prepareOcrPage(images.at(i), options);
         const auto input = temporary.filePath(QStringLiteral("page-%1.png").arg(i));
         const auto output = temporary.filePath(QStringLiteral("result-%1.json").arg(i));
-        if (prepared.isNull() || !prepared.save(input))
+        QByteArray png;
+        QBuffer buffer(&png);
+        QFile inputFile(input);
+        if (prepared.image.isNull() || !buffer.open(QIODevice::WriteOnly) || !prepared.image.save(&buffer, "PNG") || !inputFile.open(QIODevice::WriteOnly) || inputFile.write(png) != png.size() || !inputFile.flush())
             return fail(tr("Could not create the temporary OCR image."));
-        sizes.append(prepared.size());
+        inputFile.close();
+        geometries.append(prepared.geometry);
+        imageHashes.append(QString::fromLatin1(QCryptographicHash::hash(png, QCryptographicHash::Sha256).toHex()));
         jobs.append(QJsonObject { { "image", input }, { "output", output } });
     }
     QFile manifest(temporary.filePath("manifest.json"));
@@ -353,15 +419,29 @@ static RecognitionBatch recognizeNeuralAttempt(const QVector<QImage> &images, co
             if (!file.exists())
                 continue; // Later valid outputs survive even if an earlier page is absent.
             observed[i] = true;
+            QByteArray raw;
             if (!file.open(QIODevice::ReadOnly) || file.size() > 4 * 1024 * 1024)
                 readings[i].error = tr("영역 OCR 결과를 읽지 못했습니다.");
-            else
-                readings[i] = parseNeuralReading(file.readAll(), sizes.at(i));
+            else {
+                raw = file.read(4 * 1024 * 1024 + 1);
+                readings[i] = parseNeuralReading(raw, geometries.at(i).preparedSize);
+            }
+            file.close();
             if (options.gpu && !gpu)
                 readings[i].warning = tr("GPU 추가 구성 요소가 없어 CPU로 처리했습니다.");
             batch.validPages[i] = readings.at(i).error.isEmpty() && (readings.at(i).device == QStringLiteral("cpu") || readings.at(i).device == QStringLiteral("gpu:0"));
-            if (batch.validPages.at(i))
-                ++completed;
+            if (batch.validPages.at(i)) {
+                NeuralPageEvidence evidence { i, geometries.at(i), imageHashes.at(i), raw,
+                                              QString::fromLatin1(QCryptographicHash::hash(raw, QCryptographicHash::Sha256).toHex()),
+                                              gpu ? QStringLiteral("gpu:0") : QStringLiteral("cpu"), readings.at(i).device };
+                if (validNeuralEvidence(evidence)) {
+                    batch.evidence[i] = std::move(evidence);
+                    ++completed;
+                } else {
+                    batch.validPages[i] = false;
+                    readings[i].error = tr("Invalid OCR page evidence.");
+                }
+            }
             timer.restart(); // Per-page bound; progress heartbeats cannot extend it.
         }
         QFile file(temporary.filePath("progress.json"));
@@ -413,6 +493,7 @@ RecognitionBatch recognizePagesWithOutcome(const QVector<QImage> &images, const 
         return LocalOcrRecovery::recognize(images, options, cancel, progress, recognizeNeuralAttempt);
     RecognitionBatch batch;
     batch.readings.resize(images.size());
+    batch.evidence.resize(images.size());
     batch.validPages.fill(false, images.size());
     batch.status = RecognitionStatus::Complete;
     for (int i = 0; i < images.size(); ++i) {

@@ -4,11 +4,13 @@
 #include <QImage>
 #include <QRect>
 #include <QStringList>
+#include <QTransform>
 #include <QVector>
 
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <optional>
 
 namespace LocalMetadata {
 using Cancellation = std::shared_ptr<std::atomic_bool>;
@@ -41,6 +43,28 @@ struct Reading {
     qint64 initializationMs = 0;
 };
 
+// Coordinates refer to the decoded (possibly cropped) input, after file EXIF
+// handling. Pixel edges use [0,width] / [0,height], not QRect::right()/bottom().
+struct OcrGeometry {
+    QSize inputSize;
+    QSize preparedSize;
+    QTransform inputToPrepared;
+    QString revision;
+};
+struct PreparedOcrPage {
+    QImage image;
+    OcrGeometry geometry;
+};
+struct NeuralPageEvidence {
+    int selectedIndex = -1; // Zero-based position in the caller's selected images.
+    OcrGeometry geometry;
+    QString imageSha256; // Exact PNG bytes passed to this attempt's worker.
+    QByteArray rawResult;
+    QString resultSha256;
+    QString requestedDevice; // Per-attempt request; CPU fallback records cpu.
+    QString actualDevice;
+};
+
 enum class RecognitionStatus { Complete,
                                Failed,
                                Cancelled,
@@ -51,6 +75,9 @@ enum class RecognitionStatus { Complete,
 struct RecognitionBatch {
     QVector<Reading> readings;
     QVector<bool> validPages;
+    // Optional for non-neural/injected runners. Presence is page evidence only,
+    // not a successful session, immutable cache entry or durable DB receipt.
+    QVector<std::optional<NeuralPageEvidence>> evidence;
     RecognitionStatus status = RecognitionStatus::Failed;
     QString error;
     QStringList attemptErrors;
@@ -122,7 +149,14 @@ Reading recognizePage(const QImage &image, const OcrOptions &options, const Canc
 RecognitionBatch recognizePagesWithOutcome(const QVector<QImage> &images, const OcrOptions &options, const Cancellation &cancel, const Progress &progress = { });
 QVector<Reading> recognizePages(const QVector<QImage> &images, const OcrOptions &options, const Cancellation &cancel, const Progress &progress = { });
 OcrOptions defaultOcrOptions();
+PreparedOcrPage prepareOcrPage(const QImage &image, const OcrOptions &options);
 QImage prepareOcrImage(const QImage &image, const OcrOptions &options);
+bool validOcrGeometry(const OcrGeometry &geometry);
+// Presentation only: map a prepared box onto the decoded page with optional crop.
+// OCR Reading bounds remain in prepared coordinates for candidate interpretation.
+std::optional<QRectF> mapOcrBoundsToPage(const OcrGeometry &geometry, const QRectF &bounds,
+                                         const QSize &decodedSize, const QRect &crop = { });
+bool validNeuralEvidence(const NeuralPageEvidence &evidence);
 QString recognize(const QImage &image, const OcrOptions &options, const Cancellation &cancel, QString *error);
 Result analyze(const QString &path, int perEnd, const OcrOptions &options, const Cancellation &cancel, const Progress &progress = { });
 QString comicPath(const QString &libraryPath, qulonglong comicInfoId, QString *error);

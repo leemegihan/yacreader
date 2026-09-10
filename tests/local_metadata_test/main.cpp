@@ -25,6 +25,7 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLineF>
 #include <QListWidget>
 #include <QPainter>
 #include <QPlainTextEdit>
@@ -46,6 +47,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <limits>
 #ifdef Q_OS_WIN
 #include <qt_windows.h>
 #endif
@@ -144,6 +146,9 @@ private slots:
     void realOcr();
     void croppedCreditOcr();
     void preprocessingPreservesSource();
+    void preparationGeometry_data();
+    void preparationGeometry();
+    void preparationEvidenceValidation();
     void regionCoordinatesAndCandidatePrefill();
     void spacedColophonAndPublisher();
     void dialogueAndLabelBoundaries();
@@ -425,7 +430,7 @@ QVector<QImage> recoveryImages()
 void LocalMetadataTest::neuralRecoveryWorkerFaults_data()
 {
     QTest::addColumn<QString>("mode");
-    for (const char *mode : { "partial-gap", "all-output-failure", "partial-cpu-failure", "cancel-after-page" })
+    for (const char *mode : { "partial-gap", "all-output-failure", "partial-cpu-failure", "cancel-after-page", "blank-partial", "invalid-partial" })
         QTest::newRow(mode) << QString::fromLatin1(mode);
 }
 
@@ -476,7 +481,7 @@ void LocalMetadataTest::neuralRecoveryWorkerFaults()
         if (!line.isEmpty())
             calls.append(QJsonDocument::fromJson(line).object());
     }
-    const bool retry = mode == QStringLiteral("partial-gap") || mode == QStringLiteral("partial-cpu-failure");
+    const bool retry = mode == QStringLiteral("partial-gap") || mode == QStringLiteral("partial-cpu-failure") || mode == QStringLiteral("blank-partial") || mode == QStringLiteral("invalid-partial");
     QCOMPARE(calls.size(), retry ? 2 : 1);
     QCOMPARE(calls[0]["device"].toString(), QStringLiteral("gpu:0"));
     const auto firstHashes = calls[0]["images"].toArray();
@@ -484,7 +489,7 @@ void LocalMetadataTest::neuralRecoveryWorkerFaults()
     QCOMPARE(result.readings.size(), 2);
     QVERIFY(result.gpuStarted);
     QCOMPARE(result.readings[1].device, QStringLiteral("gpu:0"));
-    QCOMPARE(result.readings[1].text, firstHashes[1].toString());
+    QCOMPARE(result.readings[1].text, mode == QStringLiteral("blank-partial") ? QString() : firstHashes[1].toString());
     QVERIFY(result.validPages[1]);
     if (retry) {
         QCOMPARE(calls[1]["device"].toString(), QStringLiteral("cpu"));
@@ -496,7 +501,25 @@ void LocalMetadataTest::neuralRecoveryWorkerFaults()
         QVERIFY(result.validPages[0]);
         QCOMPARE(result.attemptErrors.size(), 1);
     }
-    if (mode == QStringLiteral("partial-gap")) {
+    QCOMPARE(result.evidence.size(), 2);
+    for (int i = 0; i < 2; ++i) {
+        QCOMPARE(result.evidence[i].has_value(), result.validPages[i]);
+        if (!result.evidence[i])
+            continue;
+        const auto &evidence = *result.evidence[i];
+        QCOMPARE(evidence.selectedIndex, i);
+        QVERIFY(validNeuralEvidence(evidence));
+        QCOMPARE(evidence.imageSha256, firstHashes[i].toString());
+        QCOMPARE(evidence.actualDevice, result.readings[i].device);
+        const int callIndex = retry && i == 0 ? 1 : 0;
+        const int attemptIndex = retry && i == 0 ? 0 : i;
+        const auto call = calls[callIndex];
+        QCOMPARE(evidence.requestedDevice, call["device"].toString());
+        const auto exact = QByteArray::fromBase64(call["responses"].toObject()[QString::number(attemptIndex)].toString().toLatin1());
+        QCOMPARE(evidence.rawResult, exact);
+        QVERIFY(!QFile::exists(call["outputs"].toArray()[attemptIndex].toString())); // Temp directory is gone.
+    }
+    if (mode == QStringLiteral("partial-gap") || mode == QStringLiteral("blank-partial") || mode == QStringLiteral("invalid-partial")) {
         QCOMPARE(result.status, RecognitionStatus::Complete);
         QVERIFY(result.error.isEmpty());
     } else {
@@ -527,6 +550,23 @@ void LocalMetadataTest::recoveryRetainsCompletedPages()
     options.cpuThreads = 4;
     options.rotation = 90;
     auto cancel = std::make_shared<std::atomic_bool>(false);
+    const auto evidenceFor = [&](int index, const QImage &image, const Reading &reading, const QString &device) {
+        const auto prepared = prepareOcrPage(image, options);
+        QByteArray png;
+        QBuffer buffer(&png);
+        buffer.open(QIODevice::WriteOnly);
+        prepared.image.save(&buffer, "PNG");
+        QJsonArray lines;
+        if (!reading.text.isEmpty())
+            lines.append(QJsonObject { { "text", reading.text }, { "confidence", 99 }, { "box", QJsonArray { 1, 1, 2, 2 } }, { "language", "jpn" } });
+        const auto raw = QJsonDocument(QJsonObject { { "version", 1 }, { "engine", "paddle-regions" }, { "device", device }, { "language", "auto" }, { "lines", lines } }).toJson();
+        const auto hash = [](const QByteArray &bytes) { return QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex()); };
+        return NeuralPageEvidence { index, prepared.geometry, hash(png), raw, hash(raw), device, device };
+    };
+    gpu.evidence.resize(6);
+    for (int i : { 0, 2, 3, 5 })
+        gpu.evidence[i] = evidenceFor(i, images[i], gpu.readings[i], QStringLiteral("gpu:0"));
+    cpu.evidence = { evidenceFor(0, images[1], cpu.readings[0], QStringLiteral("cpu")), evidenceFor(1, images[4], cpu.readings[1], QStringLiteral("cpu")) };
     int calls = 0;
     QVector<int> retriedWidths, progressCounts;
     QVector<OcrOptions> receivedOptions;
@@ -555,6 +595,10 @@ void LocalMetadataTest::recoveryRetainsCompletedPages()
     for (int i : { 0, 2, 3, 5 }) {
         QCOMPARE(result.readings.at(i).text, gpu.readings.at(i).text);
         QCOMPARE(result.readings.at(i).device, QStringLiteral("gpu:0"));
+        QVERIFY(result.evidence[i].has_value());
+        QCOMPARE(result.evidence[i]->rawResult, gpu.evidence[i]->rawResult);
+        QCOMPARE(result.evidence[i]->imageSha256, gpu.evidence[i]->imageSha256);
+        QCOMPARE(result.evidence[i]->selectedIndex, i);
         QVERIFY(result.readings.at(i).warning.isEmpty());
         QVERIFY(result.validPages.at(i));
     }
@@ -563,6 +607,14 @@ void LocalMetadataTest::recoveryRetainsCompletedPages()
     QCOMPARE(result.readings[4].text, cpu.readings[1].text);
     QCOMPARE(result.readings[4].device, QStringLiteral("cpu"));
     QVERIFY(!result.readings[4].warning.isEmpty());
+    for (int i = 0; i < 2; ++i) {
+        const int original = i == 0 ? 1 : 4;
+        QVERIFY(result.evidence[original].has_value());
+        QCOMPARE(result.evidence[original]->selectedIndex, original);
+        QCOMPARE(result.evidence[original]->rawResult, cpu.evidence[i]->rawResult);
+        QCOMPARE(result.evidence[original]->imageSha256, cpu.evidence[i]->imageSha256);
+        QCOMPARE(result.evidence[original]->requestedDevice, QStringLiteral("cpu"));
+    }
 }
 
 void LocalMetadataTest::recoveryFailureBoundaries_data()
@@ -869,6 +921,131 @@ void LocalMetadataTest::preprocessingPreservesSource()
     options.invert = true;
     const auto inverted = LocalMetadata::prepareOcrImage(image, options);
     QCOMPARE(inverted.pixelColor(40, 40), QColor(Qt::black));
+}
+
+void LocalMetadataTest::preparationGeometry_data()
+{
+    QTest::addColumn<QSize>("inputSize");
+    QTest::addColumn<int>("rotation");
+    for (const QSize size : { QSize(80, 40), QSize(5201, 603), QSize(603, 5201), QSize(1999, 4), QSize(2000, 4) })
+        for (const int rotation : { 0, 90, 180, 270 })
+            QTest::newRow(qPrintable(QString("%1x%2-turn%3").arg(size.width()).arg(size.height()).arg(rotation))) << size << rotation;
+}
+
+void LocalMetadataTest::preparationGeometry()
+{
+    using namespace LocalMetadata;
+    QFETCH(QSize, inputSize);
+    QFETCH(int, rotation);
+    QImage image(inputSize, QImage::Format_ARGB32);
+    image.fill(Qt::transparent);
+    image.setPixelColor(1, 1, Qt::black);
+    const auto original = image.copy();
+    OcrOptions options;
+    options.rotation = rotation;
+    const auto prepared = prepareOcrPage(image, options);
+    QVERIFY(validOcrGeometry(prepared.geometry));
+    QCOMPARE(image, original);
+    QCOMPARE(prepared.image, prepareOcrImage(image, options));
+    QCOMPARE(prepared.geometry.inputSize, inputSize);
+    QCOMPARE(prepared.geometry.preparedSize, prepared.image.size());
+    const QSize scaled = qMax(inputSize.width(), inputSize.height()) > 4000 ? inputSize.scaled(4000, 4000, Qt::KeepAspectRatio) : inputSize;
+    const int factor = qMax(scaled.width(), scaled.height()) < 2000 ? 2 : 1;
+    const auto rotatedSize = rotation == 90 || rotation == 270 ? scaled.transposed() : scaled;
+    QCOMPARE(prepared.image.size(), rotatedSize * factor + QSize(40, 40));
+    const QVector<QPointF> points { QPointF(), QPointF(inputSize.width(), 0), QPointF(0, inputSize.height()),
+                                    QPointF(inputSize.width(), inputSize.height()), QPointF(1.25, 2.5) };
+    for (const auto point : points) {
+        const double x = point.x() * scaled.width() / inputSize.width();
+        const double y = point.y() * scaled.height() / inputSize.height();
+        QPointF expected(x, y);
+        if (rotation == 90)
+            expected = QPointF(scaled.height() - y, x);
+        else if (rotation == 180)
+            expected = QPointF(scaled.width() - x, scaled.height() - y);
+        else if (rotation == 270)
+            expected = QPointF(y, scaled.width() - x);
+        expected = expected * factor + QPointF(20, 20);
+        const auto actual = prepared.geometry.inputToPrepared.map(point);
+        QVERIFY(QLineF(actual, expected).length() < 0.00001);
+        QVERIFY(QLineF(prepared.geometry.inputToPrepared.inverted().map(actual), point).length() < 0.00001);
+    }
+    // A cropped input has a distinct decoded-page offset, never an EXIF claim.
+    const QRect crop(QPoint(17, 23), inputSize);
+    const QSize pageSize = inputSize + QSize(100, 100);
+    const QRectF inputBox(0, 0, inputSize.width(), inputSize.height());
+    const auto preparedBox = prepared.geometry.inputToPrepared.mapRect(inputBox);
+    const auto mapped = mapOcrBoundsToPage(prepared.geometry, preparedBox, pageSize, crop);
+    QVERIFY(mapped.has_value());
+    QVERIFY(QLineF(mapped->topLeft(), QPointF(crop.topLeft())).length() < 0.00001);
+    QVERIFY(QLineF(mapped->bottomRight(), QPointF(crop.x() + crop.width(), crop.y() + crop.height())).length() < 0.00001);
+    QVERIFY(!mapOcrBoundsToPage(prepared.geometry, QRectF(0, 0, 10, 10), inputSize)); // Border only.
+    QVERIFY(!mapOcrBoundsToPage(prepared.geometry, preparedBox, pageSize)); // Missing crop context.
+    QVERIFY(!mapOcrBoundsToPage(prepared.geometry, preparedBox, inputSize, crop)); // Crop outside page.
+    QVERIFY(!mapOcrBoundsToPage(prepared.geometry, QRectF(-1, 0, 2, 2), inputSize));
+    options.invert = true;
+    QCOMPARE(prepareOcrPage(image, options).geometry.inputToPrepared, prepared.geometry.inputToPrepared);
+}
+
+void LocalMetadataTest::preparationEvidenceValidation()
+{
+    using namespace LocalMetadata;
+    const auto prepared = prepareOcrPage(sampleImage(), { });
+    QByteArray png;
+    QBuffer buffer(&png);
+    QVERIFY(buffer.open(QIODevice::WriteOnly));
+    QVERIFY(prepared.image.save(&buffer, "PNG"));
+    const auto hash = [](const QByteArray &bytes) { return QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex()); };
+    const QByteArray raw = R"({"version":1,"engine":"paddle-regions","device":"cpu","language":"auto","lines":[]})";
+    const NeuralPageEvidence good { 0, prepared.geometry, hash(png), raw, hash(raw), QStringLiteral("cpu"), QStringLiteral("cpu") };
+    QVERIFY(validNeuralEvidence(good)); // A successful blank page is evidence.
+    for (int corruption = 0; corruption < 10; ++corruption) {
+        auto bad = good;
+        switch (corruption) {
+        case 0:
+            bad.rawResult.append(' ');
+            break; // Hash no longer matches exact bytes.
+        case 1:
+            bad.imageSha256 = QStringLiteral("missing");
+            break;
+        case 2:
+            bad.selectedIndex = -1;
+            break;
+        case 3:
+            bad.actualDevice = QStringLiteral("gpu:0");
+            break;
+        case 4:
+            bad.geometry.inputToPrepared = QTransform::fromScale(0, 0);
+            break;
+        case 5:
+            bad.geometry.revision = QStringLiteral("unknown");
+            break;
+        case 6:
+            bad.rawResult = "invalid JSON";
+            bad.resultSha256 = hash(bad.rawResult);
+            break;
+        case 8:
+            bad.geometry.inputToPrepared = QTransform::fromTranslate(100000, 0);
+            break;
+        case 9:
+            bad.geometry.inputToPrepared = QTransform::fromScale(std::numeric_limits<double>::infinity(), 1);
+            break;
+        case 7:
+            bad.rawResult.replace("\"lines\":[]", "\"error\":\"failed\",\"lines\":[]");
+            bad.resultSha256 = hash(bad.rawResult);
+            break;
+        }
+        QVERIFY(!validNeuralEvidence(bad));
+    }
+    auto first = syntheticAttempt(1, QStringLiteral("cpu"));
+    first.evidence = { good };
+    first.evidence[0]->selectedIndex = 2;
+    const auto result = LocalOcrRecovery::recognize({ sampleImage() }, { }, { }, { },
+                                                    [&](const QVector<QImage> &, const OcrOptions &, const Cancellation &, const Progress &) { return first; });
+    QCOMPARE(result.status, RecognitionStatus::Failed);
+    QVERIFY(!result.validPages[0]);
+    QVERIFY(!result.evidence[0]);
+    QVERIFY(!validOcrGeometry(prepareOcrPage({ }, { }).geometry));
 }
 
 void LocalMetadataTest::regionCoordinatesAndCandidatePrefill()
