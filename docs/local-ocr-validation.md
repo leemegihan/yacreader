@@ -261,3 +261,14 @@ separate requirements. Batched inference may compute an unrecorded second page
 before cancellation; one persisted receipt does not mean only one page was
 inferred. This is functional validation, not a speed benchmark or real-work
 accuracy measurement.
+
+The opt-in `privateSelectedInspector` diagnostic accepts one explicit private
+case manifest through `YACREADER_PRIVATE_INSPECTOR_CASE`. It refuses an existing
+result file or job database, requires a copied-library marker and matching source
+SHA-256, and reads only the specified library row. It clicks the actual inspector
+read and saved-result buttons with automatic catalog lookup disabled; no save is
+requested. Its private report retains original timings, receipt hashes, candidates,
+requested/actual device and completion/restoration status. No real manifest,
+source file, filename, path, OCR response or truth label belongs in Git or CI.
+The driver must use identical CPU8/GPU inputs, separate fresh profiles, and preserve
+failed records. This is one selected work per invocation, not a library scanner.

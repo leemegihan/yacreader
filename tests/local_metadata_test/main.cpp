@@ -151,6 +151,7 @@ private slots:
     void isolatedSettingsPaths();
     void isolatedLocalServerNames();
     void inspectorSessionNeural();
+    void privateSelectedInspector();
     void sampling();
     void folderAndArchiveUseSamePageOrder();
     void sourceSnapshotValidation();
@@ -2107,6 +2108,167 @@ void LocalMetadataTest::isolatedLocalServerNames()
         QTRY_COMPARE_WITH_TIMEOUT(peer->bytesAvailable(), qint64(marker.size()), 5000);
         QCOMPARE(peer->readAll(), marker);
     }
+}
+
+// Explicit one-work probe for a private copied library; never registered with real inputs in CI.
+void LocalMetadataTest::privateSelectedInspector()
+{
+    using namespace LocalMetadata;
+    const auto manifestPath = qEnvironmentVariable("YACREADER_PRIVATE_INSPECTOR_CASE");
+    if (manifestPath.isEmpty())
+        QSKIP("Explicit private copied-library inspector case only.");
+    QVERIFY(qEnvironmentVariableIsEmpty("YACREADER_SYNTHETIC_RECOVERY_WORKER"));
+    QFile manifest(manifestPath);
+    QVERIFY(manifest.open(QIODevice::ReadOnly));
+    QVERIFY(manifest.size() > 0 && manifest.size() < 16384);
+    const auto request = QJsonDocument::fromJson(manifest.readAll()).object();
+    QCOMPARE(request["version"].toInt(), 1);
+    QCOMPARE(request["purpose"].toString(), QStringLiteral("private-selected-inspector"));
+    const auto id = request["id"].toString();
+    QVERIFY(QRegularExpression(QStringLiteral("^W(0[1-9]|1[0-6])$")).match(id).hasMatch());
+    const auto device = request["device"].toString();
+    QVERIFY(device == "cpu" || device == "gpu:0");
+    const auto root = request["libraryRoot"].toString();
+    const auto input = request["source"].toString();
+    const auto profile = qEnvironmentVariable("YACREADER_DATA_DIR");
+    const auto output = request["output"].toString();
+    const auto regular = [](const QString &path) {
+        if (!QDir::isAbsolutePath(path))
+            return false;
+        auto part = QDir::cleanPath(path);
+        while (!part.isEmpty()) {
+            const QFileInfo info(part);
+            if (info.isSymLink() || info.isJunction())
+                return false;
+            const auto parent = info.absolutePath();
+            if (parent == part)
+                break;
+            part = parent;
+        }
+        return true;
+    };
+    QVERIFY(regular(root) && regular(input) && regular(profile) && regular(output));
+    const auto within = [](const QString &parent, const QString &path) {
+        const auto relative = QDir(parent).relativeFilePath(path);
+        return relative != ".." && !relative.startsWith("../") && !QDir::isAbsolutePath(relative);
+    };
+    QVERIFY(QFileInfo(root).isDir() && QFileInfo(input).isFile() && within(root, input));
+    QVERIFY(!within(root, output) && !within(root, profile));
+    QVERIFY(!within(QCoreApplication::applicationDirPath(), output));
+    QVERIFY(!QFileInfo::exists(output));
+    QVERIFY(QFileInfo(QFileInfo(output).absolutePath()).isDir());
+    QFile marker(QDir(root).filePath("private-test-library.json"));
+    QVERIFY(marker.open(QIODevice::ReadOnly));
+    QVERIFY(marker.size() > 0 && marker.size() < 16384);
+    const auto approved = QJsonDocument::fromJson(marker.readAll()).object();
+    QCOMPARE(approved["purpose"].toString(), QStringLiteral("private-fixed16-library"));
+    int index = -1;
+    const auto ids = approved["ids"].toArray();
+    for (int i = 0; i < ids.size(); ++i)
+        if (ids[i].toString() == id)
+            index = i;
+    QVERIFY(index >= 0 && approved["sourceSha256"].toArray().size() == ids.size());
+    const auto digest = [](const QString &path) {
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly))
+            return QByteArray();
+        QCryptographicHash hash(QCryptographicHash::Sha256);
+        if (!hash.addData(&file))
+            return QByteArray();
+        return hash.result().toHex();
+    };
+    const auto inputBefore = digest(input);
+    QVERIFY(!inputBefore.isEmpty());
+    QCOMPARE(QString::fromLatin1(inputBefore), approved["sourceSha256"].toArray()[index].toString());
+    const auto libraryFile = YACReader::LibraryPaths::libraryDatabasePath(root);
+    const auto libraryBefore = digest(libraryFile);
+    QVERIFY(!libraryBefore.isEmpty());
+    const auto dataRoot = QDir(YACReader::getCommonSettingsPath()).filePath("local-ocr/v1");
+    const auto database = QDir(dataRoot).filePath("ocr-jobs.sqlite");
+    QVERIFY(!QFileInfo::exists(database)); // Every timed case starts without a cache.
+    const auto comicId = request["comicInfoId"].toInt();
+    QVERIFY(comicId > 0);
+    YACReaderArchiveInspectorDialog dialog;
+    const auto stop = qScopeGuard([&] { dialog.cancel(); if (dialog.activeWorker) dialog.activeWorker->wait(15000); });
+    dialog.autoSearch->setChecked(false);
+    dialog.inspectComic(root, qulonglong(comicId));
+    QTRY_VERIFY_WITH_TIMEOUT(dialog.activeWorker.isNull(), 30000);
+    QCOMPARE(QDir::cleanPath(dialog.sourcePath), QDir::cleanPath(input));
+    const auto neuralIndex = dialog.quality->findData(2);
+    const auto deviceIndex = dialog.performance->findData(device == "gpu:0" ? -1 : 8);
+    const auto languageIndex = dialog.language->findData(QStringLiteral("auto"));
+    QVERIFY(neuralIndex >= 0 && deviceIndex >= 0 && languageIndex >= 0);
+    dialog.quality->setCurrentIndex(neuralIndex);
+    dialog.performance->setCurrentIndex(deviceIndex);
+    dialog.language->setCurrentIndex(languageIndex);
+    dialog.pageLimit->setValue(3);
+    QSignalSpy searches(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    QSignalSpy saves(&dialog, &YACReaderArchiveInspectorDialog::metadataSaved);
+    QElapsedTimer elapsed;
+    elapsed.start();
+    dialog.ocrButton->click();
+    QVERIFY(dialog.activeWorker);
+    QTRY_VERIFY_WITH_TIMEOUT(dialog.activeWorker.isNull(), 900000);
+    const auto executionMs = elapsed.elapsed();
+    QJsonArray pages, candidates, receipts;
+    bool devicesMatch = !dialog.result.pages.isEmpty();
+    for (const auto &page : dialog.result.pages) {
+        const auto &reading = page.reading;
+        devicesMatch = devicesMatch && reading.device == device;
+        pages.append(QJsonObject { { "number", page.number }, { "sourceEntry", page.name }, { "text", page.text }, { "error", page.error }, { "actualDevice", reading.device }, { "elapsedMs", reading.elapsedMs }, { "initializationMs", reading.initializationMs } });
+    }
+    for (const auto &candidate : dialog.result.suggestions)
+        candidates.append(QJsonObject { { "field", int(candidate.field) }, { "value", candidate.value }, { "page", candidate.page }, { "labelled", candidate.labelled }, { "reason", candidate.reason } });
+    OcrJobs::Store store;
+    QVERIFY(store.open(database));
+    const auto jobs = store.list();
+    QCOMPARE(jobs.size(), 1);
+    const auto job = jobs.first();
+    for (const auto &receipt : job.pages)
+        receipts.append(QJsonObject { { "page", receipt.page }, { "cacheKey", receipt.cacheKey }, { "resultSha256", receipt.resultSha256 }, { "actualDevice", receipt.actualDevice } });
+    QJsonObject report { { "version", 1 }, { "id", id }, { "requestedDevice", device }, { "cpuThreads", 8 }, { "perEnd", 3 }, { "executionMs", executionMs }, { "jobId", job.id }, { "state", OcrJobs::stateName(job.state) }, { "attempts", job.attempts }, { "error", dialog.result.error }, { "pages", pages }, { "candidates", candidates }, { "receipts", receipts }, { "sourceFingerprint", dialog.savedSourceFingerprint }, { "settingsFingerprint", job.spec.settingsFingerprint }, { "sourceUnchanged", digest(input) == inputBefore }, { "libraryUnchanged", digest(libraryFile) == libraryBefore }, { "externalLookups", searches.count() }, { "metadataSaves", saves.count() }, { "devicesMatch", devicesMatch }, { "completedReviewRestored", false } };
+    const auto writeReport = [&] {
+        QSaveFile file(output);
+        file.setDirectWriteFallback(false);
+        const auto bytes = QJsonDocument(report).toJson();
+        return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size() && file.commit();
+    };
+    QVERIFY(writeReport()); // Preserve failure evidence before assertions.
+    QVERIFY2(dialog.result.error.isEmpty(), qPrintable(dialog.result.error));
+    QVERIFY(job.state == OcrJobs::State::PageReview || job.state == OcrJobs::State::FilenameReview);
+    QCOMPARE(job.attempts, 1);
+    QCOMPARE(job.pages.size(), dialog.result.pages.size());
+    QVERIFY(devicesMatch && report["sourceUnchanged"].toBool() && report["libraryUnchanged"].toBool());
+    QCOMPARE(searches.count(), 0);
+    QCOMPARE(saves.count(), 0);
+    const auto cacheDigest = [&] {
+        QMap<QString, QByteArray> result;
+        const auto cache = QDir(dataRoot).filePath("pages");
+        for (const auto &name : QDir(cache).entryList(QDir::Files))
+            result[name] = digest(QDir(cache).filePath(name));
+        return result;
+    };
+    const auto originalCache = cacheDigest();
+    QVERIFY(!originalCache.isEmpty());
+    elapsed.restart();
+    dialog.resumeButton->click();
+    QVERIFY(dialog.activeWorker);
+    QTRY_VERIFY_WITH_TIMEOUT(dialog.activeWorker.isNull(), 120000);
+    report["reopenMs"] = elapsed.elapsed();
+    QVERIFY2(dialog.result.error.isEmpty(), qPrintable(dialog.result.error));
+    QVERIFY(dialog.statusLabel->text().contains(QStringLiteral("원래 OCR 기록")));
+    const auto restored = store.get(job.id);
+    QVERIFY(restored.has_value());
+    QCOMPARE(restored->attempts, 1);
+    QCOMPARE(restored->state, job.state);
+    QCOMPARE(cacheDigest(), originalCache);
+    QCOMPARE(digest(input), inputBefore);
+    QCOMPARE(digest(libraryFile), libraryBefore);
+    QCOMPARE(searches.count(), 0);
+    QCOMPARE(saves.count(), 0);
+    report["completedReviewRestored"] = true;
+    QVERIFY(writeReport());
+    qInfo("Private selected inspector %s device=%s pages=%lld complete, no metadata writes", qPrintable(id), qPrintable(device), qint64(pages.size()));
 }
 
 void LocalMetadataTest::inspectorSessionNeural()
