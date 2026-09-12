@@ -18,6 +18,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSettings>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QThread>
@@ -206,7 +207,50 @@ YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent
     connect(searchButton, &QPushButton::clicked, this, [this] { requestSearch(false); });
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     connect(this, &QDialog::finished, this, &YACReaderArchiveInspectorDialog::cancel);
+    const auto preferencePath = QDir(YACReader::getSettingsPath()).filePath(QStringLiteral("ocr-inspector.ini"));
+    QSettings preferences(preferencePath, QSettings::IniFormat);
+    restorePreferences(preferences);
+    const auto remember = [this, preferencePath] {
+        QSettings settings(preferencePath, QSettings::IniFormat);
+        savePreferences(settings);
+    };
+    for (auto *choice : { language, quality, performance })
+        connect(choice, qOverload<int>(&QComboBox::activated), this, remember);
+    connect(pageLimit, &QSpinBox::editingFinished, this, remember);
+    connect(autoSearch, &QCheckBox::clicked, this, remember);
     setBusy(false);
+}
+
+void YACReaderArchiveInspectorDialog::restorePreferences(const QSettings &settings)
+{
+    if (settings.value("version").toInt() != 1)
+        return;
+    const auto choose = [](QComboBox *combo, const QVariant &value, const QVariant &fallback) {
+        const int index = combo->findData(value);
+        combo->setCurrentIndex(index >= 0 ? index : combo->findData(fallback));
+    };
+    const auto integer = [&](const QString &key, int fallback) {
+        bool ok = false;
+        const int value = settings.value(key, fallback).toInt(&ok);
+        return ok ? value : fallback;
+    };
+    choose(language, settings.value("language", "auto"), QStringLiteral("auto"));
+    choose(quality, integer("quality", 1), 1);
+    choose(performance, integer("performance", 8), 8);
+    const int perEnd = integer("perEnd", 3);
+    pageLimit->setValue(perEnd >= 1 && perEnd <= 3 ? perEnd : 3);
+    autoSearch->setChecked(settings.value("autoSearch", true).toString() == QStringLiteral("true"));
+}
+
+void YACReaderArchiveInspectorDialog::savePreferences(QSettings &settings) const
+{
+    settings.setValue("version", 1);
+    settings.setValue("language", language->currentData());
+    settings.setValue("quality", quality->currentData().toInt());
+    settings.setValue("performance", performance->currentData().toInt());
+    settings.setValue("perEnd", pageLimit->value());
+    settings.setValue("autoSearch", autoSearch->isChecked());
+    settings.sync();
 }
 
 YACReaderArchiveInspectorDialog::~YACReaderArchiveInspectorDialog()

@@ -15,6 +15,7 @@ class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
+class QSettings;
 class QThread;
 class OcrPageView;
 
@@ -53,6 +54,8 @@ private:
     void showResult(const LocalMetadata::Result &result, bool ocrComplete = false);
     void save();
     void setBusy(bool busy);
+    void restorePreferences(const QSettings &settings);
+    void savePreferences(QSettings &settings) const;
 
     QString libraryPath;
     QString sourcePath;

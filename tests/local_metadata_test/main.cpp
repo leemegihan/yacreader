@@ -149,6 +149,7 @@ private slots:
     void localProbePreservesInputs();
     void localPageProbeSamplingIsBounded();
     void isolatedSettingsPaths();
+    void inspectorPreferences();
     void isolatedLocalServerNames();
     void inspectorSessionNeural();
     void privateSelectedInspector();
@@ -273,6 +274,92 @@ void LocalMetadataTest::isolatedSettingsPaths()
     QCOMPARE(YACReader::getPluginsPath(), QDir(isolated).filePath("shared/plugins"));
     QVERIFY(qunsetenv("YACREADER_DATA_DIR"));
     QCOMPARE(YACReader::getSettingsPath(), QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation));
+}
+
+void LocalMetadataTest::inspectorPreferences()
+{
+    const bool wasSet = qEnvironmentVariableIsSet("YACREADER_DATA_DIR");
+    const auto previous = qEnvironmentVariable("YACREADER_DATA_DIR");
+    const auto setRoot = [](const QString &value) {
+#ifdef Q_OS_WIN
+        return _wputenv_s(L"YACREADER_DATA_DIR", value.toStdWString().c_str()) == 0;
+#else
+        return qputenv("YACREADER_DATA_DIR", value.toUtf8());
+#endif
+    };
+    const auto restore = qScopeGuard([&] {
+        if (wasSet)
+            setRoot(previous);
+        else
+            qunsetenv("YACREADER_DATA_DIR");
+    });
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    QVERIFY(setRoot(temporary.filePath("profile-a")));
+    const auto path = QDir(YACReader::getSettingsPath()).filePath("ocr-inspector.ini");
+    {
+        YACReaderArchiveInspectorDialog dialog;
+        dialog.quality->setCurrentIndex(dialog.quality->findData(0));
+        dialog.language->setCurrentIndex(dialog.language->findData("kor+eng"));
+        dialog.performance->setCurrentIndex(dialog.performance->findData(16));
+        dialog.pageLimit->setValue(2);
+        dialog.autoSearch->setChecked(false);
+        dialog.overwrite->setChecked(true);
+        dialog.titleEdit->setText("A work-specific title");
+        dialog.authorEdit->setText("A work-specific author");
+        dialog.invert->setChecked(true);
+        QVERIFY(!QFileInfo::exists(path)); // Programmatic initialization is not a user preference edit.
+        QVERIFY(QMetaObject::invokeMethod(dialog.quality, "activated", Q_ARG(int, dialog.quality->currentIndex())));
+    }
+    QVERIFY(QFileInfo::exists(path));
+    QSettings stored(path, QSettings::IniFormat);
+    QCOMPARE(stored.allKeys().size(), 6);
+    {
+        YACReaderArchiveInspectorDialog reopened;
+        QCOMPARE(reopened.quality->currentData().toInt(), 0);
+        QCOMPARE(reopened.language->currentData().toString(), QString("kor+eng"));
+        QCOMPARE(reopened.performance->currentData().toInt(), 16);
+        QCOMPARE(reopened.pageLimit->value(), 2);
+        QVERIFY(!reopened.autoSearch->isChecked());
+        QVERIFY(!reopened.overwrite->isChecked());
+        QVERIFY(!reopened.invert->isChecked());
+        QVERIFY(reopened.titleEdit->text().isEmpty());
+        QVERIFY(reopened.authorEdit->text().isEmpty());
+        // Optional runtimes may be removed between launches; unavailable saved choices fall back.
+        stored.setValue("quality", 2);
+        stored.setValue("performance", -1);
+        const int neural = reopened.quality->findData(2);
+        if (neural >= 0)
+            reopened.quality->removeItem(neural);
+        const int gpu = reopened.performance->findData(-1);
+        if (gpu >= 0)
+            reopened.performance->removeItem(gpu);
+        reopened.restorePreferences(stored);
+        QCOMPARE(reopened.quality->currentData().toInt(), 1);
+        QCOMPARE(reopened.performance->currentData().toInt(), 8);
+        stored.setValue("language", "unsupported");
+        stored.setValue("quality", 99);
+        stored.setValue("performance", 64);
+        stored.setValue("perEnd", 9);
+        stored.setValue("autoSearch", "invalid");
+        reopened.restorePreferences(stored);
+        QCOMPARE(reopened.language->currentData().toString(), QString("auto"));
+        QCOMPARE(reopened.quality->currentData().toInt(), 1);
+        QCOMPARE(reopened.performance->currentData().toInt(), 8);
+        QCOMPARE(reopened.pageLimit->value(), 3);
+        QVERIFY(!reopened.autoSearch->isChecked());
+        stored.setValue("quality", "invalid");
+        reopened.restorePreferences(stored);
+        QCOMPARE(reopened.quality->currentData().toInt(), 1);
+    }
+    QVERIFY(setRoot(temporary.filePath("profile-b")));
+    YACReaderArchiveInspectorDialog separate;
+    QCOMPARE(separate.quality->currentData().toInt(), 1);
+    QCOMPARE(separate.language->currentData().toString(), QString("auto"));
+    QCOMPARE(separate.performance->currentData().toInt(), 8);
+    QCOMPARE(separate.pageLimit->value(), 3);
+    QVERIFY(separate.autoSearch->isChecked());
+    QVERIFY(!QFileInfo::exists(QDir(YACReader::getSettingsPath()).filePath("ocr-inspector.ini")));
 }
 
 void LocalMetadataTest::localProbePreservesInputs()
