@@ -1553,6 +1553,13 @@ void LocalMetadataTest::runtimeSnapshotMeasuresFiles()
     options.invert = true;
     QString error;
     const auto measure = [&] { return LocalOcrRuntime::measure(temporary.filePath("app.exe"), options, { }, &error); };
+    auto cpuOptions = options;
+    cpuOptions.gpu = false;
+    const auto measureCpu = [&] { return LocalOcrRuntime::measure(temporary.filePath("app.exe"), cpuOptions, { }, &error); };
+    const auto originalCpu = measureCpu();
+    QVERIFY2(originalCpu.has_value(), qPrintable(error));
+    QVERIFY(originalCpu->settingsSnapshot["environment"].toObject()["gpu"].isNull());
+    QVERIFY(originalCpu->manifests["gpu"].isNull());
     const auto original = measure();
     QVERIFY2(original.has_value(), qPrintable(error));
     QVERIFY(error.isEmpty());
@@ -1576,12 +1583,17 @@ void LocalMetadataTest::runtimeSnapshotMeasuresFiles()
         const auto current = measure();
         QVERIFY2(current.has_value(), qPrintable(error));
         QVERIFY(current->settingsFingerprint != original->settingsFingerprint);
+        const auto currentCpu = measureCpu();
+        QVERIFY2(currentCpu.has_value(), qPrintable(error));
+        QVERIFY(currentCpu->settingsFingerprint != originalCpu->settingsFingerprint);
         QVERIFY(write(path, before));
         QCOMPARE(measure()->settingsFingerprint, original->settingsFingerprint);
+        QCOMPARE(measureCpu()->settingsFingerprint, originalCpu->settingsFingerprint);
     }
     const auto modelPath = declaration[0].toObject()["path"].toString();
     QVERIFY(write(QStringLiteral("ocr-neural/") + modelPath, "changed model"));
     QVERIFY(!measure()); // A lockfile claim cannot substitute for the installed bytes.
+    QVERIFY(!measureCpu());
     auto revised = declaration;
     revised[0] = QJsonObject { { "path", modelPath }, { "sha256", hash("changed model") } };
     QVERIFY(write("ocr-neural/models.json", QJsonDocument(revised).toJson()));
@@ -1596,14 +1608,26 @@ void LocalMetadataTest::runtimeSnapshotMeasuresFiles()
     QVERIFY(!measure());
     QVERIFY(write("ocr-neural/models.json", manifest));
     QVERIFY(QDir().mkpath(temporary.filePath("ocr-neural-gpu")));
-    QVERIFY(!measure()); // Incomplete addon is not explicit absence.
+    QVERIFY(!measure()); // Incomplete addon is not explicit absence for a GPU request.
+    const auto incompleteAddonCpu = measureCpu();
+    QVERIFY2(incompleteAddonCpu.has_value(), qPrintable(error));
+    QCOMPARE(incompleteAddonCpu->settingsSnapshot, originalCpu->settingsSnapshot);
+    QCOMPARE(incompleteAddonCpu->manifests, originalCpu->manifests);
     QVERIFY(write("ocr-neural-gpu/runtime/python.exe", "synthetic GPU interpreter"));
     const auto gpu = measure();
     QVERIFY2(gpu.has_value(), qPrintable(error));
     QVERIFY(gpu->settingsSnapshot["environment"].toObject()["gpu"].isObject());
     QVERIFY(gpu->settingsFingerprint != original->settingsFingerprint);
+    QCOMPARE(measureCpu()->settingsFingerprint, originalCpu->settingsFingerprint);
     QVERIFY(write("ocr-neural-gpu/runtime/library.dll", "synthetic GPU library"));
     QVERIFY(measure()->settingsFingerprint != gpu->settingsFingerprint);
+    const auto changedAddonCpu = measureCpu();
+    QVERIFY2(changedAddonCpu.has_value(), qPrintable(error));
+    QCOMPARE(changedAddonCpu->settingsSnapshot, originalCpu->settingsSnapshot);
+    QCOMPARE(changedAddonCpu->manifests, originalCpu->manifests);
+    QVERIFY(QFile::remove(temporary.filePath("ocr-neural/runtime/python.exe")));
+    QVERIFY(!measureCpu()); // The selected CPU runtime remains mandatory.
+    QVERIFY(write("ocr-neural/runtime/python.exe", "synthetic CPU interpreter"));
     auto cancelled = std::make_shared<std::atomic_bool>(true);
     QVERIFY(!LocalOcrRuntime::measure(temporary.filePath("app.exe"), options, cancelled, &error));
     QVERIFY(error.contains("cancelled"));

@@ -202,7 +202,7 @@ std::optional<Measurement> measure(const QString &applicationPath, const LocalMe
     QJsonObject environment { { "platform", "windows-x64" }, { "applicationSha256", applicationHash }, { "preprocessingRevision", "decoded-gray-border-v1" }, { "cpu", runtime(QDir(neural).filePath(QStringLiteral("runtime")), cpu) }, { "gpu", QJsonValue::Null } };
     QJsonObject manifests { { "models", models }, { "shared", shared }, { "cpu", cpu }, { "gpu", QJsonValue::Null } };
     const QFileInfo gpuRoot(QDir(root).filePath(QStringLiteral("ocr-neural-gpu")));
-    if (gpuRoot.exists() || gpuRoot.isSymLink() || gpuRoot.isJunction()) {
+    if (options.gpu && (gpuRoot.exists() || gpuRoot.isSymLink() || gpuRoot.isJunction())) {
         QJsonArray gpu;
         if (!inventory.ordinary(gpuRoot) || !inventory.tree(QDir(gpuRoot.absoluteFilePath()).filePath(QStringLiteral("runtime")), gpu))
             return failure();

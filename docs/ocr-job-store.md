@@ -626,6 +626,10 @@ fingerprint under the existing maintenance lock before the existing metadata
 transaction. This is a freshness check for cooperating local operations, not a
 filesystem lock against all external editors. No whole-library execution or
 automatic save is added. Fifteen session, five presentation and seven save-guard
-cases were prepared, and worker-lifetime tests cover the new control. This local
-UI change is awaiting publication and Windows compilation; do not count the new
-cases as passed or the interface as a validated release.
+cases and worker-lifetime checks passed in the exact17a13926 local package,
+alongside isolated-profile IPC checks (native36 and store25). Windows run34694808798
+completed with13CTest, worker21, staged8, installed21, downloaded149, store25 and
+synthetic faults18. Actual synthetic CPU5/GPU5 checks passed locally; all five
+owned GPU workers appeared in NVIDIA telemetry. These counts include test setup
+and cleanup where Qt reports them. The fixed16 real-work inspector comparison
+and full manual GUI navigation remain separate validation activities.
