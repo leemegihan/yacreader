@@ -17,8 +17,8 @@ YACReaderLocalServer::YACReaderLocalServer(QObject *parent)
     : QObject(parent)
 {
     localServer = new QLocalServer(this);
-    QLocalServer::removeServer(YACREADERLIBRARY_GUID);
-    if (!localServer->listen(YACREADERLIBRARY_GUID)) {
+    QLocalServer::removeServer(YACReader::localServerName());
+    if (!localServer->listen(YACReader::localServerName())) {
         QLOG_ERROR() << "Unable to create local server";
     }
 
@@ -58,7 +58,7 @@ void YACReaderLocalServer::sendResponse()
 bool YACReaderLocalServer::isRunning()
 {
     QLocalSocket socket;
-    socket.connectToServer(YACREADERLIBRARY_GUID);
+    socket.connectToServer(YACReader::localServerName());
     if (socket.waitForConnected(500))
         return true; // Server is running (another instance of YACReaderLibrary has been launched)
     return false;

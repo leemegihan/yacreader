@@ -117,6 +117,8 @@ QString getCommonSettingsFilePath();
 QString getPluginsPath();
 QString getImageFormatsPluginsPath();
 void initializeSharedPluginPaths();
+// Reader/library IPC is scoped to an explicitly isolated settings root.
+QString localServerName();
 QString colorToName(LabelColors colors);
 QString labelColorToRGBString(LabelColors color);
 QLibrary *load7zLibrary();

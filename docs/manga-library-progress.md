@@ -1127,3 +1127,18 @@ freshness-guarded direct save code have twelve additional synthetic test cases.
 All new session/UI cases await compilation and execution; prior102 results do
 not validate these local changes. Full-library and abrupt-crash recovery remain
 out of scope for this connection.
+
+
+## 2026-09-12 선택 작품 이어 읽기 후속 검증
+
+- `723cfc15`의 선택 작품 세션/화면/저장 보호 검사 27건과 기존 작업 수명
+  검사 5건을 로컬의 검증된 이전 런타임 + 정확한 새 진단 실행 파일 조합에서
+  통과했다(초기화/정리 포함 34건). 전체 새 패키지 검증과 구분한다.
+- 시험 프로필과 운영 프로필이 같은 앱 간 통신 주소를 쓰던 부분을 분리했다.
+  설정 경로가 같은 reader/library만 같은 주소를 사용하며, 운영 기본 주소는
+  유지한다. 운영 주소에 연결하지 않는 합성 소켓 검사를 추가했다.
+- 실제 OCR 실행 → 한 페이지 영구 기록 후 중단 → 화면 버튼으로 이어 읽기 →
+  새 검사 창에서 결과 복원 검사를 추가했다. CPU/GPU는 별도 실행하며, 이
+  새 검사의 실행 결과는 아직 미확인이다. 실제 작품 정답률 검사와 구분한다.
+- 원본, 운영 DB, 설치된 앱을 변경하지 않았다. 전체 라이브러리 일괄 처리는
+  시작하지 않았고 기존 개인 검토 항목을 유지한다.

@@ -239,3 +239,25 @@ Local actual-GPU ownership verification used the new CI diagnostic executable
 with a pinned worker and a prior verified dependency archive after the complete
 new runtime transfer timed out. Keep that composition distinct from CI's new
 installer/runtime checks and from real-library accuracy or timing measurements.
+
+
+## Isolated inspector session validation
+
+The explicit `YACREADER_DATA_DIR` profile also scopes reader/library local IPC.
+Reader and library processes with the same normalized profile share their
+endpoint; different profiles use separate endpoints. Without that override the
+existing application endpoint remains unchanged. Synthetic socket tests never
+connect to or remove the operating profile endpoint. This does not relocate a
+library database, disable its HTTP server or authorize opening the real library.
+Continue to use a separate test library and disable the test HTTP server.
+
+The opt-in `inspectorSessionNeural` test uses only packaged synthetic Korean and
+Japanese pages and a temporary library. It calls the actual runner, pauses after
+one durable receipt, clicks the inspector continuation button and then opens a
+fresh inspector instance. It checks device labels, retained original timings,
+unchanged raw cache on reopening, preserved user edits and no automatic external
+lookup or metadata save. The packaged CPU check and local physical GPU check are
+separate requirements. Batched inference may compute an unrecorded second page
+before cancellation; one persisted receipt does not mean only one page was
+inferred. This is functional validation, not a speed benchmark or real-work
+accuracy measurement.

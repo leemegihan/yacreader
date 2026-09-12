@@ -38,6 +38,8 @@
 #include <QLineEdit>
 #include <QLineF>
 #include <QListWidget>
+#include <QLocalServer>
+#include <QLocalSocket>
 #include <QLockFile>
 #include <QMap>
 #include <QPainter>
@@ -147,6 +149,8 @@ private slots:
     void localProbePreservesInputs();
     void localPageProbeSamplingIsBounded();
     void isolatedSettingsPaths();
+    void isolatedLocalServerNames();
+    void inspectorSessionNeural();
     void sampling();
     void folderAndArchiveUseSamePageOrder();
     void sourceSnapshotValidation();
@@ -2043,6 +2047,233 @@ void LocalMetadataTest::inspectorWorkerLifetime()
         }
     }
     QVERIFY(!completed); // Cancelled/stale completion never updates the UI.
+}
+
+void LocalMetadataTest::isolatedLocalServerNames()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const bool hadRoot = qEnvironmentVariableIsSet("YACREADER_DATA_DIR");
+    const auto previousRoot = qEnvironmentVariable("YACREADER_DATA_DIR");
+    const auto setRoot = [](const QString &value) {
+#ifdef Q_OS_WIN
+        return _wputenv_s(L"YACREADER_DATA_DIR", value.toStdWString().c_str()) == 0;
+#else
+        return qputenv("YACREADER_DATA_DIR", value.toUtf8());
+#endif
+    };
+    const auto restore = qScopeGuard([&] {
+        if (hadRoot)
+            setRoot(previousRoot);
+        else
+            qunsetenv("YACREADER_DATA_DIR");
+    });
+    qunsetenv("YACREADER_DATA_DIR");
+    const auto production = YACReader::localServerName();
+    QCOMPARE(production, QStringLiteral(YACREADERLIBRARY_GUID));
+    // Never listen on, remove or connect to the production endpoint.
+    const auto rootA = temporary.filePath(QStringLiteral("한글-profile-A"));
+    QVERIFY(setRoot(rootA));
+    const auto nameA = YACReader::localServerName();
+    QVERIFY(nameA != production);
+    QVERIFY(!nameA.contains(rootA));
+    QVERIFY(setRoot(rootA + QStringLiteral("/./")));
+    QCOMPARE(YACReader::localServerName(), nameA);
+#ifdef Q_OS_WIN
+    QVERIFY(setRoot(QDir::toNativeSeparators(rootA.toUpper())));
+    QCOMPARE(YACReader::localServerName(), nameA);
+#endif
+    QVERIFY(setRoot(temporary.filePath(QStringLiteral("profile-B"))));
+    const auto nameB = YACReader::localServerName();
+    QVERIFY(nameB != production && nameB != nameA);
+    QLocalServer serverA;
+    QLocalServer serverB;
+    QVERIFY2(serverA.listen(nameA), qPrintable(serverA.errorString()));
+    QVERIFY2(serverB.listen(nameB), qPrintable(serverB.errorString()));
+    for (const bool first : { true, false }) {
+        QVERIFY(setRoot(first ? rootA : temporary.filePath(QStringLiteral("profile-B"))));
+        QLocalSocket client;
+        client.connectToServer(YACReader::localServerName());
+        QVERIFY2(client.waitForConnected(5000), qPrintable(client.errorString()));
+        auto &selected = first ? serverA : serverB;
+        auto &other = first ? serverB : serverA;
+        QTRY_VERIFY_WITH_TIMEOUT(selected.hasPendingConnections(), 5000);
+        QVERIFY(!other.hasPendingConnections());
+        std::unique_ptr<QLocalSocket> peer(selected.nextPendingConnection());
+        QVERIFY(peer);
+        const QByteArray marker = first ? "profile-A" : "profile-B";
+        QCOMPARE(client.write(marker), qint64(marker.size()));
+        client.flush();
+        QTRY_COMPARE_WITH_TIMEOUT(peer->bytesAvailable(), qint64(marker.size()), 5000);
+        QCOMPARE(peer->readAll(), marker);
+    }
+}
+
+void LocalMetadataTest::inspectorSessionNeural()
+{
+    using namespace LocalMetadata;
+    const auto expected = qEnvironmentVariable("YACREADER_EXPECT_NEURAL_DEVICE");
+    if (expected.isEmpty())
+        QSKIP("Explicit packaged CPU or isolated physical GPU inspector session only.");
+    QVERIFY(expected == QStringLiteral("cpu") || expected == QStringLiteral("gpu:0"));
+    QVERIFY(qEnvironmentVariableIsEmpty("YACREADER_SYNTHETIC_RECOVERY_WORKER"));
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto root = temporary.filePath("library");
+    const auto folder = root + QStringLiteral("/synthetic-session");
+    const auto data = root + QStringLiteral("/.yacreaderlibrary");
+    QVERIFY(QDir().mkpath(folder));
+    QVERIFY(QDir().mkpath(data));
+    for (const auto &item : { QPair<QString, QString>("kor", "1.png"), { "jpn", "2.png" } })
+        QVERIFY(QFile::copy(QCoreApplication::applicationDirPath() + QStringLiteral("/ocr-colophon-%1.png").arg(item.first), QDir(folder).filePath(item.second)));
+    const auto libraryDatabase = data + QStringLiteral("/library.ydb");
+    const auto connection = QUuid::createUuid().toString();
+    bool created = false;
+    {
+        auto db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connection);
+        db.setDatabaseName(libraryDatabase);
+        if (db.open()) {
+            QSqlQuery query(db);
+            created = query.exec("CREATE TABLE comic(id INTEGER,comicInfoId INTEGER,path TEXT)") && query.exec("INSERT INTO comic VALUES(1,42,'/synthetic-session')");
+        }
+    }
+    QSqlDatabase::removeDatabase(connection);
+    QVERIFY(created);
+    const auto bytes = [](const QString &path) { QFile file(path); return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray(); };
+    const auto originalLibrary = bytes(libraryDatabase);
+    const auto koreanBytes = bytes(folder + "/1.png");
+    const auto japaneseBytes = bytes(folder + "/2.png");
+    QVERIFY(!originalLibrary.isEmpty() && !koreanBytes.isEmpty() && !japaneseBytes.isEmpty());
+    const bool hadRoot = qEnvironmentVariableIsSet("YACREADER_DATA_DIR");
+    const auto previousRoot = qEnvironmentVariable("YACREADER_DATA_DIR");
+    const auto setRoot = [](const QString &value) {
+#ifdef Q_OS_WIN
+        return _wputenv_s(L"YACREADER_DATA_DIR", value.toStdWString().c_str()) == 0;
+#else
+        return qputenv("YACREADER_DATA_DIR", value.toUtf8());
+#endif
+    };
+    const auto restoreRoot = qScopeGuard([&] { if (hadRoot) setRoot(previousRoot); else qunsetenv("YACREADER_DATA_DIR"); });
+    QVERIFY(setRoot(temporary.filePath("settings")));
+    const auto configure = [&](YACReaderArchiveInspectorDialog &dialog) {
+        const auto qualityIndex = dialog.quality->findData(2);
+        const auto deviceIndex = dialog.performance->findData(expected == "gpu:0" ? -1 : 8);
+        if (qualityIndex < 0 || deviceIndex < 0)
+            return false;
+        dialog.quality->setCurrentIndex(qualityIndex);
+        dialog.performance->setCurrentIndex(deviceIndex);
+        return true;
+    };
+    auto dialog = std::make_unique<YACReaderArchiveInspectorDialog>();
+    const auto stopFirst = qScopeGuard([&] { if (dialog) { dialog->cancel(); if (dialog->activeWorker) dialog->activeWorker->wait(15000); } });
+    dialog->autoSearch->setChecked(false);
+    dialog->inspectComic(root, 42);
+    QTRY_VERIFY_WITH_TIMEOUT(dialog->activeWorker.isNull(), 30000);
+    QVERIFY(configure(*dialog));
+    LocalOcrSession::Request request;
+    request.libraryRoot = root;
+    request.comicInfoId = 42;
+    request.sourcePath = folder;
+    request.applicationPath = QCoreApplication::applicationFilePath();
+    request.dataRoot = QDir(YACReader::getCommonSettingsPath()).filePath("local-ocr/v1");
+    request.options = dialog->ocrOptions();
+    const auto flag = std::make_shared<std::atomic_bool>(false);
+    int accepted = 0;
+    // Use the actual OCR runner. Cancel synchronously after the first durable
+    // receipt so even batched file collection cannot publish a second receipt.
+    const auto first = LocalOcrSession::run(request, LocalOcrSession::Action::Start, flag, { }, { },
+                                            [&](const QVector<QImage> &images, const OcrOptions &options, const Cancellation &cancel, const Progress &progress, const PageSink &sink) {
+                                                return recognizePagesWithOutcome(images, options, cancel, progress, [&](const NeuralPageEvidence &page, QString *error) {
+                                                    if (!sink(page, error))
+                                                        return false;
+                                                    ++accepted;
+                                                    cancel->store(true);
+                                                    return true;
+                                                });
+                                            });
+    QVERIFY(!first.complete);
+    QVERIFY(first.state.has_value());
+    QCOMPARE(*first.state, OcrJobs::State::Paused);
+    QCOMPARE(accepted, 1);
+    QCOMPARE(first.metadata.pages.size(), 2);
+    QCOMPARE(first.metadata.pages[0].reading.device, expected);
+    const auto database = QDir(request.dataRoot).filePath("ocr-jobs.sqlite");
+    const auto job = [&]() -> std::optional<OcrJobs::Job> { OcrJobs::Store store; if (!store.open(database)) return std::nullopt; return store.get(first.jobId); };
+    const auto paused = job();
+    QVERIFY(paused.has_value());
+    QCOMPARE(paused->pages.size(), 1);
+    QCOMPARE(paused->attempts, 1);
+    dialog->titleEdit->setText(QStringLiteral("My reviewed title"));
+    QSignalSpy searches(dialog.get(), &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    QSignalSpy saves(dialog.get(), &YACReaderArchiveInspectorDialog::metadataSaved);
+    QVERIFY(dialog->resumeButton->isEnabled());
+    dialog->resumeButton->click();
+    QVERIFY(dialog->activeWorker);
+    QVERIFY(!dialog->ocrButton->isEnabled() && !dialog->resumeButton->isEnabled());
+    QTRY_VERIFY_WITH_TIMEOUT(dialog->activeWorker.isNull(), 240000);
+    QVERIFY2(dialog->result.error.isEmpty(), qPrintable(dialog->statusLabel->text()));
+    QCOMPARE(dialog->result.pages.size(), 2);
+    QCOMPARE(dialog->titleEdit->text(), QStringLiteral("My reviewed title"));
+    QCOMPARE(searches.count(), 0);
+    QCOMPARE(saves.count(), 0);
+    QVERIFY(dialog->savedSelection.has_value());
+    QVector<qint64> originalTimes;
+    for (int i = 0; i < 2; ++i) {
+        const auto &reading = dialog->result.pages[i].reading;
+        QCOMPARE(reading.device, expected);
+        originalTimes.append(reading.elapsedMs);
+        auto text = reading.text;
+        text.remove(QRegularExpression(QStringLiteral("\\s+")));
+        QVERIFY2(text.contains(i == 0 ? QStringLiteral("홍길동") : QStringLiteral("見本太郎")), qPrintable(reading.text));
+    }
+    QCOMPARE(originalTimes[0], first.metadata.pages[0].reading.elapsedMs);
+    const auto completed = job();
+    QVERIFY(completed.has_value());
+    QCOMPARE(completed->attempts, 2);
+    QCOMPARE(completed->pages.size(), 2);
+    QVERIFY(completed->state == OcrJobs::State::PageReview || completed->state == OcrJobs::State::FilenameReview);
+    const auto savedCache = [&] {
+        QMap<QString, QByteArray> files;
+        const auto cache = QDir(request.dataRoot).filePath("pages");
+        for (const auto &name : QDir(cache).entryList(QDir::Files))
+            files[name] = bytes(QDir(cache).filePath(name));
+        return files;
+    };
+    const auto beforeCache = savedCache();
+    QVERIFY(!beforeCache.isEmpty());
+    dialog.reset(); // Fresh inspector instance and freshly owned worker/Store.
+    YACReaderArchiveInspectorDialog reopened;
+    const auto stopReopened = qScopeGuard([&] { reopened.cancel(); if (reopened.activeWorker) reopened.activeWorker->wait(15000); });
+    reopened.inspectComic(root, 42);
+    QTRY_VERIFY_WITH_TIMEOUT(reopened.activeWorker.isNull(), 30000);
+    QVERIFY(configure(reopened));
+    reopened.autoSearch->setChecked(true); // Restoration must still avoid lookup.
+    reopened.titleEdit->setText(QStringLiteral("Keep edited title"));
+    reopened.authorEdit->setText(QStringLiteral("Keep edited author"));
+    QSignalSpy reopenedSearches(&reopened, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    reopened.resumeButton->click();
+    QVERIFY(reopened.activeWorker);
+    QTRY_VERIFY_WITH_TIMEOUT(reopened.activeWorker.isNull(), 240000);
+    QVERIFY2(reopened.result.error.isEmpty(), qPrintable(reopened.statusLabel->text()));
+    QVERIFY(reopened.statusLabel->text().contains(QStringLiteral("원래 OCR 기록")));
+    QCOMPARE(reopened.titleEdit->text(), QStringLiteral("Keep edited title"));
+    QCOMPARE(reopened.authorEdit->text(), QStringLiteral("Keep edited author"));
+    QCOMPARE(reopenedSearches.count(), 0);
+    QCOMPARE(reopened.result.pages.size(), 2);
+    for (int i = 0; i < 2; ++i) {
+        QCOMPARE(reopened.result.pages[i].reading.device, expected);
+        QCOMPARE(reopened.result.pages[i].reading.elapsedMs, originalTimes[i]);
+    }
+    const auto restored = job();
+    QVERIFY(restored.has_value());
+    QCOMPARE(restored->attempts, completed->attempts);
+    QCOMPARE(restored->state, completed->state);
+    QCOMPARE(savedCache(), beforeCache); // No raw result replacement during UI restoration.
+    QCOMPARE(bytes(libraryDatabase), originalLibrary);
+    QCOMPARE(bytes(folder + "/1.png"), koreanBytes);
+    QCOMPARE(bytes(folder + "/2.png"), japaneseBytes);
+    QCOMPARE(QDir(data).entryList(QDir::Files), QStringList({ QStringLiteral("library.ydb") }));
+    qInfo("Actual inspector session device=%s attempts=%d receipts=%lld; restored without another claim", qPrintable(expected), restored->attempts, qint64(restored->pages.size()));
 }
 
 void LocalMetadataTest::claimedExecutorNeural()
