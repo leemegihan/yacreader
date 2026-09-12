@@ -161,6 +161,13 @@ QString settingsFingerprint(const QJsonObject &snapshot)
     return QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(snapshot).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256).toHex());
 }
 
+QString jobId(const Spec &spec)
+{
+    if (!validSpec(spec))
+        return { };
+    return QString::fromLatin1(QCryptographicHash::hash(serialize(spec), QCryptographicHash::Sha256).toHex());
+}
+
 QString stateName(State state)
 {
     switch (state) {
@@ -326,7 +333,7 @@ std::optional<QString> Store::enqueue(const Spec &spec)
         return { };
     }
     const auto bytes = serialize(spec);
-    const QString id = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+    const QString id = jobId(spec);
     QSqlQuery q(db);
     q.prepare(QStringLiteral("INSERT OR IGNORE INTO jobs(id,spec,state) VALUES(?,?,?)"));
     q.addBindValue(id);

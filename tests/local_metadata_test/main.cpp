@@ -12,6 +12,7 @@
 #include "local_ocr_process.h"
 #include "local_ocr_recovery.h"
 #include "local_ocr_runtime.h"
+#include "local_ocr_session.h"
 #include "local_ocr_source.h"
 #include "ocr_job_store.h"
 #include "ocr_page_view.h"
@@ -36,6 +37,7 @@
 #include <QLineEdit>
 #include <QLineF>
 #include <QListWidget>
+#include <QLockFile>
 #include <QMap>
 #include <QPainter>
 #include <QPlainTextEdit>
@@ -187,6 +189,8 @@ private slots:
     void repeatedExecutorInputs();
     void completedReview_data();
     void completedReview();
+    void selectedSession_data();
+    void selectedSession();
     void selectedPreflight_data();
     void selectedPreflight();
     void cacheReceiptRecovery();
@@ -2521,6 +2525,240 @@ void LocalMetadataTest::repeatedExecutorInputs()
     const auto unchanged = LocalOcrSource::read(folder, 3, { }, &error);
     QVERIFY(unchanged.has_value());
     QCOMPARE(unchanged->fingerprint, source->fingerprint);
+}
+
+void LocalMetadataTest::selectedSession_data()
+{
+    QTest::addColumn<QString>("mode");
+    for (const auto &mode : { "fresh", "resume", "paused-start", "failed", "running", "changed-settings", "changed-source", "changed-library", "missing", "locked", "cancel-before", "cancel-preflight", "private-data-library", "corrupt-cache", "start-completed" })
+        QTest::newRow(mode) << QString::fromLatin1(mode);
+}
+
+void LocalMetadataTest::selectedSession()
+{
+#ifndef Q_OS_WIN
+    QSKIP("Personal Windows selected OCR session");
+#else
+    using namespace LocalMetadata;
+    using LocalOcrSession::Action;
+    QFETCH(QString, mode);
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto root = temporary.filePath("library");
+    const auto source = root + QStringLiteral("/selected");
+    const auto data = root + QStringLiteral("/.yacreaderlibrary");
+    const auto database = data + QStringLiteral("/library.ydb");
+    const auto runtime = temporary.filePath("runtime");
+    QVERIFY(QDir().mkpath(source));
+    QVERIFY(QDir().mkdir(data));
+    const auto write = [](const QString &path, const QByteArray &bytes) {
+        if (!QDir().mkpath(QFileInfo(path).absolutePath()))
+            return false;
+        QFile file(path);
+        return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(bytes) == bytes.size();
+    };
+    const auto hash = [](const QByteArray &bytes) { return QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex()); };
+    QVERIFY(write(runtime + "/app.exe", "synthetic application; must never execute"));
+    QVERIFY(write(runtime + "/Qt6Core.dll", "synthetic shared dependency"));
+    QVERIFY(write(runtime + "/ocr-neural/worker.py", "synthetic worker; must never execute"));
+    QVERIFY(write(runtime + "/ocr-neural/runtime/python.exe", "synthetic CPU interpreter; must never execute"));
+    QJsonArray declaration;
+    for (const QString &model : { QStringLiteral("PP-OCRv5_mobile_det"), QStringLiteral("PP-OCRv5_server_rec"), QStringLiteral("korean_PP-OCRv5_mobile_rec") })
+        for (const QString &name : { QStringLiteral("inference.json"), QStringLiteral("inference.pdiparams"), QStringLiteral("inference.yml") }) {
+            const QString relative = QStringLiteral("models/") + model + u'/' + name;
+            const auto bytes = relative.toUtf8();
+            QVERIFY(write(runtime + "/ocr-neural/" + relative, bytes));
+            declaration.append(QJsonObject { { "path", relative }, { "sha256", hash(bytes) } });
+        }
+    QVERIFY(write(runtime + "/ocr-neural/models.json", QJsonDocument(declaration).toJson()));
+    for (int i = 0; i < 2; ++i) {
+        QImage image(80 + i * 10, 40, QImage::Format_RGB32);
+        image.fill(Qt::white);
+        QVERIFY(image.save(QDir(source).filePath(QStringLiteral("%1.png").arg(i + 1)), "PNG"));
+    }
+    const auto sql = [&](const QString &statement) {
+        const auto connection = QUuid::createUuid().toString();
+        bool ok = false;
+        {
+            auto db = QSqlDatabase::addDatabase("QSQLITE", connection);
+            db.setDatabaseName(database);
+            if (db.open()) {
+                QSqlQuery query(db);
+                ok = query.exec(statement);
+            }
+        }
+        QSqlDatabase::removeDatabase(connection);
+        return ok;
+    };
+    QVERIFY(sql("CREATE TABLE comic(id INTEGER, comicInfoId INTEGER, path TEXT, title TEXT)"));
+    QVERIFY(sql("INSERT INTO comic VALUES(1,42,'/selected','Initial')"));
+
+    const auto bytes = [](const QString &path) { QFile f(path); return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray(); };
+    const auto preserved = [&] {
+        QMap<QString, QByteArray> result;
+        for (const auto &directory : { root, runtime }) {
+            QDirIterator it(directory, QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+            while (it.hasNext()) {
+                const auto p = it.next();
+                result[p] = bytes(p);
+            }
+        }
+        return result;
+    };
+    auto before = preserved();
+    LocalOcrSession::Request request;
+    request.libraryRoot = root;
+    request.comicInfoId = 42;
+    request.sourcePath = source;
+    request.applicationPath = runtime + "/app.exe";
+    request.dataRoot = temporary.filePath("private-work");
+    request.options.neural = true;
+    request.options.gpu = false;
+    auto flag = std::make_shared<std::atomic_bool>(false);
+    bool pauseFirst = mode == "resume" || mode == "paused-start" || mode == "changed-settings" || mode == "changed-source";
+    bool failFirst = mode == "failed";
+    int calls = 0;
+    QVector<int> inferred;
+    bool deliveryOk = true;
+    const auto runner = [&](const QVector<QImage> &images, const OcrOptions &options, const Cancellation &cancel, const Progress &, const PageSink &sink) {
+        ++calls;
+        RecognitionBatch result;
+        result.readings.resize(images.size());
+        result.evidence.resize(images.size());
+        result.validPages.fill(false, images.size());
+        result.status = RecognitionStatus::Complete;
+        for (int i = 0; i < images.size(); ++i) {
+            inferred.append(images[i].width());
+            const auto prepared = prepareOcrPage(images[i], options);
+            QByteArray png;
+            QBuffer buffer(&png);
+            buffer.open(QIODevice::WriteOnly);
+            prepared.image.save(&buffer, "PNG");
+            const QByteArray raw = R"({"version":1,"engine":"paddle-regions","device":"cpu","language":"auto","elapsedMs":7,"lines":[]})";
+            const NeuralPageEvidence page { i, prepared.geometry, hash(png), raw, hash(raw), QStringLiteral("cpu"), QStringLiteral("cpu") };
+            result.evidence[i] = page;
+            result.validPages[i] = true;
+            result.readings[i] = parseNeuralReading(raw, prepared.geometry.preparedSize);
+            QString error;
+            if (!sink(page, &error)) {
+                deliveryOk = false;
+                result.status = RecognitionStatus::DeliveryFailed;
+                result.error = error;
+                break;
+            }
+            if (pauseFirst) {
+                cancel->store(true);
+                result.status = RecognitionStatus::Cancelled;
+                result.error = "Synthetic clean cancellation";
+                break;
+            }
+        }
+        if (failFirst) {
+            result.status = RecognitionStatus::Failed;
+            result.error = "Synthetic exit failure after all outputs";
+        }
+        return result;
+    };
+    const auto run = [&](Action action, const Progress &progress = Progress()) { return LocalOcrSession::run(request, action, flag, progress, { }, runner); };
+    const auto dbPath = QDir(request.dataRoot).filePath("ocr-jobs.sqlite");
+    if (mode == "missing" || mode == "cancel-before" || mode == "cancel-preflight" || mode == "private-data-library" || mode == "locked") {
+        std::unique_ptr<QLockFile> lock;
+        if (mode == "locked") {
+            QVERIFY(QDir().mkpath(request.dataRoot));
+            lock = std::make_unique<QLockFile>(QDir(request.dataRoot).filePath("selected-session.lock"));
+            lock->setStaleLockTime(0);
+            QVERIFY(lock->tryLock(0));
+        }
+        if (mode == "private-data-library")
+            request.dataRoot = root + "/should-not-create";
+        if (mode == "cancel-before")
+            flag->store(true);
+        const auto result = run(mode == "missing" ? Action::Continue : Action::Start, [&](int step, int, const QString &) { if (mode == "cancel-preflight" && step == 1) flag->store(true); });
+        QVERIFY(!result.complete);
+        QVERIFY(!result.error.isEmpty());
+        QCOMPARE(calls, 0);
+        QVERIFY(!QFile::exists(dbPath));
+        QCOMPARE(preserved(), before);
+        return;
+    }
+    if (mode == "running") {
+        QString error;
+        const auto prepared = LocalOcrPreflight::read(root, 42, source, 3, request.applicationPath, request.options, &error);
+        QVERIFY2(prepared.has_value(), qPrintable(error));
+        QVERIFY(QDir().mkpath(request.dataRoot));
+        {
+            OcrJobs::Store store;
+            QVERIFY(store.open(dbPath));
+            const auto id = store.enqueue(prepared->spec);
+            QVERIFY(id);
+            QVERIFY(store.claim(*id, "other-synthetic-owner", 1, 1));
+        }
+        const auto result = run(Action::Continue);
+        QVERIFY(!result.complete);
+        QCOMPARE(result.state, std::optional<OcrJobs::State>(OcrJobs::State::Running));
+        QVERIFY(!result.error.isEmpty());
+        QCOMPARE(calls, 0);
+        QCOMPARE(preserved(), before);
+        return; // Even an expired Running lease is never stolen by this UI adapter.
+    }
+    const auto first = run(Action::Start);
+    QVERIFY2(deliveryOk, qPrintable(first.error));
+    QVERIFY(first.library.has_value());
+    QVERIFY(!first.jobId.isEmpty());
+    QCOMPARE(first.complete, !pauseFirst && !failFirst);
+    QCOMPARE(calls, 1);
+    QCOMPARE(preserved(), before);
+    if (pauseFirst)
+        QCOMPARE(first.state, std::optional<OcrJobs::State>(OcrJobs::State::Paused));
+    if (failFirst)
+        QCOMPARE(first.state, std::optional<OcrJobs::State>(OcrJobs::State::Failed));
+    if (mode == "changed-settings")
+        request.options.cpuThreads = 4;
+    if (mode == "changed-source") {
+        QImage changed(80, 40, QImage::Format_RGB32);
+        changed.fill(Qt::red);
+        QVERIFY(changed.save(source + "/1.png"));
+        before = preserved();
+    }
+    if (mode == "changed-library") {
+        QVERIFY(sql("UPDATE comic SET id=2"));
+        before = preserved();
+    }
+    if (mode == "corrupt-cache") {
+        const auto entries = QDir(QDir(request.dataRoot).filePath("pages")).entryList({ "*.json" }, QDir::Files);
+        QCOMPARE(entries.size(), 2);
+        QVERIFY(write(QDir(request.dataRoot).filePath("pages/" + entries.first()), "invalid evidence"));
+    }
+    flag = std::make_shared<std::atomic_bool>(false);
+    pauseFirst = false;
+    failFirst = false;
+    const bool success = mode == "fresh" || mode == "resume" || mode == "start-completed";
+    const auto second = run(mode == "paused-start" || mode == "start-completed" ? Action::Start : Action::Continue);
+    QCOMPARE(second.complete, success);
+    QCOMPARE(second.error.isEmpty(), success);
+    QCOMPARE(calls, mode == "resume" ? 2 : 1);
+    if (success) {
+        QCOMPARE(second.cachedPages, mode == "resume" ? 1 : 2);
+        QCOMPARE(second.restored, mode != "resume");
+        QCOMPARE(second.state, std::optional<OcrJobs::State>(OcrJobs::State::FilenameReview));
+        QCOMPARE(second.metadata.pages.size(), 2);
+        for (const auto &page : second.metadata.pages) {
+            QCOMPARE(page.reading.elapsedMs, qint64(7));
+            QCOMPARE(page.reading.device, QStringLiteral("cpu"));
+        }
+        QCOMPARE(inferred, QVector<int>({ 80, 90 }));
+    }
+    {
+        OcrJobs::Store store;
+        QVERIFY(store.open(dbPath));
+        QCOMPARE(store.list().size(), 1);
+        const auto job = store.get(first.jobId);
+        QVERIFY(job);
+        if (!success)
+            QCOMPARE(job->state, *first.state);
+    }
+    QCOMPARE(preserved(), before); // No original or library metadata writes, including rejection paths.
+#endif
 }
 
 void LocalMetadataTest::selectedPreflight_data()

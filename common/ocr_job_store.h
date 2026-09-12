@@ -119,6 +119,8 @@ private:
 // Returns empty for unsupported/incomplete snapshots. This checks structure, not
 // the installed files: the executor must remeasure the environment before reuse.
 QString settingsFingerprint(const QJsonObject &snapshot);
+// Stable full-spec identity without enqueueing or touching a database.
+QString jobId(const Spec &spec);
 QString stateName(State state);
 }
 

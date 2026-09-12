@@ -81,6 +81,8 @@ add_library(metadata_widgets STATIC
     local_ocr_persistence.cpp
     local_ocr_library.h
     local_ocr_library.cpp
+    local_ocr_session.h
+    local_ocr_session.cpp
     local_ocr_preflight.h
     local_ocr_preflight.cpp
     local_ocr_executor.h

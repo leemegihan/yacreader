@@ -1094,3 +1094,19 @@ fenced receipts. Five regression cases include cancellation and partial receipt
 failure/recovery. The actual neural check also uses a repeated Korean page around
 its cached Japanese page. Validation for these changes is pending; no new real
 work accuracy or timing claim is made.
+
+
+### 2026-09-12: selected-work session adapter
+
+Code102f15d7 passed full Windows run34467851628:13CTest, worker21, staged8,
+installed21, downloaded120, store25 and synthetic faults18. Interrupted local
+GPU evidence is retained separately; exact full-package device checks resumed.
+
+A worker-owned selected session now combines fresh preflight, a separate job/cache
+directory, explicit start/continue and completed review restoration. Continue
+looks up the exact current identity without enqueueing changed work. A cleanly
+paused job resumes only missing pages; completed review never invokes OCR.
+Running, failed and interrupted jobs remain unchanged for separate recovery.
+Long-lived cooperative locking blocks overlapping sessions without an age-based
+expiry. Fifteen synthetic cases are added; their validation and inspector UI
+hookup are pending. No whole-library processing or metadata save is added.
