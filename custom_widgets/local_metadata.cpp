@@ -4,8 +4,10 @@
 #include "comic_image_folder.h"
 #include "compressed_archive.h"
 #include "library_maintenance_lock.h"
+#include "local_ocr_library.h"
 #include "local_ocr_process.h"
 #include "local_ocr_recovery.h"
+#include "local_ocr_source.h"
 #include "qnaturalsorting.h"
 #include "yacreader_global.h"
 
@@ -637,7 +639,7 @@ QString comicPath(const QString &libraryPath, qulonglong comicInfoId, QString *e
 
 bool save(const QString &libraryPath, qulonglong comicInfoId, const QString &sourcePath,
           const QString &title, const QString &author, bool overwrite,
-          const QVector<Suggestion> &evidence, QString *error)
+          const QVector<Suggestion> &evidence, QString *error, const SaveGuard *guard)
 {
     error->clear();
     if (title.trimmed().isEmpty() && author.trimmed().isEmpty()) {
@@ -648,6 +650,28 @@ bool save(const QString &libraryPath, qulonglong comicInfoId, const QString &sou
     if (!maintenance.tryLock()) {
         *error = maintenance.errorString();
         return false;
+    }
+    if (guard) {
+        const auto matches = [&](const std::optional<LocalOcrLibrary::Binding> &binding) {
+            return binding && !guard->libraryGeneration.isEmpty() && binding->generation == guard->libraryGeneration && binding->comicId == guard->comicId;
+        };
+        const auto before = LocalOcrLibrary::read(libraryPath, comicInfoId, sourcePath, error);
+        if (!matches(before)) {
+            if (error->isEmpty())
+                *error = tr("The library selection changed since this OCR result. Reopen it before saving.");
+            return false;
+        }
+        const auto source = LocalOcrSource::read(sourcePath, guard->perEnd, { }, error);
+        if (!source || source->fingerprint != guard->sourceFingerprint) {
+            if (error->isEmpty())
+                *error = tr("The selected pages changed since this OCR result. Reopen it before saving.");
+            return false;
+        }
+        if (!matches(LocalOcrLibrary::read(libraryPath, comicInfoId, sourcePath, error))) {
+            if (error->isEmpty())
+                *error = tr("The library selection changed while checking the saved OCR result.");
+            return false;
+        }
     }
     const auto resolvedSource = comicPath(libraryPath, comicInfoId, error);
     if (resolvedSource.isEmpty() || resolvedSource != sourcePath) {

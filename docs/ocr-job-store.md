@@ -595,3 +595,37 @@ it publishes the Japanese page before its receipt, pauses, runs only the unique
 Korean input on resume, and reloads all three pages with a fresh library/source/
 runtime preflight. Two original fixture types remain; the third page is a copy.
 This change still awaits Windows and physical-device validation.
+
+
+### 2026-09-12 validation and inspector connection
+
+The combined102f15d7 package passed Windows run34467851628:13CTest, worker21,
+staged8, installed21, downloaded120, store25 and synthetic faults18. Its exact
+full local runtime passed native91, store25, actualCPU4, actualGPU4 and faults18.
+Three owned GPU workers were observed independently by NVIDIA telemetry. These
+are synthetic CJK device/recovery tests, not new real-work accuracy or timing.
+
+LocalOcrSession owns the private Store and a cooperative session lock on its
+worker thread. Start enqueues the fresh complete identity; Continue only looks
+up that exact identity. A cleanly Paused job can resume, including after reopening
+the app. Completed review reloads validated cached pages without OCR or automatic
+external lookup. Running, Failed, Cancelled and Interrupted jobs are preserved
+for separate recovery; a stale lease alone is not proof of OS worker cleanup.
+Thus this UI does not yet recover an abrupt app crash or failed session. Changing
+the selected source/settings requires an explicit new start, preserving old work.
+
+The inspector now routes neural page reading through this session and provides
+an explicit saved-result/continue button. Classic OCR and selected-region reads
+keep their existing paths. Preview does not create jobs. Session progress separates
+preparation stages from recognized pages; restored page times remain the original
+inference measurements. The private directory is shared settings/local-ocr/v1,
+outside the source library and application; tests use an isolated settings root.
+
+Direct reviewed save rechecks the bound library generation/row and selected-page
+fingerprint under the existing maintenance lock before the existing metadata
+transaction. This is a freshness check for cooperating local operations, not a
+filesystem lock against all external editors. No whole-library execution or
+automatic save is added. Fifteen session, five presentation and seven save-guard
+cases were prepared, and worker-lifetime tests cover the new control. This local
+UI change is awaiting publication and Windows compilation; do not count the new
+cases as passed or the interface as a validated release.

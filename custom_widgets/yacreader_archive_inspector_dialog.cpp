@@ -1,6 +1,7 @@
 #include "yacreader_archive_inspector_dialog.h"
 
 #include "ocr_page_view.h"
+#include "yacreader_global.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -77,6 +78,8 @@ YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent
     performance->setToolTip(tr("영역 탐지 OCR의 처리 장치를 선택합니다. 스레드를 늘려도 항상 빨라지지는 않습니다."));
     ocrButton = new QPushButton(tr("페이지 글자 읽기"), this);
     cancelButton = new QPushButton(tr("중지"), this);
+    resumeButton = new QPushButton(tr("저장 결과 열기 / 이어 읽기"), this);
+    resumeButton->setToolTip(tr("같은 작품·페이지·OCR 설정의 완료 결과를 열거나 정상적으로 중지한 작업을 이어 읽습니다. 실패한 작업은 자동 재시작하지 않습니다."));
     auto *controls = new QHBoxLayout;
     controls->addWidget(pageLimit);
     controls->addWidget(language);
@@ -155,6 +158,7 @@ YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent
     auto *deviceControls = new QHBoxLayout;
     deviceControls->addWidget(new QLabel(tr("영역 OCR 처리 장치"), this));
     deviceControls->addWidget(performance);
+    deviceControls->addWidget(resumeButton);
     deviceControls->addStretch();
     layout->addLayout(deviceControls);
     layout->addWidget(statusLabel);
@@ -171,8 +175,10 @@ YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent
         textLayout->setEnabled(!neural);
         threshold->setEnabled(!neural);
         performance->setEnabled(neural);
+        resumeButton->setEnabled(neural && !activeWorker && !sourcePath.isEmpty());
     });
     connect(ocrButton, &QPushButton::clicked, this, [this] { start(true); });
+    connect(resumeButton, &QPushButton::clicked, this, [this] { startSaved(LocalOcrSession::Action::Continue); });
     connect(regionButton, &QPushButton::clicked, this, &YACReaderArchiveInspectorDialog::recognizeRegion);
     connect(cancelButton, &QPushButton::clicked, this, [this] {
         cancel();
@@ -214,13 +220,13 @@ void YACReaderArchiveInspectorDialog::cancel()
 }
 
 QThread *YACReaderArchiveInspectorDialog::createWorker(const LocalMetadata::Cancellation &flag,
-                                                       const std::function<void()> &work, const std::function<void()> &completed)
+                                                       const std::function<void()> &work, const std::function<void()> &completed, bool deliverCancelled)
 {
     if (activeWorker)
         return nullptr;
     auto *thread = QThread::create(work);
     activeWorker = thread;
-    connect(thread, &QThread::finished, this, [this, flag, completed] {
+    connect(thread, &QThread::finished, this, [this, flag, completed, deliverCancelled] {
         activeWorker.clear();
         if (pendingPreview) {
             pendingPreview = false;
@@ -230,7 +236,7 @@ QThread *YACReaderArchiveInspectorDialog::createWorker(const LocalMetadata::Canc
         setBusy(false);
         if (flag != cancellation)
             return;
-        if (flag->load()) {
+        if (flag->load() && !deliverCancelled) {
             statusLabel->setText(tr("중지했습니다. 다시 실행할 수 있습니다."));
             return;
         }
@@ -243,6 +249,7 @@ QThread *YACReaderArchiveInspectorDialog::createWorker(const LocalMetadata::Canc
 void YACReaderArchiveInspectorDialog::setBusy(bool busy)
 {
     ocrButton->setEnabled(!busy && !sourcePath.isEmpty());
+    resumeButton->setEnabled(!busy && !sourcePath.isEmpty() && quality->currentData().toInt() == 2);
     cancelButton->setEnabled(busy);
     pageLimit->setEnabled(!busy);
     language->setEnabled(!busy);
@@ -264,6 +271,8 @@ void YACReaderArchiveInspectorDialog::inspectComic(const QString &path, qulonglo
     cancellation.reset(); // Preserve a new selection error when old cleanup finishes.
     libraryPath = path;
     comicInfoId = id;
+    savedSelection.reset();
+    savedSourceFingerprint.clear();
     titleEdit->clear();
     authorEdit->clear();
     publisherEdit->clear();
@@ -296,6 +305,10 @@ void YACReaderArchiveInspectorDialog::inspectComic(const QString &path, qulonglo
 
 void YACReaderArchiveInspectorDialog::start(bool ocr)
 {
+    if (ocr && ocrOptions().neural) {
+        startSaved(LocalOcrSession::Action::Start);
+        return;
+    }
     if (sourcePath.isEmpty() || activeWorker)
         return;
     cancel();
@@ -340,6 +353,61 @@ void YACReaderArchiveInspectorDialog::start(bool ocr)
     connect(thread, &QThread::finished, ticker, &QTimer::stop);
     connect(thread, &QThread::finished, ticker, &QObject::deleteLater);
     thread->start();
+}
+
+void YACReaderArchiveInspectorDialog::startSaved(LocalOcrSession::Action action)
+{
+    if (sourcePath.isEmpty() || activeWorker || !ocrOptions().neural)
+        return;
+    cancel();
+    cancellation = std::make_shared<std::atomic_bool>(false);
+    const auto flag = cancellation;
+    LocalOcrSession::Request request;
+    request.libraryRoot = libraryPath;
+    request.comicInfoId = comicInfoId;
+    request.sourcePath = sourcePath;
+    request.perEnd = pageLimit->value();
+    request.applicationPath = QCoreApplication::applicationFilePath();
+    request.dataRoot = QDir(YACReader::getCommonSettingsPath()).filePath(QStringLiteral("local-ocr/v1"));
+    request.options = ocrOptions();
+    const auto output = std::make_shared<LocalOcrSession::Outcome>();
+    setBusy(true);
+    statusLabel->setText(tr("선택한 작품과 저장된 OCR 기록을 확인하는 중…"));
+    QElapsedTimer elapsed;
+    elapsed.start();
+    auto relay = std::shared_ptr<OcrProgressRelay>(new OcrProgressRelay, [](OcrProgressRelay *value) { value->deleteLater(); });
+    connect(relay.get(), &OcrProgressRelay::changed, this, [this, flag](int completed, int total, const QString &stage) {
+        if (!flag->load() && flag == cancellation)
+            statusLabel->setText(total > 0 ? tr("%1 / %2장 완료 · %3").arg(completed).arg(total).arg(stage) : stage);
+    });
+    auto *thread = createWorker(flag, [request, action, flag, output, relay] {
+        const LocalMetadata::Progress preparation = [relay](int, int, const QString &stage) { emit relay->changed(0, 0, stage); };
+        const LocalMetadata::Progress recognition = [relay](int completed, int total, const QString &stage) { emit relay->changed(completed, total, stage); };
+        *output = LocalOcrSession::run(request, action, flag, preparation, recognition); }, [this, output, elapsed, count = request.perEnd] { showSavedResult(*output, elapsed.elapsed(), count); }, true);
+    thread->start();
+}
+
+void YACReaderArchiveInspectorDialog::showSavedResult(const LocalOcrSession::Outcome &output, qint64 elapsedMs, int perEnd)
+{
+    savedSelection = output.library;
+    savedSourceFingerprint = output.sourceFingerprint;
+    savedPerEnd = perEnd;
+    showResult(output.metadata, output.complete);
+    if (output.state == OcrJobs::State::Paused) {
+        statusLabel->setText(tr("정상적으로 중지했습니다. 같은 설정에서 저장 결과 열기 / 이어 읽기를 누르면 남은 페이지를 처리합니다."));
+        return;
+    }
+    if (!output.error.isEmpty()) {
+        statusLabel->setText(output.error);
+        return;
+    }
+    if (output.restored)
+        statusLabel->setText(statusLabel->text() + tr(" · 저장 결과 %1장 복원 · 이번 열기 %2초 (페이지 시간은 원래 OCR 기록)").arg(output.cachedPages).arg(elapsedMs / 1000));
+    else
+        statusLabel->setText(statusLabel->text() + tr(" · 기존 결과 %1장 재사용 · 이번 처리 %2초").arg(output.cachedPages).arg(elapsedMs / 1000));
+    // Opening a completed result must not issue an external lookup again.
+    if (output.complete && !output.restored)
+        requestSearch(true);
 }
 
 void YACReaderArchiveInspectorDialog::showResult(const LocalMetadata::Result &value, bool ocrComplete)
@@ -585,7 +653,10 @@ void YACReaderArchiveInspectorDialog::requestSearch(bool automatic)
 void YACReaderArchiveInspectorDialog::save()
 {
     QString error;
-    if (!LocalMetadata::save(libraryPath, comicInfoId, sourcePath, titleEdit->text(), authorEdit->text(), overwrite->isChecked(), result.suggestions, &error)) {
+    std::optional<LocalMetadata::SaveGuard> guard;
+    if (savedSelection)
+        guard = LocalMetadata::SaveGuard { savedSelection->generation, savedSelection->comicId, savedSourceFingerprint, savedPerEnd };
+    if (!LocalMetadata::save(libraryPath, comicInfoId, sourcePath, titleEdit->text(), authorEdit->text(), overwrite->isChecked(), result.suggestions, &error, guard ? &*guard : nullptr)) {
         statusLabel->setText(error);
         return;
     }

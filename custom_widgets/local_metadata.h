@@ -168,9 +168,16 @@ bool validNeuralEvidence(const NeuralPageEvidence &evidence);
 QString recognize(const QImage &image, const OcrOptions &options, const Cancellation &cancel, QString *error);
 Result analyze(const QString &path, int perEnd, const OcrOptions &options, const Cancellation &cancel, const Progress &progress = { });
 QString comicPath(const QString &libraryPath, qulonglong comicInfoId, QString *error);
+// Fresh identity/source checks for a selected persisted review, under the library maintenance lock.
+struct SaveGuard {
+    QString libraryGeneration;
+    QString comicId;
+    QString sourceFingerprint;
+    int perEnd = 3;
+};
 bool save(const QString &libraryPath, qulonglong comicInfoId, const QString &sourcePath,
           const QString &title, const QString &author, bool overwrite,
-          const QVector<Suggestion> &evidence, QString *error);
+          const QVector<Suggestion> &evidence, QString *error, const SaveGuard *guard = nullptr);
 }
 
 #endif

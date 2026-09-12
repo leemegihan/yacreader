@@ -2,6 +2,7 @@
 #define YACREADER_ARCHIVE_INSPECTOR_DIALOG_H
 
 #include "local_metadata.h"
+#include "local_ocr_session.h"
 
 #include <QDialog>
 #include <QPointer>
@@ -40,8 +41,10 @@ signals:
 
 private:
     friend class LocalMetadataTest;
-    QThread *createWorker(const LocalMetadata::Cancellation &flag, const std::function<void()> &work, const std::function<void()> &completed);
+    QThread *createWorker(const LocalMetadata::Cancellation &flag, const std::function<void()> &work, const std::function<void()> &completed, bool deliverCancelled = false);
     void start(bool ocr);
+    void startSaved(LocalOcrSession::Action action);
+    void showSavedResult(const LocalOcrSession::Outcome &output, qint64 elapsedMs, int perEnd);
     void recognizeRegion();
     void requestSearch(bool automatic);
     LocalMetadata::OcrOptions ocrOptions() const;
@@ -60,6 +63,9 @@ private:
     LocalMetadata::Result result;
     bool automaticSearchDone = false;
     bool filenameFallback = false;
+    std::optional<LocalOcrLibrary::Binding> savedSelection;
+    QString savedSourceFingerprint;
+    int savedPerEnd = 3;
 
     QLabel *fileLabel;
     QLabel *statusLabel;
@@ -83,6 +89,7 @@ private:
     QPushButton *regionButton;
     QSpinBox *pageLimit;
     QPushButton *ocrButton;
+    QPushButton *resumeButton;
     QPushButton *cancelButton;
     QPushButton *saveButton;
     QPushButton *searchButton;

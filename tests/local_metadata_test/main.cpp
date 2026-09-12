@@ -22,6 +22,7 @@
 #include <QApplication>
 #include <QBuffer>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QCryptographicHash>
 #include <QDataStream>
 #include <QDateTime>
@@ -178,6 +179,10 @@ private slots:
     void cacheReceiptOrdering();
     void libraryBinding_data();
     void libraryBinding();
+    void inspectorSavedReview_data();
+    void inspectorSavedReview();
+    void guardedMetadataSave_data();
+    void guardedMetadataSave();
     void inspectorWorkerLifetime_data();
     void inspectorWorkerLifetime();
     void claimedExecutorNeural();
@@ -1811,6 +1816,141 @@ void LocalMetadataTest::libraryBinding()
 #endif
 }
 
+void LocalMetadataTest::inspectorSavedReview_data()
+{
+    QTest::addColumn<QString>("mode");
+    for (const auto &mode : { "restored-title", "fresh-title", "restored-empty", "failed-empty", "failed-title" })
+        QTest::newRow(mode) << QString::fromLatin1(mode);
+}
+
+void LocalMetadataTest::inspectorSavedReview()
+{
+    QFETCH(QString, mode);
+    YACReaderArchiveInspectorDialog dialog;
+    dialog.sourcePath = QStringLiteral("C:/synthetic/selected");
+    dialog.titleEdit->setText(QStringLiteral("My reviewed title"));
+    dialog.authorEdit->setText(QStringLiteral("My reviewed author"));
+    dialog.autoSearch->setChecked(true);
+    QSignalSpy requests(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    LocalOcrSession::Outcome output;
+    output.complete = !mode.startsWith("failed");
+    output.restored = mode.startsWith("restored");
+    output.cachedPages = output.restored ? 1 : 0;
+    output.metadata.pageCount = 1;
+    LocalMetadata::Page page;
+    page.number = 1;
+    page.image = sampleImage();
+    page.kind = LocalMetadata::PageKind::Colophon;
+    page.reading.elapsedMs = 7890;
+    page.reading.device = QStringLiteral("gpu:0");
+    output.metadata.pages.append(page);
+    if (mode.endsWith("title"))
+        output.metadata.suggestions.append({ LocalMetadata::Suggestion::Title, QStringLiteral("Candidate title"), QStringLiteral("Synthetic labelled credit"), 1, true, 99, { { 1, true, 99 } } });
+    if (!output.complete)
+        output.error = output.metadata.error = QStringLiteral("Synthetic interrupted session");
+    dialog.showSavedResult(output, 2000, 3);
+    QCOMPARE(dialog.titleEdit->text(), QStringLiteral("My reviewed title"));
+    QCOMPARE(dialog.authorEdit->text(), QStringLiteral("My reviewed author"));
+    QCOMPARE(requests.count(), mode == "fresh-title" ? 1 : 0);
+    QCOMPARE(dialog.filenameFallback, mode == "restored-empty");
+    QCOMPARE(dialog.result.pages[0].reading.elapsedMs, qint64(7890));
+    QCOMPARE(dialog.result.pages[0].reading.device, QStringLiteral("gpu:0"));
+    if (output.restored)
+        QVERIFY(dialog.statusLabel->text().contains(QStringLiteral("원래 OCR 기록")));
+    if (!output.complete)
+        QCOMPARE(dialog.statusLabel->text(), output.error);
+}
+
+void LocalMetadataTest::guardedMetadataSave_data()
+{
+    QTest::addColumn<QString>("mode");
+    for (const auto &mode : { "valid", "metadata-edit", "changed-page", "changed-plan", "changed-generation", "changed-row", "invalid-guard" })
+        QTest::newRow(mode) << QString::fromLatin1(mode);
+}
+
+void LocalMetadataTest::guardedMetadataSave()
+{
+#ifndef Q_OS_WIN
+    QSKIP("Personal Windows saved-review identity guard");
+#else
+    QFETCH(QString, mode);
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto root = temporary.filePath("library");
+    const auto source = root + "/Selected";
+    QVERIFY(QDir().mkpath(source));
+    QVERIFY(sampleImage().save(source + "/1.png"));
+    QVERIFY(sampleImage().save(source + "/2.png"));
+    QSettings settings(temporary.filePath("settings.ini"), QSettings::IniFormat);
+    LibraryCreator creator(&settings);
+    creator.createLibrary(root, YACReader::LibraryPaths::libraryDataPath(root));
+    creator.start();
+    QVERIFY(creator.wait(30000));
+    const auto database = YACReader::LibraryPaths::libraryDatabasePath(root);
+    const auto query = [&](const QString &statement) {
+        QVariant result;
+        const auto connection = QUuid::createUuid().toString();
+        {
+            auto db = QSqlDatabase::addDatabase("QSQLITE", connection);
+            db.setDatabaseName(database);
+            if (db.open()) {
+                QSqlQuery q(db);
+                if (q.exec(statement))
+                    result = q.next() ? q.value(0) : QVariant(true);
+            }
+        }
+        QSqlDatabase::removeDatabase(connection);
+        return result;
+    };
+    const auto id = query("SELECT comicInfoId FROM comic WHERE path='/Selected'").toULongLong();
+    QVERIFY(id);
+    QString error;
+    const auto binding = LocalOcrLibrary::read(root, id, source, &error);
+    QVERIFY2(binding.has_value(), qPrintable(error));
+    const auto pages = LocalOcrSource::read(source, 3, { }, &error);
+    QVERIFY2(pages.has_value(), qPrintable(error));
+    LocalMetadata::SaveGuard guard { binding->generation, binding->comicId, pages->fingerprint, 3 };
+    if (mode == "changed-generation")
+        guard.libraryGeneration += QStringLiteral("changed");
+    if (mode == "invalid-guard")
+        guard.sourceFingerprint.clear();
+    if (mode == "changed-page") {
+        auto image = sampleImage();
+        image.fill(Qt::black);
+        QVERIFY(image.save(source + "/1.png"));
+    }
+    if (mode == "changed-plan")
+        QVERIFY(sampleImage().save(source + "/3.png"));
+    if (mode == "changed-row")
+        QVERIFY(query("UPDATE comic SET id=id+100").isValid());
+    if (mode == "metadata-edit")
+        QVERIFY(query("UPDATE comic_info SET title='Edited before save'").isValid());
+    const auto snapshot = [&] {
+        QMap<QString, QByteArray> files;
+        QDirIterator it(root, QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            const auto path = it.next();
+            QFile f(path);
+            if (f.open(QIODevice::ReadOnly))
+                files[path] = f.readAll();
+        }
+        return files;
+    };
+    const auto before = snapshot();
+    const bool success = mode == "valid" || mode == "metadata-edit";
+    QCOMPARE(LocalMetadata::save(root, id, source, "Reviewed title", "Reviewed author", true, { }, &error, &guard), success);
+    QCOMPARE(error.isEmpty(), success);
+    const auto after = snapshot();
+    for (auto it = before.cbegin(); it != before.cend(); ++it)
+        if (!success || it.key().startsWith(source + '/'))
+            QCOMPARE(after.value(it.key()), it.value());
+    if (!success)
+        QCOMPARE(after.keys(), before.keys());
+    if (success)
+        QCOMPARE(query("SELECT title FROM comic_info WHERE id=" + QString::number(id)).toString(), QStringLiteral("Reviewed title"));
+#endif
+}
+
 void LocalMetadataTest::inspectorWorkerLifetime_data()
 {
     QTest::addColumn<QString>("mode");
@@ -1843,6 +1983,9 @@ void LocalMetadataTest::inspectorWorkerLifetime()
     }
     auto dialog = std::make_unique<YACReaderArchiveInspectorDialog>();
     dialog->sourcePath = folder;
+    if (dialog->quality->findData(2) < 0)
+        dialog->quality->addItem(QStringLiteral("Synthetic neural selection"), 2);
+    dialog->quality->setCurrentIndex(dialog->quality->findData(2));
     dialog->libraryPath = temporary.path();
     dialog->cancellation = std::make_shared<std::atomic_bool>(false);
     const auto flag = dialog->cancellation;
@@ -1879,8 +2022,10 @@ void LocalMetadataTest::inspectorWorkerLifetime()
     QVERIFY(!completed);
     if (dialog) {
         QVERIFY(!dialog->ocrButton->isEnabled());
+        QVERIFY(!dialog->resumeButton->isEnabled());
         const auto old = dialog->activeWorker;
         dialog->start(false); // Even a direct request cannot overlap cleanup.
+        dialog->startSaved(LocalOcrSession::Action::Continue);
         QCOMPARE(dialog->activeWorker, old);
         QVERIFY(!dialog->createWorker(flag, [] { }, [] { }));
     }

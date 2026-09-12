@@ -1110,3 +1110,20 @@ Running, failed and interrupted jobs remain unchanged for separate recovery.
 Long-lived cooperative locking blocks overlapping sessions without an age-based
 expiry. Fifteen synthetic cases are added; their validation and inspector UI
 hookup are pending. No whole-library processing or metadata save is added.
+
+
+### 2026-09-12: full device proof and local inspector continuation
+
+Exact full102f15d7 artifacts passed local91native/25store/4CPU/4GPU/18fault
+checks. All three owned GPU worker instances appeared in NVIDIA telemetry.
+Original media and the operating DB were not accessed in this phase. Model and
+frozen synthetic preparation hashes matched; worker bytes were restored.
+
+Selected-session code58b87a64 is committed locally. Its publication is pending:
+the connector's full-file request exceeded automatic review size limits, and
+the approved standard Git push had no local credentials. Subsequent inspector
+button, cancelled-session status delivery, restored-review presentation and
+freshness-guarded direct save code have twelve additional synthetic test cases.
+All new session/UI cases await compilation and execution; prior102 results do
+not validate these local changes. Full-library and abrupt-crash recovery remain
+out of scope for this connection.
