@@ -133,6 +133,8 @@ YACReaderArchiveInspectorDialog::YACReaderArchiveInspectorDialog(QWidget *parent
     splitter->addWidget(textPanel);
     splitter->setStretchFactor(1, 3);
     splitter->setStretchFactor(2, 2);
+    splitter->setChildrenCollapsible(false);
+    splitter->setSizes({ 150, 500, 400 });
     titleEdit = new QLineEdit(this);
     authorEdit = new QLineEdit(this);
     publisherEdit = new QLineEdit(this);
