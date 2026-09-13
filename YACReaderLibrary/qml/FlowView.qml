@@ -156,7 +156,8 @@ Rectangle {
                     id: coverElement
                     anchors.fill: parent
                     source: cover_path
-                    fillMode: Image.PreserveAspectCrop
+                    // Keep landscape titles visible, as in the grid and reading cards.
+                    fillMode: sourceSize.width > sourceSize.height ? Image.PreserveAspectFit : Image.PreserveAspectCrop
                     smooth: true
                     mipmap: true
                     asynchronous : true

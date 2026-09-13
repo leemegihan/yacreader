@@ -59,6 +59,7 @@
 #include <QTest>
 #include <QTextStream>
 #include <QThread>
+#include <QTimer>
 #include <QUuid>
 
 #include <algorithm>
@@ -2316,11 +2317,40 @@ void LocalMetadataTest::privateSelectedInspector()
     QSignalSpy searches(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
     QSignalSpy saves(&dialog, &YACReaderArchiveInspectorDialog::metadataSaved);
     QElapsedTimer elapsed;
+    QJsonArray executionTimeline, reopenTimeline;
+    auto *timeline = &executionTimeline;
+    QString phase = QStringLiteral("read");
+    const auto tracePath = output + QStringLiteral(".stages.json");
+    QVERIFY(!QFileInfo::exists(tracePath));
+    bool traceSaved = true;
+    const auto captureStage = [&] {
+        const auto stage = dialog.statusLabel->text();
+        if (!traceSaved || (!timeline->isEmpty() && timeline->last().toObject()["stage"].toString() == stage))
+            return;
+        const QJsonObject sample { { "atMs", elapsed.elapsed() }, { "stage", stage } };
+        if (timeline->size() < 128)
+            timeline->append(sample);
+        else
+            (*timeline)[timeline->size() - 1] = sample;
+        // Save status changes while work runs, so a watchdog failure retains
+        // its last observed stage. This private trace is not an OCR benchmark.
+        QSaveFile file(tracePath);
+        file.setDirectWriteFallback(false);
+        const auto bytes = QJsonDocument(QJsonObject { { "version", 1 }, { "phase", phase }, { "read", executionTimeline }, { "reopen", reopenTimeline }, { "sampleIntervalMs", 100 } }).toJson();
+        traceSaved = file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size() && file.commit();
+    };
+    QTimer stageTimer;
+    connect(&stageTimer, &QTimer::timeout, &dialog, captureStage);
     elapsed.start();
     dialog.ocrButton->click();
+    captureStage();
+    stageTimer.start(100);
     QVERIFY(dialog.activeWorker);
     QTRY_VERIFY_WITH_TIMEOUT(dialog.activeWorker.isNull(), 900000);
     const auto executionMs = elapsed.elapsed();
+    stageTimer.stop();
+    captureStage();
+    QVERIFY(traceSaved);
     QJsonArray pages, candidates, receipts;
     bool devicesMatch = !dialog.result.pages.isEmpty();
     for (const auto &page : dialog.result.pages) {
@@ -2337,7 +2367,7 @@ void LocalMetadataTest::privateSelectedInspector()
     const auto job = jobs.first();
     for (const auto &receipt : job.pages)
         receipts.append(QJsonObject { { "page", receipt.page }, { "cacheKey", receipt.cacheKey }, { "resultSha256", receipt.resultSha256 }, { "actualDevice", receipt.actualDevice } });
-    QJsonObject report { { "version", 1 }, { "id", id }, { "requestedDevice", device }, { "cpuThreads", 8 }, { "perEnd", 3 }, { "executionMs", executionMs }, { "jobId", job.id }, { "state", OcrJobs::stateName(job.state) }, { "attempts", job.attempts }, { "error", dialog.result.error }, { "pages", pages }, { "candidates", candidates }, { "receipts", receipts }, { "sourceFingerprint", dialog.savedSourceFingerprint }, { "settingsFingerprint", job.spec.settingsFingerprint }, { "sourceUnchanged", digest(input) == inputBefore }, { "libraryUnchanged", digest(libraryFile) == libraryBefore }, { "externalLookups", searches.count() }, { "metadataSaves", saves.count() }, { "devicesMatch", devicesMatch }, { "completedReviewRestored", false } };
+    QJsonObject report { { "version", 1 }, { "id", id }, { "requestedDevice", device }, { "cpuThreads", 8 }, { "perEnd", 3 }, { "executionMs", executionMs }, { "executionTimeline", executionTimeline }, { "qtFunctionTimeoutMs", qEnvironmentVariable("QTEST_FUNCTION_TIMEOUT") }, { "jobId", job.id }, { "state", OcrJobs::stateName(job.state) }, { "attempts", job.attempts }, { "error", dialog.result.error }, { "pages", pages }, { "candidates", candidates }, { "receipts", receipts }, { "sourceFingerprint", dialog.savedSourceFingerprint }, { "settingsFingerprint", job.spec.settingsFingerprint }, { "sourceUnchanged", digest(input) == inputBefore }, { "libraryUnchanged", digest(libraryFile) == libraryBefore }, { "externalLookups", searches.count() }, { "metadataSaves", saves.count() }, { "devicesMatch", devicesMatch }, { "completedReviewRestored", false } };
     const auto writeReport = [&] {
         QSaveFile file(output);
         file.setDirectWriteFallback(false);
@@ -2361,11 +2391,19 @@ void LocalMetadataTest::privateSelectedInspector()
     };
     const auto originalCache = cacheDigest();
     QVERIFY(!originalCache.isEmpty());
+    timeline = &reopenTimeline;
+    phase = QStringLiteral("reopen");
     elapsed.restart();
     dialog.resumeButton->click();
+    captureStage();
+    stageTimer.start(100);
     QVERIFY(dialog.activeWorker);
     QTRY_VERIFY_WITH_TIMEOUT(dialog.activeWorker.isNull(), 120000);
     report["reopenMs"] = elapsed.elapsed();
+    stageTimer.stop();
+    captureStage();
+    report["reopenTimeline"] = reopenTimeline;
+    QVERIFY(traceSaved);
     QVERIFY2(dialog.result.error.isEmpty(), qPrintable(dialog.result.error));
     QVERIFY(dialog.statusLabel->text().contains(QStringLiteral("원래 OCR 기록")));
     const auto restored = store.get(job.id);
@@ -5755,6 +5793,10 @@ int main(int argc, char **argv)
         return localOcrCacheProbe(app.arguments());
     if (app.arguments().value(1).startsWith("--local-ocr-"))
         return localOcrProbe(app.arguments());
+    // This explicit private diagnostic includes both bounded OCR and review
+    // reopening. Keep ordinary tests and an explicit caller override unchanged.
+    if (!qEnvironmentVariableIsEmpty("YACREADER_PRIVATE_INSPECTOR_CASE") && app.arguments().contains(QStringLiteral("privateSelectedInspector")) && qEnvironmentVariableIsEmpty("QTEST_FUNCTION_TIMEOUT"))
+        qputenv("QTEST_FUNCTION_TIMEOUT", "1050000");
     LocalMetadataTest test;
     return QTest::qExec(&test, argc, argv);
 }

@@ -272,3 +272,24 @@ requested/actual device and completion/restoration status. No real manifest,
 source file, filename, path, OCR response or truth label belongs in Git or CI.
 The driver must use identical CPU8/GPU inputs, separate fresh profiles, and preserve
 failed records. This is one selected work per invocation, not a library scanner.
+
+
+When the private manifest and named diagnostic are explicitly selected, the
+diagnostic defaults `QTEST_FUNCTION_TIMEOUT` to 1050000 milliseconds before QtTest
+starts. An explicit caller value is preserved, and ordinary tests keep their
+normal default. The private reference driver also sets this value and uses its
+own bounded 1100-second process deadline. QtTest's default five-minute function watchdog
+covers both OCR and completed-review reopening; a longer QTRY wait does not
+raise that watchdog. See the [Qt Test execution guidance](https://doc.qt.io/qt-6/qtest-overview.html).
+This changes only the diagnostic deadline, not the worker deadline or the
+first/last-three-page cap. Preserve any original timeout result. A timed retry
+uses a separate fresh profile/cache and a new output directory; do not count a
+failed run as a successful comparison or reuse its partial cache for cold-run
+timing. Cached-review correctness is reported separately from fresh inference.
+
+The diagnostic writes a bounded private `.stages.json` sidecar on observed UI
+status changes, retaining the last stage even if a watchdog aborts the test.
+Read and reopen have separate relative clocks. The 100ms sampling can miss short
+stages and adds tracing overhead; use it to locate waits, not as a kernel timing
+or a replacement for the uninstrumented comparison. The sidecar and timelines
+are private results and must not be committed or uploaded to CI.
