@@ -2132,6 +2132,7 @@ void LocalMetadataTest::inspectorCompletedCancellation()
         LocalMetadata::Page page;
         page.number = 1;
         page.image = sampleImage();
+        page.kind = LocalMetadata::PageKind::Colophon;
         page.text = QStringLiteral("Title: Completed candidate");
         output->metadata.pages.append(page);
         output->metadata.suggestions.append({ LocalMetadata::Suggestion::Title, QStringLiteral("Completed candidate"), QStringLiteral("Synthetic labelled title"), 1, true, 99, { { 1, true, 99 } } }); }, [&] {
