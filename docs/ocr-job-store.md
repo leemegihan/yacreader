@@ -1,9 +1,15 @@
 # Durable OCR job store
 
-The `ocr_job_store` Qt Core/Sql library supplies persistent bookkeeping for a
-future OCR executor. It is built and tested independently of GUI widgets and the
-library database. It is not yet connected to the inspector, a job-list UI or automatic cache
-reuse, and does not enable full-library execution.
+The `ocr_job_store` Qt Core/Sql library supplies persistent bookkeeping for the
+selected-work OCR executor. `LocalOcrSession` connects it and the validated page
+cache to the inspector: a cleanly paused job can continue and a completed review
+can reopen. The store itself neither runs OCR nor writes library metadata.
+A saved-job list, failed/abrupt-crash recovery, whole-library scheduling and bulk
+save remain follow-ups. See [the current roadmap](manga-library-roadmap.md).
+
+The later dated sections preserve staged implementation and validation history;
+an earlier planned integration is not necessarily still pending. The current
+inspector boundary is summarized in “2026-09-12 validation and inspector connection” below.
 
 ## Storage boundary
 
@@ -48,10 +54,10 @@ A receipt records page number, cache key, result SHA256 and actual device
 
 Receipts reference validated, durably stored artifacts; they do not contain OCR
 text and are not sufficient evidence that a cached result still exists or is
-valid. The future executor must validate result JSON with the existing neural
-parser, check artifact hash/version/settings/device and only then reuse it.
-An invalid artifact needs explicit invalidation/reprocessing support before
-executor integration. No automatic receipt reuse exists in the job store.
+valid. The executor validates result JSON with the existing neural parser and checks
+artifact hash/version/settings/device before reuse. Invalid artifacts are refused
+without replacement; explicit invalidation/reprocessing remains follow-up work.
+No automatic receipt reuse exists inside the job store itself.
 
 The settings key must distinguish worker/model/package versions, image
 preprocessing, requested device and thread/language settings. Actual CPU fallback

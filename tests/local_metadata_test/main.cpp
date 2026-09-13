@@ -232,6 +232,8 @@ private slots:
     void nameHintsExcludeLibraryRoots();
     void filenameHintsHandleDecorations();
     void filenameFallbackRequiresExplicitReview();
+    void publisherOnlyFilenameHandoff_data();
+    void publisherOnlyFilenameHandoff();
     void filenameFallbackDistinguishesErrorsAndPageEvidence();
     void neuralCandidatesOpenReviewBeforeSearch();
     void conflictingCandidatesRequireSelection();
@@ -5660,6 +5662,62 @@ void LocalMetadataTest::filenameFallbackRequiresExplicitReview()
     QCOMPARE(requests.first().at(5).toStringList(), QStringList { "Alice Example" });
     QVERIFY(!requests.first().at(7).toBool()); // Review only, no network or database write.
     QVERIFY(requests.first().at(8).toString().contains("힌트"));
+}
+
+void LocalMetadataTest::publisherOnlyFilenameHandoff_data()
+{
+    QTest::addColumn<QString>("mode");
+    for (const auto &mode : { "filename", "missing-filename", "ambiguous-filename", "manual-title", "page-author", "conflicting-page-titles" })
+        QTest::newRow(mode) << QString::fromLatin1(mode);
+}
+
+void LocalMetadataTest::publisherOnlyFilenameHandoff()
+{
+    using namespace LocalMetadata;
+    QFETCH(QString, mode);
+    YACReaderArchiveInspectorDialog dialog;
+    dialog.autoSearch->setChecked(true);
+    Result result;
+    Page page;
+    page.number = 1;
+    page.kind = PageKind::Colophon;
+    page.image = sampleImage();
+    page.reading.reviewRequired = true;
+    result.pageCount = 6;
+    result.pages = { page };
+    result.suggestions.append({ Suggestion::Publisher, QStringLiteral("Example Studio"), QStringLiteral("Tentative circle credit"), 1, false, 90, { { 1, false, 90 } } });
+    if (mode != "missing-filename")
+        result.suggestions.append({ Suggestion::Title, QStringLiteral("Filename title"), QStringLiteral("Filename hint"), 0, false, -1, { } });
+    if (mode == "ambiguous-filename")
+        result.suggestions.append({ Suggestion::Title, QStringLiteral("Another filename"), QStringLiteral("Filename hint"), 0, false, -1, { } });
+    if (mode == "page-author")
+        result.suggestions.append({ Suggestion::Author, QStringLiteral("Page author"), QStringLiteral("Tentative author credit"), 1, false, 90, { { 1, false, 90 } } });
+    if (mode == "conflicting-page-titles")
+        for (const auto &title : { QStringLiteral("First page title"), QStringLiteral("Second page title") })
+            result.suggestions.append({ Suggestion::Title, title, QStringLiteral("Conflicting title credit"), 1, false, 90, { { 1, false, 90 } } });
+    dialog.showResult(result, true);
+    if (mode == "manual-title")
+        dialog.titleEdit->setText(QStringLiteral("Reviewed title"));
+    const auto editedTitle = dialog.titleEdit->text();
+    QSignalSpy requests(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    QSignalSpy saves(&dialog, &YACReaderArchiveInspectorDialog::metadataSaved);
+    dialog.requestSearch(true);
+    QCOMPARE(requests.count(), 0);
+    dialog.requestSearch(false);
+    const bool expected = mode == "filename" || mode == "manual-title" || mode == "page-author";
+    QCOMPARE(requests.count(), expected ? 1 : 0);
+    QCOMPARE(saves.count(), 0);
+    QCOMPARE(dialog.titleEdit->text(), editedTitle); // A proposed filename is not a confirmed title.
+    QVERIFY(dialog.authorEdit->text().isEmpty());
+    QCOMPARE(dialog.candidateList->count(), result.suggestions.size());
+    if (expected) {
+        const auto args = requests.first();
+        QCOMPARE(args.at(2).toString(), mode == "page-author" ? QString() : mode == "manual-title" ? QStringLiteral("Reviewed title")
+                                                                                                   : QStringLiteral("Filename title"));
+        QCOMPARE(args.at(3).toString(), mode == "page-author" ? QStringLiteral("Page author") : QString());
+        QCOMPARE(args.at(6).toStringList(), QStringList { QStringLiteral("Example Studio") });
+        QVERIFY(!args.at(7).toBool()); // Review screen only; no network request.
+    }
 }
 
 void LocalMetadataTest::filenameFallbackDistinguishesErrorsAndPageEvidence()

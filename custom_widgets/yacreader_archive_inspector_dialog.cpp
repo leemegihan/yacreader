@@ -674,8 +674,10 @@ void YACReaderArchiveInspectorDialog::requestSearch(bool automatic)
     }
     // Filename candidates are a separate, explicitly reviewed search route.
     // Never turn missing/failed OCR into confirmed evidence or an HTTP request.
-    const bool pageCandidate = std::any_of(result.suggestions.cbegin(), result.suggestions.cend(), [](const LocalMetadata::Suggestion &candidate) { return candidate.page > 0; });
-    if (!automatic && !pageCandidate) {
+    // A publisher/circle alone is useful context, but cannot supply a title
+    // or author query. Keep it while proposing a unique filename for review.
+    const bool pageIdentityCandidate = std::any_of(result.suggestions.cbegin(), result.suggestions.cend(), [](const LocalMetadata::Suggestion &candidate) { return candidate.page > 0 && candidate.field != LocalMetadata::Suggestion::Publisher; });
+    if (!automatic && !pageIdentityCandidate) {
         QStringList filenameTitles;
         for (const auto &candidate : result.suggestions)
             if (candidate.field == LocalMetadata::Suggestion::Title && candidate.page == 0 && !filenameTitles.contains(candidate.value, Qt::CaseInsensitive))
