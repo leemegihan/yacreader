@@ -1,0 +1,6 @@
+-c constraints.txt
+paddlepaddle==3.2.2
+paddleocr==3.2.0
+paddlex==3.2.1
+Pillow==11.3.0
+numpy==2.2.6

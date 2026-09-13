@@ -179,7 +179,8 @@ Rectangle {
         height: coverHeight
         anchors { horizontalCenter: parent.horizontalCenter; top: realCell.top }
         source: cell.cover_path
-        fillMode: Image.PreserveAspectCrop
+        // Keep landscape spreads and their edge titles visible in a portrait card.
+        fillMode: sourceSize.width > sourceSize.height ? Image.PreserveAspectFit : Image.PreserveAspectCrop
         smooth: true
         mipmap: true
         asynchronous: true

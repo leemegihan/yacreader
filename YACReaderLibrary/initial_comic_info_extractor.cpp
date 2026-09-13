@@ -1,6 +1,7 @@
 #include "initial_comic_info_extractor.h"
 
 #include "comic.h"
+#include "comic_image_folder.h"
 #include "compressed_archive.h"
 #include "cover_utils.h"
 #include "epub_page_index.h"
@@ -30,6 +31,30 @@ void InitialComicInfoExtractor::extract()
     {
         _cover.load(":/images/notCover.png");
         QLOG_WARN() << "Extracting cover: file not found " << _fileSource;
+        return;
+    }
+    if (fi.isDir()) {
+        const auto pages = ComicImageFolder::pages(_fileSource);
+        _numPages = pages.size();
+        _fileSupported = !pages.isEmpty();
+        if (!_fileSupported)
+            return;
+        if (getXMLMetadata) {
+            QFile xml(QDir(_fileSource).filePath(QStringLiteral("ComicInfo.xml")));
+            if (xml.size() <= 4 * 1024 * 1024 && xml.open(QIODevice::ReadOnly))
+                _xmlInfoData = xml.readAll();
+        }
+        if (_target == "None")
+            return;
+        if (_coverPage > _numPages)
+            _coverPage = 1;
+        _cover.load(QDir(_fileSource).filePath(pages.at(_coverPage - 1)));
+        _coverExtracted = !_cover.isNull();
+        if (_coverExtracted) {
+            _coverSize = { _cover.width(), _cover.height() };
+            if (!_target.isEmpty())
+                saveCover(_target, _cover);
+        }
         return;
     }
 #ifndef NO_PDF

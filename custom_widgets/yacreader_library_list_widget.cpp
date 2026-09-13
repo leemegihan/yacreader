@@ -29,17 +29,23 @@ void YACReaderLibraryListWidget::addItem(QString name, QString path)
         i++;
 
     librariesList.insert(itr, library);
-
-    // connect(library,SIGNAL(selected(QString,QString)),this,SIGNAL(librarySelected(QString,QString)));
-    // connect(library,SIGNAL(selected(QString,QString)),this,SLOT(updateLibraries(QString,QString)));
-
     mainLayout->insertWidget(i, library);
 }
 
 QString YACReaderLibraryListWidget::currentText()
 {
+    if (currentLibraryIndex < 0 || currentLibraryIndex >= librariesList.count())
+        return QString();
     return librariesList.at(currentLibraryIndex)->name;
 }
+
+QString YACReaderLibraryListWidget::currentPath()
+{
+    if (currentLibraryIndex < 0 || currentLibraryIndex >= librariesList.count())
+        return QString();
+    return librariesList.at(currentLibraryIndex)->path;
+}
+
 int YACReaderLibraryListWidget::findText(QString text)
 {
     for (int i = 0; i < librariesList.count(); i++) {
@@ -48,6 +54,7 @@ int YACReaderLibraryListWidget::findText(QString text)
     }
     return -1;
 }
+
 void YACReaderLibraryListWidget::setCurrentIndex(int index)
 {
     if (index >= 0 && index < librariesList.count()) {
@@ -62,6 +69,7 @@ int YACReaderLibraryListWidget::currentIndex()
 {
     return currentLibraryIndex;
 }
+
 void YACReaderLibraryListWidget::removeItem(int index)
 {
     YACReaderLibraryItemWidget *itemWidget = librariesList.at(index);
@@ -69,6 +77,8 @@ void YACReaderLibraryListWidget::removeItem(int index)
     librariesList.removeAt(index);
     if (librariesList.count() > 0) {
         setCurrentIndex(0);
+    } else {
+        currentLibraryIndex = -1;
     }
     delete itemWidget;
 }
@@ -97,12 +107,17 @@ void YACReaderLibraryListWidget::deselectAllBut(int index)
 
 void YACReaderLibraryListWidget::showContextMenu()
 {
+    if (currentLibraryIndex < 0 || currentLibraryIndex >= librariesList.count())
+        return;
     YACReaderLibraryItemWidget *itemWidget = librariesList.at(currentLibraryIndex);
     QMenu::exec(actions(), itemWidget->mapToGlobal(QPoint(itemWidget->width() - 8, itemWidget->height() / 2)));
 }
 
 void YACReaderLibraryListWidget::renameCurrentLibrary(QString newName)
 {
+    if (currentLibraryIndex < 0 || currentLibraryIndex >= librariesList.count())
+        return;
+
     YACReaderLibraryItemWidget *itemWidget = librariesList.at(currentLibraryIndex);
 
     this->layout()->removeWidget(itemWidget);

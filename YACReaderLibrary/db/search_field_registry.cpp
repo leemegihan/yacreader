@@ -10,6 +10,8 @@ namespace {
 QString inputDescription(SearchFieldType type)
 {
     switch (type) {
+    case SearchFieldType::MetadataToken:
+        return QCoreApplication::translate("SearchFieldRegistry", "Exact author or tag, quoted if it contains spaces");
     case SearchFieldType::Text:
     case SearchFieldType::Filename:
     case SearchFieldType::Folder:
@@ -58,6 +60,7 @@ SearchFieldDefinition field(
 const std::map<SearchFieldType, std::vector<std::string>> &searchFieldNames()
 {
     static const std::map<SearchFieldType, std::vector<std::string>> names {
+        { SearchFieldType::MetadataToken, { "author", "tag" } },
         { SearchFieldType::Numeric, { "numpages", "count", "arccount", "alternateCount", "rating" } },
         { SearchFieldType::Text, { "date", "number", "arcnumber", "title", "volume", "storyarc", "genere", "writer", "penciller", "inker", "colorist", "letterer", "coverartist", "publisher", "format", "agerating", "synopsis", "characters", "notes", "editor", "imprint", "teams", "locations", "series", "alternateSeries", "alternateNumber", "languageISO", "seriesGroup", "mainCharacterOrTeam", "review", "tags" } },
         { SearchFieldType::Boolean, { "color", "read", "edited", "hasBeenOpened" } },
@@ -76,12 +79,12 @@ const std::map<SearchFieldType, std::vector<std::string>> &searchFieldNames()
 SearchFieldType searchFieldType(const std::string &name)
 {
     std::string lowerName(name);
-    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
+    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), [](unsigned char c) { return std::tolower(c); });
 
     for (const auto &[type, names] : searchFieldNames()) {
         for (const auto &candidate : names) {
             std::string lowerCandidate(candidate);
-            std::transform(lowerCandidate.begin(), lowerCandidate.end(), lowerCandidate.begin(), ::tolower);
+            std::transform(lowerCandidate.begin(), lowerCandidate.end(), lowerCandidate.begin(), [](unsigned char c) { return std::tolower(c); });
             if (lowerCandidate == lowerName)
                 return type;
         }
@@ -103,6 +106,8 @@ const QList<SearchFieldDefinition> &searchFieldDefinitions()
         field("volume", "Volume", QT_TRANSLATE_NOOP("SearchFieldRegistry", "Volume identifier"), "volume:2", Type::Text, Category::Common),
         field("type", "Comic type", QT_TRANSLATE_NOOP("SearchFieldRegistry", "Reading format"), "type:manga", Type::EnumField, Category::Common),
         field("rating", "Rating", QT_TRANSLATE_NOOP("SearchFieldRegistry", "Comic rating"), "rating>=4", Type::Numeric, Category::Common),
+        field("author", "Author (exact)", QT_TRANSLATE_NOOP("SearchFieldRegistry", "Exact author in a list of credits"), "author:\"Alex Smith\"", Type::MetadataToken, Category::Credits),
+        field("tag", "Tag (exact)", QT_TRANSLATE_NOOP("SearchFieldRegistry", "Exact tag; combine with AND, OR, NOT"), "tag:Action AND tag:Fantasy", Type::MetadataToken, Category::Common),
         field("tags", "Tags", QT_TRANSLATE_NOOP("SearchFieldRegistry", "Textual tags"), "tags:\"to review\"", Type::Text, Category::Common),
 
         field("writer", "Writer", QT_TRANSLATE_NOOP("SearchFieldRegistry", "Writer credit"), "writer:Smith", Type::Text, Category::Credits),

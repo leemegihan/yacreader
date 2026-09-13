@@ -1,6 +1,7 @@
 name: Build
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - master
@@ -17,6 +18,8 @@ env:
 jobs:
   # Build number generation
   initialization:
+    # The personal Windows branch is covered by manga-windows.yml.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.repository != 'leemegihan/yacreader' || github.head_ref != 'manga-library-v01' }}
     name: Initialization
     runs-on: windows-latest
     outputs:
@@ -101,7 +104,9 @@ jobs:
             -DPDF_BACKEND=poppler \
             -DBUILD_NUMBER="${{ needs.initialization.outputs.build_number }}" \
             -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --parallel 2
+          cmake --build build --target local_metadata_test --parallel "$(nproc)"
+          ctest --test-dir build -R '^local_metadata_test$' --output-on-failure
+          cmake --build build --parallel "$(nproc)"
 
       - name: Run tests
         run: ctest --test-dir build --output-on-failure
@@ -119,7 +124,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgl-dev libgles2-mesa-dev \
             libfontconfig1-dev libfreetype-dev libxkbcommon-dev libpoppler-qt6-dev \
-            libspeechd-dev
+            libspeechd-dev 7zip
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
@@ -132,10 +137,13 @@ jobs:
         run: |
           cmake -B build \
             -DDECOMPRESSION_BACKEND=7zip \
+            -DCMAKE_INSTALL_LIBDIR=/usr/lib \
             -DPDF_BACKEND=poppler \
             -DBUILD_NUMBER="${{ needs.initialization.outputs.build_number }}" \
             -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --parallel 2
+          cmake --build build --target local_metadata_test --parallel "$(nproc)"
+          ctest --test-dir build -R '^local_metadata_test$' --output-on-failure
+          cmake --build build --parallel "$(nproc)"
 
       - name: Run tests
         run: ctest --test-dir build --output-on-failure

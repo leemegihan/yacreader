@@ -4,6 +4,7 @@
 #include "yacreader_global.h"
 #include "yacreader_global_gui.h"
 #include "yacreader_library_list_widget.h"
+#include "yacreader_metadata_browser.h"
 #include "yacreader_reading_lists_view.h"
 #include "yacreader_titled_toolbar.h"
 
@@ -24,9 +25,11 @@ YACReaderSideBar::YACReaderSideBar(QWidget *parent)
     foldersView = new YACReaderFoldersView;
     readingListsView = new YACReaderReadingListsView;
     selectedLibrary = new YACReaderLibraryListWidget;
+    metadataBrowser = new YACReaderMetadataBrowser(this);
 
     // Titles will be set from theme in applyTheme
     librariesTitle = new YACReaderTitledToolBar("");
+    metadataTitle = new YACReaderTitledToolBar("");
     foldersTitle = new YACReaderTitledToolBar("");
     readingListsTitle = new YACReaderTitledToolBar("");
 
@@ -54,9 +57,24 @@ YACReaderSideBar::YACReaderSideBar(QWidget *parent)
     l->addSpacing(3);
 
     l->addWidget(selectedLibrary);
-    l->addSpacing(11);
+    l->addSpacing(8);
 
     // END LIBRARIES---------------------------------------------------
+
+    // METADATA BROWSER------------------------------------------------
+    auto sepMeta1 = new YACReaderSideBarSeparator(this);
+    separators.append(sepMeta1);
+    l->addWidget(sepMeta1);
+    l->addSpacing(4);
+    l->addWidget(metadataTitle);
+    l->addSpacing(4);
+    auto sepMeta2 = new YACReaderSideBarSeparator(this);
+    separators.append(sepMeta2);
+    l->addWidget(sepMeta2);
+    l->addSpacing(4);
+    l->addWidget(metadataBrowser);
+    l->addSpacing(6);
+    // END METADATA BROWSER--------------------------------------------
 
     // FOLDERS---------------------------------------------------------
     QWidget *foldersContainer = new QWidget(this);
@@ -137,7 +155,7 @@ void YACReaderSideBar::closeEvent(QCloseEvent *event)
 
 QSize YACReaderSideBar::sizeHint() const
 {
-    return QSize(275, 200);
+    return QSize(290, 200);
 }
 
 void YACReaderSideBar::applyTheme(const Theme &theme)
@@ -147,7 +165,8 @@ void YACReaderSideBar::applyTheme(const Theme &theme)
     // Titles are per-instance, toolbars handle their own colors via Themable
     auto applyCase = [&](const QString &s) { return theme.sidebar.uppercaseLabels ? s.toUpper() : s; };
     librariesTitle->setTitle(applyCase(QObject::tr("Libraries")));
-    foldersTitle->setTitle(applyCase(QObject::tr("Folders")));
+    metadataTitle->setTitle(applyCase(QObject::tr("Authors & Tags")));
+    foldersTitle->setTitle(applyCase(QObject::tr("File Locations")));
     readingListsTitle->setTitle(applyCase(QObject::tr("Reading Lists")));
 
     for (auto separator : std::as_const(separators)) {

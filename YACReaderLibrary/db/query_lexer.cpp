@@ -1,5 +1,7 @@
 #include "query_lexer.h"
 
+#include <stdexcept>
+
 QueryLexer::QueryLexer(const std::string &input)
     : input(input)
 {
@@ -66,6 +68,8 @@ Token QueryLexer::quotedWord()
     auto current = peek();
     while (current != '\0' && current != '"') {
         get();
+        if (current == '\\' && (peek() == '"' || peek() == '\\'))
+            get();
         current = peek();
     }
 
@@ -74,8 +78,7 @@ Token QueryLexer::quotedWord()
         return Token(Token::Type::quotedWord, input.substr(start, index - start));
     }
 
-    // This should be a lexical error, but the grammar doesn't support it
-    return Token(Token::Type::eof);
+    throw std::invalid_argument("Unterminated quoted search value");
 }
 
 Token QueryLexer::minor()

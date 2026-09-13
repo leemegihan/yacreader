@@ -17,6 +17,7 @@ signals:
 
 public slots:
     QString currentText();
+    QString currentPath();
     int findText(QString text);
     void setCurrentIndex(int index);
     void addItem(QString name, QString path);

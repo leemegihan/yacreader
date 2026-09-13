@@ -30,7 +30,7 @@ void YACReaderLocalClient::readMessage()
 
 bool YACReaderLocalClient::requestComicInfo(quint64 libraryId, ComicDB &comic, QList<ComicDB> &siblings, OpenComicSource source)
 {
-    localSocket->connectToServer(YACREADERLIBRARY_GUID);
+    localSocket->connectToServer(YACReader::localServerName());
     if (localSocket->isOpen()) {
         QByteArray block;
         QDataStream out(&block, QIODevice::WriteOnly);
@@ -117,7 +117,7 @@ bool YACReaderLocalClient::requestComicInfo(quint64 libraryId, ComicDB &comic, Q
 
 bool YACReaderLocalClient::sendComicInfo(quint64 libraryId, ComicDB &comic)
 {
-    localSocket->connectToServer(YACREADERLIBRARY_GUID);
+    localSocket->connectToServer(YACReader::localServerName());
     if (localSocket->isOpen()) {
         // QLOG_INFO() << "Connection opened for sending ComicInfo";
         QByteArray block;
@@ -158,7 +158,7 @@ bool YACReaderLocalClient::sendComicInfo(quint64 libraryId, ComicDB &comic)
 
 bool YACReaderLocalClient::sendComicInfo(quint64 libraryId, ComicDB &comic, qulonglong nextComicId)
 {
-    localSocket->connectToServer(YACREADERLIBRARY_GUID);
+    localSocket->connectToServer(YACReader::localServerName());
     if (localSocket->isOpen()) {
         // QLOG_INFO() << "Connection opened for sending ComicInfo";
         QByteArray block;

@@ -12,6 +12,7 @@ enum class SearchFieldType {
     Unknown,
     Numeric,
     Text,
+    MetadataToken,
     Boolean,
     Date,
     DateFolder,

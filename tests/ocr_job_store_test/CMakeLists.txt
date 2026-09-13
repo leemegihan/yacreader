@@ -1,0 +1,6 @@
+qt_add_executable(ocr_job_store_test main.cpp)
+set_target_properties(ocr_job_store_test PROPERTIES WIN32_EXECUTABLE FALSE)
+yacreader_apply_build_options(ocr_job_store_test)
+target_link_libraries(ocr_job_store_test PRIVATE Qt6::Test ocr_job_store)
+add_test(NAME ocr_job_store_test COMMAND ocr_job_store_test)
+set_tests_properties(ocr_job_store_test PROPERTIES TIMEOUT 90)

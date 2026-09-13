@@ -64,6 +64,57 @@ if(APPLE)
     )
 endif()
 
+# Isolate metadata widgets so tests do not pull the full application's combined
+# MOC object (and unrelated theme/sidebar symbols) into the MSVC link.
+add_library(metadata_widgets STATIC
+    catalog_metadata.h
+    catalog_metadata.cpp
+    ocr_page_view.h
+    local_metadata.h
+    local_metadata.cpp
+    local_metadata_text.cpp
+    local_ocr_recovery.h
+    local_ocr_recovery.cpp
+    local_ocr_process.h
+    local_ocr_process.cpp
+    local_ocr_persistence.h
+    local_ocr_persistence.cpp
+    local_ocr_library.h
+    local_ocr_library.cpp
+    local_ocr_session.h
+    local_ocr_session.cpp
+    local_ocr_preflight.h
+    local_ocr_preflight.cpp
+    local_ocr_executor.h
+    local_ocr_executor.cpp
+    local_ocr_source.h
+    local_ocr_source.cpp
+    local_ocr_runtime.h
+    local_ocr_runtime.cpp
+    local_ocr_cache.h
+    local_ocr_cache.cpp
+    yacreader_metadata_browser.h
+    yacreader_metadata_browser.cpp
+    yacreader_metadata_lookup_dialog.h
+    yacreader_metadata_lookup_dialog.cpp
+    yacreader_filename_normalizer.h
+    yacreader_filename_normalizer.cpp
+    yacreader_archive_inspector_dialog.h
+    yacreader_archive_inspector_dialog.cpp
+)
+target_include_directories(metadata_widgets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(metadata_widgets PRIVATE ${PROJECT_SOURCE_DIR}/YACReaderLibrary/db)
+target_compile_definitions(metadata_widgets PRIVATE YACREADER_LIBRARY)
+yacreader_apply_build_options(metadata_widgets)
+target_link_libraries(metadata_widgets PUBLIC
+    Qt6::Core
+    Qt6::Widgets
+    Qt6::Network
+    Qt6::Sql
+    ocr_job_store
+    comic_backend
+)
+
 # --- custom_widgets_library (YACReaderLibrary-specific) ---
 set(LIBRARY_EXTRA_WIDGETS
     yacreader_search_line_edit.h
@@ -101,9 +152,13 @@ if(BUILD_NUMBER)
     target_compile_definitions(custom_widgets_library PRIVATE "BUILD_NUMBER=\"${BUILD_NUMBER}\"")
 endif()
 target_link_libraries(custom_widgets_library PUBLIC
+    metadata_widgets
     Qt6::Core
     Qt6::Widgets
     Qt6::Network
+    Qt6::Sql
+    ocr_job_store
+    comic_backend
     common_gui
     rhi_flow_library
     QsLog

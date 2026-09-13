@@ -45,6 +45,9 @@ if ($files.Count -gt 0) {
     for ($i = 0; $i -lt $files.Count; $i += $batchSize) {
         $end = [Math]::Min($i + $batchSize - 1, $files.Count - 1)
         & $clangFormat -style=file -i $files[$i..$end]
+        if ($LASTEXITCODE -ne 0) {
+            throw "clang-format failed with exit code $LASTEXITCODE."
+        }
     }
 }
 

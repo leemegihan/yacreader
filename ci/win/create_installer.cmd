@@ -32,6 +32,15 @@ windeployqt %WINDEPLOYQT_EXTRA_ARGS% YACReaderLibraryServer.exe || exit /b
 
 mkdir utils
 
+rem Optional local OCR runtime, built and tested by the manga Windows workflow.
+if exist "%exe_path%\ocr\tesseract.exe" (
+    xcopy "%exe_path%\ocr" .\ocr /i /e /y || exit /b
+)
+
+if exist "%exe_path%\ocr-neural\worker.py" (
+    xcopy "%exe_path%\ocr-neural" .\ocr-neural /i /e /y || exit /b
+)
+
 IF "%COMPRESSION%"=="7z" (
     copy %src_path%\dependencies\7zip\win\%ARCH%\7z.dll .\utils\7z.dll
 ) ELSE (

@@ -1,0 +1,140 @@
+name: Optional NVIDIA OCR package
+on:
+  push:
+    branches: [manga-library-v01, manga-ocr-gpu-validation]
+    paths:
+      - '.github/workflows/manga-gpu-ocr.yml'
+      - 'tools/neural_ocr/requirements-gpu.txt'
+      - 'ci/win/ocr_gpu.iss'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: manga-gpu-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  gpu-runtime:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            tools/neural_ocr/requirements-gpu.txt
+            tools/neural_ocr/constraints.txt
+      - name: Install isolated NVIDIA dependencies
+        run: |
+          python -m pip install -r tools/neural_ocr/requirements-gpu.txt --timeout 90 --retries 2
+          if ($LASTEXITCODE -ne 0) { throw 'NVIDIA runtime dependencies unavailable' }
+          python -m pip check
+          if ($LASTEXITCODE -ne 0) { throw 'NVIDIA dependency check failed' }
+          python -c "import paddle; assert paddle.is_compiled_with_cuda(); print('CUDA build:', paddle.version.cuda(), 'GPU count:', paddle.device.cuda.device_count())"
+          if ($LASTEXITCODE -ne 0) { throw 'NVIDIA build did not import' }
+      - name: Stage add-on and offline smoke fixture
+        run: |
+          $target = Join-Path $env:GITHUB_WORKSPACE 'ci/win/gpu_contents'
+          New-Item -ItemType Directory -Force "$target/runtime" | Out-Null
+          robocopy $env:pythonLocation "$target/runtime" /E /XD __pycache__ Scripts /XF *.pyc | Out-Null
+          if ($LASTEXITCODE -ge 8) { throw 'NVIDIA runtime staging failed' }
+          python -m pip freeze | Out-File "$target/packages.txt" -Encoding utf8
+          "Source commit: $env:GITHUB_SHA`nCUDA 11.8; GPU inference requires a local NVIDIA GPU. CI verifies installation and CPU fallback only." | Out-File "$target/BUILD.txt"
+          $smoke = Join-Path $env:RUNNER_TEMP 'GPU smoke 한글/ocr-neural'
+          New-Item -ItemType Directory -Force $smoke | Out-Null
+          Copy-Item tools/neural_ocr/worker.py $smoke
+          python tools/neural_ocr/stage_models.py $smoke
+          if ($LASTEXITCODE -ne 0) { throw 'GPU runtime could not load offline models on CPU' }
+          $env:GPU_SMOKE = $smoke
+          python -c "import os; from PIL import Image,ImageDraw,ImageFont; im=Image.new('RGB',(1200,400),'white'); ImageDraw.Draw(im).text((50,100),'Author: Alice Example',font=ImageFont.truetype('C:/Windows/Fonts/arial.ttf',48),fill='black'); im.save(os.environ['GPU_SMOKE']+'/page.png')"
+          if ($LASTEXITCODE -ne 0) { throw 'Fixture creation failed' }
+      - name: Build and install optional package
+        run: |
+          iscc /DBUILD_NUMBER=${{ github.run_number }} ci/win/ocr_gpu.iss
+          if ($LASTEXITCODE -ne 0) { throw 'GPU add-on packaging failed' }
+          $base = Join-Path $env:RUNNER_TEMP 'GPU smoke 한글'
+          $exe = (Get-ChildItem ci/win/OutputGpu/*.exe)[0]
+          $setup = Start-Process $exe.FullName -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=`"$base`"") -PassThru
+          if (!$setup.WaitForExit(240000)) { Stop-Process -Id $setup.Id -Force; throw 'GPU installer timed out' }
+          if ($setup.ExitCode -notin @(0,3010)) { throw "GPU installer failed: $($setup.ExitCode)" }
+          $staging = Join-Path $env:GITHUB_WORKSPACE 'ci/win/gpu_contents'
+          foreach ($file in Get-ChildItem $staging -File -Recurse) {
+            $relative = [IO.Path]::GetRelativePath($staging, $file.FullName)
+            $installed = Join-Path "$base/ocr-neural-gpu" $relative
+            if (!(Test-Path -LiteralPath $installed) -or (Get-FileHash -LiteralPath $file.FullName).Hash -ne (Get-FileHash -LiteralPath $installed).Hash) { throw "GPU runtime mismatch: $relative" }
+          }
+          # No developer Python/CUDA paths may rescue the relocated add-on.
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $worker = Join-Path $base 'ocr-neural/worker.py'
+          $python = Join-Path $base 'ocr-neural-gpu/runtime/python.exe'
+          & $python -I -X utf8 $worker --image "$base/ocr-neural/page.png" --output "$base/result.json" --language jpn --device gpu:0 --threads 4
+          if ($LASTEXITCODE -ne 0) { throw 'Installed GPU runtime CPU fallback failed' }
+          $result = Get-Content "$base/result.json" -Raw | ConvertFrom-Json
+          if ($result.device -ne 'cpu' -or $result.warning -notmatch 'GPU unavailable' -or ($result.lines.text -join ' ') -notmatch 'Alice Example' -or $result.error) { throw 'Unexpected GPU-less fallback result' }
+          Copy-Item "$base/result.json" ci/win/OutputGpu/CPU-FALLBACK-TEST.json
+          Copy-Item ci/win/gpu_contents/BUILD.txt ci/win/OutputGpu/
+          $payload = @(Get-ChildItem ci/win/OutputGpu/* -File | Where-Object { $_.Extension -in @('.exe','.bin') })
+          $slices = @($payload | Where-Object Extension -eq '.bin')
+          if ($slices.Count -ne 5 -or @($slices | Where-Object Length -gt 480000000).Count -ne 0) { throw 'Unexpected GPU volume count/size' }
+          $payload | Get-FileHash -Algorithm SHA256 | Format-List | Out-File ci/win/OutputGpu/SHA256.txt
+          $checksums = @($payload | Sort-Object Name | ForEach-Object {
+            @{ name=$_.Name; size_bytes=$_.Length; sha256=(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() }
+          })
+          ConvertTo-Json -InputObject $checksums | Out-File ci/win/OutputGpu/CHECKSUMS.json -Encoding utf8
+      - uses: actions/upload-artifact@v6
+        with:
+          name: manga-nvidia-ocr-part-1-${{ github.sha }}
+          path: |
+            ci/win/OutputGpu/*-1.bin
+            ci/win/OutputGpu/*.exe
+            ci/win/OutputGpu/BUILD.txt
+            ci/win/OutputGpu/SHA256.txt
+            ci/win/OutputGpu/CHECKSUMS.json
+            ci/win/OutputGpu/CPU-FALLBACK-TEST.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v6
+        with:
+          name: manga-nvidia-ocr-part-2-${{ github.sha }}
+          path: |
+            ci/win/OutputGpu/*-2.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v6
+        with:
+          name: manga-nvidia-ocr-part-3-${{ github.sha }}
+          path: |
+            ci/win/OutputGpu/*-3.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v6
+        with:
+          name: manga-nvidia-ocr-part-4-${{ github.sha }}
+          path: |
+            ci/win/OutputGpu/*-4.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v6
+        with:
+          name: manga-nvidia-ocr-part-5-${{ github.sha }}
+          path: |
+            ci/win/OutputGpu/*-5.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: manga-nvidia-diagnostics-${{ github.sha }}
+          path: |
+            ci/win/gpu_contents/packages.txt
+            ci/win/gpu_contents/BUILD.txt
+          retention-days: 14

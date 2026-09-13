@@ -49,6 +49,7 @@
 #include "yacreader_http_server.h"
 #include "yacreader_library_list_widget.h"
 #include "yacreader_main_toolbar.h"
+#include "yacreader_metadata_browser.h"
 #include "yacreader_reading_lists_view.h"
 #include "yacreader_search_line_edit.h"
 #include "yacreader_sidebar.h"
@@ -308,6 +309,11 @@ void LibraryWindow::doLayout()
     // SIDEBAR--------------------------------------------------------------------
     //---------------------------------------------------------------------------
     sideBar = new YACReaderSideBar;
+    connect(sideBar->metadataBrowser, &YACReaderMetadataBrowser::searchRequested, this, &LibraryWindow::applySearchQuery);
+    connect(sideBar->metadataBrowser, &YACReaderMetadataBrowser::libraryContentChanged, this, [this](const QString &libraryPath) {
+        if (libraryPath == selectedLibrary->currentPath())
+            reloadCurrentLibrary();
+    });
 
     foldersView = sideBar->foldersView;
     listsView = sideBar->readingListsView;
@@ -470,6 +476,7 @@ void LibraryWindow::setupCoordinators()
     connect(comicManagementCoordinator, &ComicManagementCoordinator::currentComicViewUpdateRequested, contentViewsManager, &YACReaderContentViewsManager::updateCurrentComicView);
     connect(comicManagementCoordinator, &ComicManagementCoordinator::currentSourceRefreshStarted, navigationController, &YACReaderNavigationController::beginCurrentSourceRefresh);
     connect(comicManagementCoordinator, &ComicManagementCoordinator::currentSourceRefreshAccepted, navigationController, &YACReaderNavigationController::refreshCurrentSource);
+    connect(comicManagementCoordinator, &ComicManagementCoordinator::currentSourceRefreshAccepted, sideBar->metadataBrowser, &YACReaderMetadataBrowser::refresh);
     connect(comicManagementCoordinator, &ComicManagementCoordinator::currentSourceRefreshCancelled, navigationController, &YACReaderNavigationController::cancelCurrentSourceRefresh);
     connect(comicManagementCoordinator, &ComicManagementCoordinator::comicNumbersAssigned, this, [this](qint64 editedComicId) {
         navigationController->loadFolderContent(foldersModelProxy->mapToSource(foldersView->currentIndex()));
@@ -574,10 +581,12 @@ void LibraryWindow::setupCoordinators()
         coordinator->offerDatabaseRecovery(libraryName, restoreAction->text());
     });
     connect(libraryManagementCoordinator, &LibraryManagementCoordinator::loadStarted, this, [this] {
+        sideBar->metadataBrowser->setLibraryPath(QString());
         historyController->clear();
         showRootWidget();
     });
     connect(libraryManagementCoordinator, &LibraryManagementCoordinator::noLibrariesRequested, this, [this] {
+        sideBar->metadataBrowser->setLibraryPath(QString());
         actions.disableAllActions();
         showNoLibrariesWidget();
     });
@@ -615,6 +624,7 @@ void LibraryWindow::setupCoordinators()
     connect(libraryManagementCoordinator, &LibraryManagementCoordinator::xmlScanStarted, this, &LibraryWindow::showImportingWidget);
     connect(libraryManagementCoordinator, &LibraryManagementCoordinator::xmlScanFinished, this, &LibraryWindow::showRootWidget);
     connect(libraryManagementCoordinator, &LibraryManagementCoordinator::xmlScanFinished, this, &LibraryWindow::reloadCurrentFolderComicsContent);
+    connect(libraryManagementCoordinator, &LibraryManagementCoordinator::xmlScanFinished, sideBar->metadataBrowser, &YACReaderMetadataBrowser::refresh);
     connect(libraryManagementCoordinator, &LibraryManagementCoordinator::xmlComicScanned, importWidget, &ImportWidget::newComic);
     connect(libraryManagementCoordinator, &LibraryManagementCoordinator::packageFailed, this, [this](const QString &error) {
         QMessageBox::critical(this, tr("Package operation failed"), error.isEmpty() ? tr("The covers package operation could not be completed.") : error);
@@ -921,6 +931,7 @@ void LibraryWindow::setCurrentLibraryAs(FileType fileType)
 
 void LibraryWindow::applyLoadedLibrary(const QString &libraryDataPath, bool readOnly)
 {
+    sideBar->metadataBrowser->setLibraryPath(selectedLibrary->currentPath(), readOnly);
     foldersModel->setupModelData(libraryDataPath);
     foldersModelProxy->setSourceModel(foldersModel);
     foldersView->setModel(foldersModelProxy);
@@ -1070,6 +1081,7 @@ void LibraryWindow::reloadCurrentLibrary()
         return;
 
     foldersModel->reload();
+    sideBar->metadataBrowser->refresh();
     navigationController->refreshCurrentSource();
 
     enableNeededActions();
@@ -1100,6 +1112,7 @@ void LibraryWindow::handleLibraryRemoved(const QString &libraryName, bool librar
     if (!librariesEmpty)
         return;
 
+    sideBar->metadataBrowser->setLibraryPath(QString());
     contentViewsManager->comicsView->setModel(nullptr);
     foldersView->setModel(nullptr);
     listsView->setModel(nullptr);

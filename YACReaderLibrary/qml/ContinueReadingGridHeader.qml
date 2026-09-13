@@ -76,7 +76,8 @@ Rectangle {
                     id: cover
                     anchors.fill: parent
                     source: cover_path
-                    fillMode: Image.PreserveAspectCrop
+                    // Keep landscape spreads and their edge titles visible in a portrait card.
+                    fillMode: sourceSize.width > sourceSize.height ? Image.PreserveAspectFit : Image.PreserveAspectCrop
                     smooth: true
                     mipmap: true
                     asynchronous: true

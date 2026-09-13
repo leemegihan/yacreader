@@ -1,0 +1,446 @@
+name: Manga Windows validation
+
+on:
+  push:
+    branches: [manga-library-v01]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: manga-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows x64 build, tests and installer
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      YACREADER_TEST_CJK_FONT: ${{ github.workspace }}/ocr-test-font.otf
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check C++ formatting
+        run: |
+          python -m pip install clang-format==22.1.8
+          if ($LASTEXITCODE -ne 0) { throw 'clang-format installation failed' }
+          ./scripts/clang-format-windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'clang-format failed' }
+          git diff --exit-code
+          if ($LASTEXITCODE -ne 0) { throw 'C++ formatting differs' }
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.9.3'
+          arch: win64_msvc2022_64
+          modules: 'qt5compat qtmultimedia qtimageformats qtshadertools qtspeech'
+          cache: true
+
+      - name: Build applications and tests
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          if errorlevel 1 exit /b 1
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON -DDECOMPRESSION_BACKEND=7zip -DPDF_BACKEND=pdfium -DBUILD_NUMBER=${{ github.run_number }}
+          if errorlevel 1 exit /b 1
+          cmake --build build --target metadata_search_test metadata_workflow_test local_metadata_test ocr_job_store_test --parallel %NUMBER_OF_PROCESSORS% || exit /b 1
+          if errorlevel 1 exit /b 1
+          set PATH=%GITHUB_WORKSPACE%\dependencies\pdfium\win\x64;%PATH%
+          ctest --test-dir build -R "^(metadata_(search|workflow)|local_metadata|ocr_job_store)_test$" --output-on-failure
+          set TEST_EXIT=%ERRORLEVEL%
+          if exist build\tests\local_metadata_test\local-metadata.txt type build\tests\local_metadata_test\local-metadata.txt
+          if not "%TEST_EXIT%"=="0" exit /b %TEST_EXIT%
+
+      - name: Upload early native diagnostic executables
+        uses: actions/upload-artifact@v6
+        with:
+          name: manga-native-probe-${{ github.sha }}
+          path: |
+            build/bin/local_metadata_test.exe
+            build/bin/ocr_job_store_test.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Check out pinned OCR build tools
+        uses: actions/checkout@v6
+        with:
+          repository: microsoft/vcpkg
+          ref: '2025.06.13'
+          path: ocr-build/vcpkg
+
+      - name: Cache compiled OCR dependencies
+        id: ocr-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ocr-build/vcpkg/installed
+          key: manga-tesseract-5.5.1-vcpkg-2025.06.13-x64-v1
+
+      - name: Build local OCR from source
+        run: |
+          & ./ocr-build/vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg bootstrap failed' }
+          & ./ocr-build/vcpkg/vcpkg.exe install tesseract:x64-windows --clean-after-build --disable-metrics
+          if ($LASTEXITCODE -ne 0) { throw 'OCR build failed' }
+          $installed = Join-Path $env:GITHUB_WORKSPACE 'ocr-build/vcpkg/installed/x64-windows'
+          $ocr = Join-Path $env:GITHUB_WORKSPACE 'build/bin/ocr'
+          New-Item -ItemType Directory -Force "$ocr/licenses" | Out-Null
+          Copy-Item "$installed/tools/tesseract/tesseract.exe" $ocr
+          Get-ChildItem "$installed/tools/tesseract", "$installed/bin" -Filter '*.dll' | Copy-Item -Destination $ocr -Force
+          Get-ChildItem "$installed/share" -Directory | ForEach-Object {
+            if (Test-Path "$($_.FullName)/copyright") {
+              Copy-Item "$($_.FullName)/copyright" "$ocr/licenses/$($_.Name).txt"
+            }
+          }
+
+      - name: Preserve successfully built OCR dependencies
+        if: steps.ocr-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ocr-build/vcpkg/installed
+          key: manga-tesseract-5.5.1-vcpkg-2025.06.13-x64-v1
+
+      - name: Check out pinned OCR language data
+        uses: actions/checkout@v6
+        with:
+          repository: tesseract-ocr/tessdata_fast
+          ref: '4.1.0'
+          path: ocr-build/tessdata
+          sparse-checkout: |
+            eng.traineddata
+            jpn.traineddata
+            jpn_vert.traineddata
+            kor.traineddata
+            LICENSE
+          sparse-checkout-cone-mode: false
+
+      - name: Stage offline OCR languages
+        run: |
+          $ocr = Join-Path $env:GITHUB_WORKSPACE 'build/bin/ocr'
+          New-Item -ItemType Directory -Force "$ocr/tessdata" | Out-Null
+          foreach ($language in @('eng', 'jpn', 'jpn_vert', 'kor')) {
+            Copy-Item "ocr-build/tessdata/$language.traineddata" "$ocr/tessdata/"
+          }
+          Copy-Item 'ocr-build/tessdata/LICENSE' "$ocr/licenses/tessdata_fast.txt"
+          & "$ocr/tesseract.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled OCR failed to start' }
+
+      - name: Check out precise OCR language data
+        uses: actions/checkout@v6
+        with:
+          repository: tesseract-ocr/tessdata_best
+          ref: 'e2aad9b983032bb1beff9133104a67cdbb87ca4d' # 4.1.0
+          path: ocr-build/tessdata-best
+          sparse-checkout: |
+            eng.traineddata
+            jpn.traineddata
+            jpn_vert.traineddata
+            kor.traineddata
+            LICENSE
+          sparse-checkout-cone-mode: false
+
+      - name: Stage precise OCR languages
+        run: |
+          $ocr = Join-Path $env:GITHUB_WORKSPACE 'build/bin/ocr'
+          New-Item -ItemType Directory -Force "$ocr/tessdata_best" | Out-Null
+          foreach ($language in @('eng', 'jpn', 'jpn_vert', 'kor')) {
+            Copy-Item "ocr-build/tessdata-best/$language.traineddata" "$ocr/tessdata_best/"
+          }
+          Copy-Item 'ocr-build/tessdata-best/LICENSE' "$ocr/licenses/tessdata_best.txt"
+
+      - name: Prepare deterministic CJK test font
+        run: |
+          curl.exe --fail --location --retry 3 https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/Japanese/NotoSansCJKjp-Regular.otf --output "$env:YACREADER_TEST_CJK_FONT"
+          if ($LASTEXITCODE -ne 0) { throw 'CJK test font download failed' }
+          if ((Get-Item "$env:YACREADER_TEST_CJK_FONT").Length -ne 16467736) { throw 'Incomplete CJK test font' }
+
+      - name: Verify actual OCR before full application build
+        run: |
+          $env:PATH = "$env:GITHUB_WORKSPACE\dependencies\pdfium\win\x64;$env:PATH"
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:YACREADER_REQUIRE_OCR = '1'
+          & build/bin/local_metadata_test.exe -o build/tests/local_metadata_test/local-metadata.txt,txt
+          $testExit = $LASTEXITCODE
+          Get-Content build/tests/local_metadata_test/local-metadata.txt
+          if ($testExit -ne 0) { throw 'Actual OCR regression tests failed' }
+          # Match the installed native Qt environment using the same input pixels.
+          $env:YACREADER_TEST_CJK_FIXTURES = "$env:GITHUB_WORKSPACE/build/bin"
+          Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
+          & build/bin/local_metadata_test.exe realMultilingualColophon -o "build/native-ocr.txt,txt"
+          $nativeExit = $LASTEXITCODE
+          Get-Content build/native-ocr.txt
+          if ($nativeExit -ne 0) { throw 'Native Qt OCR check failed' }
+
+      - name: Build all applications
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          if errorlevel 1 exit /b 1
+          cmake --build build --parallel %NUMBER_OF_PROCESSORS% -- -k 0 || exit /b 1
+
+      - name: Run all regression tests
+        run: |
+          $env:PATH = "$env:GITHUB_WORKSPACE\dependencies\pdfium\win\x64;$env:PATH"
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:YACREADER_REQUIRE_OCR = '1'
+          ctest --test-dir build --output-on-failure --timeout 120 --output-junit test-results.xml
+          $testExit = $LASTEXITCODE
+          Get-Content build/tests/local_metadata_test/local-metadata.txt
+          if ($testExit -ne 0) { throw 'Regression tests failed' }
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            tools/neural_ocr/requirements.txt
+            tools/neural_ocr/constraints.txt
+
+      - name: Stage isolated offline region OCR runtime
+        run: |
+          python -m pip install -r tools/neural_ocr/requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Region OCR dependencies failed' }
+          python tools/neural_ocr/test_worker.py
+          if ($LASTEXITCODE -ne 0) { throw 'Region geometry/batching tests failed' }
+          $neural = Join-Path $env:GITHUB_WORKSPACE 'build/bin/ocr-neural'
+          New-Item -ItemType Directory -Force $neural | Out-Null
+          Copy-Item tools/neural_ocr/worker.py $neural
+          python tools/neural_ocr/stage_models.py $neural
+          if ($LASTEXITCODE -ne 0) { throw 'Region OCR models failed' }
+          $runtime = Join-Path $neural 'runtime'
+          New-Item -ItemType Directory -Force $runtime | Out-Null
+          # Full CPython layout relocates with python.exe; -I ignores user site/PYTHONPATH.
+          robocopy $env:pythonLocation $runtime /E /XD __pycache__ Scripts /XF *.pyc | Out-Null
+          if ($LASTEXITCODE -ge 8) { throw 'Python runtime staging failed' }
+          python -m pip freeze | Out-File "$neural/packages.txt" -Encoding utf8
+          curl.exe --fail --location --retry 3 https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/v3.2.0/LICENSE --output "$neural/LICENSE-PaddleOCR.txt"
+          if ($LASTEXITCODE -ne 0) { throw 'PaddleOCR license missing' }
+          $env:PATH = "$env:GITHUB_WORKSPACE\dependencies\pdfium\win\x64;$env:PATH"
+          $env:YACREADER_REQUIRE_NEURAL_OCR = '1'
+          $env:YACREADER_BENCHMARK_NEURAL_OCR = '1'
+          & build/bin/local_metadata_test.exe neuralResponseAndReview realNeuralOcr realNeuralWorkReuse -o build/neural-ocr.txt,txt
+          $code = $LASTEXITCODE
+          Remove-Item Env:YACREADER_BENCHMARK_NEURAL_OCR
+          Get-Content build/neural-ocr.txt
+          if ($code -ne 0) { throw 'Region OCR wrapper failed' }
+
+      - name: Download Visual C++ runtime
+        run: |
+          curl.exe --fail --location --retry 5 --retry-all-errors https://aka.ms/vs/17/release/vc_redist.x64.exe --output vc_redist.x64.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime download failed' }
+          if ((Get-Item vc_redist.x64.exe).Length -lt 1MB) { throw 'Runtime download is incomplete' }
+          Get-Command iscc -ErrorAction Stop
+
+      - name: Create installer using existing packaging
+        shell: cmd
+        working-directory: ci/win
+        run: |
+          call create_installer.cmd x64 7z ${{ github.run_number }}
+          if errorlevel 1 exit /b 1
+
+      - name: Install package and verify GUI startup
+        run: |
+          $staging = Join-Path $env:GITHUB_WORKSPACE 'ci/win/installer_contents'
+          $package = Join-Path $env:RUNNER_TEMP 'manga installed 한글'
+          $installers = @(Get-ChildItem 'ci/win/Output/YACReader*.exe')
+          if ($installers.Count -ne 1) { throw 'Expected exactly one installer' }
+          $env:YACREADER_DATA_DIR = Join-Path $env:RUNNER_TEMP 'manga-smoke/data'
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP 'manga-smoke/roaming'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'manga-smoke/local'
+          New-Item -ItemType Directory -Force $env:APPDATA, $env:LOCALAPPDATA | Out-Null
+          $installLog = Join-Path $env:GITHUB_WORKSPACE 'build/installer.log'
+          $setup = Start-Process $installers[0].FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOICONS', '/TASKS=""', "/DIR=`"$package`"", "/LOG=`"$installLog`"") -PassThru
+          if (!$setup.WaitForExit(180000)) {
+            Stop-Process -Id $setup.Id -Force
+            throw 'Installer timed out'
+          }
+          if ($setup.ExitCode -notin @(0, 3010)) { throw "Installer failed: $($setup.ExitCode)" }
+          # Compare the installed DLL set and bytes against what Qt actually deployed.
+          foreach ($dll in Get-ChildItem $staging -Filter '*.dll') {
+            $installedDll = Join-Path $package $dll.Name
+            if (!(Test-Path $installedDll)) { throw "Installer omitted: $($dll.Name)" }
+            if ((Get-FileHash $dll.FullName).Hash -ne (Get-FileHash $installedDll).Hash) { throw "Installer altered: $($dll.Name)" }
+          }
+          foreach ($file in Get-ChildItem (Join-Path $staging 'ocr') -File -Recurse) {
+            $relative = [System.IO.Path]::GetRelativePath($staging, $file.FullName)
+            $installed = Join-Path $package $relative
+            if (!(Test-Path -LiteralPath $installed)) { throw "Missing OCR runtime file: $relative" }
+            if ((Get-FileHash -LiteralPath $file.FullName).Hash -ne (Get-FileHash -LiteralPath $installed).Hash) { throw "Installer altered OCR runtime file: $relative" }
+          }
+          foreach ($file in Get-ChildItem (Join-Path $staging 'ocr-neural') -File -Recurse) {
+            $relative = [System.IO.Path]::GetRelativePath($staging, $file.FullName)
+            $installed = Join-Path $package $relative
+            if (!(Test-Path -LiteralPath $installed)) { throw "Missing region OCR file: $relative" }
+            if ((Get-FileHash -LiteralPath $file.FullName).Hash -ne (Get-FileHash -LiteralPath $installed).Hash) { throw "Region OCR file mismatch: $relative" }
+          }
+          foreach ($file in @('YACReader.exe', 'YACReaderLibrary.exe', 'YACReaderLibraryServer.exe', 'Qt6Core.dll', 'Qt6Widgets.dll', 'platforms/qwindows.dll', 'sqldrivers/qsqlite.dll', 'pdfium.dll', 'utils/7z.dll')) {
+            if (!(Test-Path (Join-Path $package $file))) { throw "Missing runtime file: $file" }
+          }
+          # Exercise the application's QProcess OCR wrapper against this Unicode
+          # install path too, not just a command-line invocation with relative paths.
+          $qtBin = Split-Path (Get-Command qmake.exe -ErrorAction Stop).Source
+          Copy-Item 'build/bin/local_metadata_test.exe' $package
+          Copy-Item 'build/bin/ocr_job_store_test.exe' $package
+          Copy-Item "$qtBin/Qt6Test.dll" $package
+          # Use only installed DLLs; no runner Qt fallback.
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          Remove-Item Env:QT_PLUGIN_PATH -ErrorAction SilentlyContinue
+          Remove-Item Env:QML2_IMPORT_PATH -ErrorAction SilentlyContinue
+          Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
+          # Check the installed OCR in isolation, including Unicode paths.
+          Add-Type -AssemblyName System.Drawing
+          $fixture = Join-Path $package 'ocr-test.png'
+          $bitmap = New-Object System.Drawing.Bitmap(1400, 500)
+          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+          $font = New-Object System.Drawing.Font('Arial', 48)
+          try {
+            $graphics.Clear([System.Drawing.Color]::White)
+            $graphics.DrawString('Author: Alice Example', $font, [System.Drawing.Brushes]::Black, 50, 100)
+            $bitmap.Save($fixture, [System.Drawing.Imaging.ImageFormat]::Png)
+          } finally { $font.Dispose(); $graphics.Dispose(); $bitmap.Dispose() }
+          Push-Location $package
+          try {
+            $text = & './ocr/tesseract.exe' ocr-test.png stdout -l eng --psm 6 --tessdata-dir './ocr/tessdata'
+            if ($LASTEXITCODE -ne 0 -or ($text -join ' ') -notmatch 'Alice Example') { throw 'Installed OCR failed text recognition' }
+            $languages = & './ocr/tesseract.exe' --list-langs --tessdata-dir './ocr/tessdata'
+            foreach ($required in @('eng', 'jpn', 'jpn_vert', 'kor')) {
+              if ($required -notin $languages) { throw "Missing OCR language: $required" }
+            }
+          } finally { Pop-Location }
+          $env:YACREADER_REQUIRE_OCR = '1'
+          $env:YACREADER_REQUIRE_NEURAL_OCR = '1'
+          Copy-Item 'build/bin/ocr-colophon-*.png' $package
+          $env:YACREADER_TEST_CJK_FIXTURES = $package
+          & "$package/local_metadata_test.exe" realOcr croppedCreditOcr realMultilingualColophon neuralResponseAndReview coverTitlesAndCombinedEvidence coverLayoutRejectsUnrelatedText nameHintsExcludeLibraryRoots neuralCandidatesOpenReviewBeforeSearch conflictingCandidatesRequireSelection creditSuffixAndCompoundLabels creditGeometryAndDialogue sharedAuthorCircleNeedsReview localProbePreservesInputs isolatedSettingsPaths realNeuralOcr realNeuralWorkReuse -o "$env:GITHUB_WORKSPACE/build/installed-ocr.txt,txt"
+          $ocrTestExit = $LASTEXITCODE
+          Get-Content "$env:GITHUB_WORKSPACE/build/installed-ocr.txt"
+          New-Item -ItemType Directory -Force 'build/installed-cjk' | Out-Null
+          Copy-Item "$package/ocr-colophon-*" 'build/installed-cjk/'
+          if ($ocrTestExit -ne 0) { throw 'Application OCR wrapper failed in the installed Unicode path' }
+          foreach ($name in @('YACReader.exe', 'YACReaderLibrary.exe')) {
+            $process = Start-Process (Join-Path $package $name) -WorkingDirectory $package -PassThru
+            try {
+              if ($process.WaitForExit(15000)) { throw "$name exited during startup: $($process.ExitCode)" }
+              $process.Refresh()
+              if ($process.MainWindowHandle -eq 0) { throw "$name did not create a main window" }
+            } finally {
+              if (!$process.HasExited) { Stop-Process -Id $process.Id -Force }
+            }
+          }
+          $installers = @(Get-ChildItem 'ci/win/Output/YACReader*.exe')
+          if ($installers.Count -eq 0) { throw 'No installer generated' }
+          $installers | Get-FileHash -Algorithm SHA256 | Format-List | Out-File 'ci/win/Output/SHA256.txt'
+          "Source commit: $env:GITHUB_SHA" | Out-File 'ci/win/Output/BUILD.txt'
+
+      # Publish the already-installed and hash-checked files for safe local
+      # validation without running the installer's upgrade/uninstall hooks.
+      - name: Upload validated runtime for isolated local checks
+        uses: actions/upload-artifact@v6
+        with:
+          name: manga-validated-runtime-${{ github.sha }}
+          # PaddleX requires its hidden .version metadata at import time.
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/manga installed 한글/**
+            !${{ runner.temp }}/manga installed 한글/unins*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Download validation artifact for round-trip OCR check
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: manga-validated-runtime-${{ github.sha }}
+          path: ${{ runner.temp }}/manga artifact roundtrip 한글
+
+      - name: Verify OCR from downloaded validation artifact
+        shell: pwsh
+        run: |
+          $package = Join-Path $env:RUNNER_TEMP 'manga artifact roundtrip 한글'
+          $installed = Join-Path $env:RUNNER_TEMP 'manga installed 한글'
+          $relative = 'ocr-neural/runtime/Lib/site-packages/paddlex/.version'
+          if (!(Test-Path -LiteralPath (Join-Path $package $relative))) { throw 'Artifact omitted hidden PaddleX metadata' }
+          if ((Get-FileHash -LiteralPath (Join-Path $package $relative)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $installed $relative)).Hash) { throw 'Artifact altered PaddleX metadata' }
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $env:YACREADER_DATA_DIR = Join-Path $env:RUNNER_TEMP 'artifact settings 한글'
+          $env:YACREADER_EXPECT_NEURAL_DEVICE = 'cpu'
+          & "$package/local_metadata_test.exe" isolatedLocalServerNames inspectorPreferences inspectorSessionNeural inspectorSavedReview inspectorPreparationCancelled inspectorCompletedCancellation inspectorPausedPages publisherOnlyFilenameHandoff guardedMetadataSave selectedSession repeatedExecutorInputs selectedPreflight completedReview libraryBinding claimedExecutorNeural inspectorWorkerLifetime claimedExecutor cacheReceiptOrdering cacheReceiptRecovery sourceSnapshotValidation cacheReceiptCrash cacheReceiptClockAfterContention runtimeSnapshotMeasuresFiles preparationGeometry preparationEvidenceValidation recoveryRetainsCompletedPages recoveryPageSinkGuards recoveryFailureBoundaries recoveryCpuFailurePreservesEvidence recoveryLegacyRejectsSessionFailure recoveryCancellationFromProgress ocrProcessAndCancellation ocrReadinessSharing ocrProcessTreeCleanup ocrResourceOwnership ocrResourceSameThread localNeuralDevice isolatedSettingsPaths neuralCacheCompetingWriters neuralCacheIdentity neuralCachePreservesReviewAndDevices neuralCacheRejectsCorruption -o "$env:GITHUB_WORKSPACE/build/artifact-ocr.txt,txt"
+          $testExit = $LASTEXITCODE
+          Remove-Item Env:YACREADER_EXPECT_NEURAL_DEVICE
+          Get-Content "$env:GITHUB_WORKSPACE/build/artifact-ocr.txt"
+          if ($testExit -ne 0) { throw 'Downloaded artifact OCR or settings isolation failed' }
+          & "$package/ocr_job_store_test.exe" -o "$env:GITHUB_WORKSPACE/build/artifact-job-store.txt,txt"
+          $storeExit = $LASTEXITCODE
+          Get-Content "$env:GITHUB_WORKSPACE/build/artifact-job-store.txt"
+          if ($storeExit -ne 0) { throw 'Downloaded artifact durable job store failed' }
+
+      - name: Verify page recovery with a synthetic worker
+        shell: pwsh
+        run: |
+          $package = Join-Path $env:RUNNER_TEMP 'manga artifact roundtrip 한글'
+          $worker = Join-Path $package 'ocr-neural/worker.py'
+          $original = [IO.File]::ReadAllBytes($worker)
+          # CPU Python is sufficient for this fault fixture: no GPU kernels/models.
+          $fakeGpu = Join-Path $package 'ocr-neural-gpu'
+          if (Test-Path -LiteralPath $fakeGpu) { throw 'Unexpected GPU fixture destination' }
+          New-Item -ItemType Directory -Path $fakeGpu | Out-Null
+          Copy-Item -LiteralPath (Join-Path $package 'ocr-neural/runtime') -Destination $fakeGpu -Recurse
+          $env:YACREADER_SYNTHETIC_RECOVERY_WORKER = '1'
+          try {
+            Copy-Item -LiteralPath 'tests/local_metadata_test/neural_fault_worker.py' -Destination $worker -Force
+            & "$package/local_metadata_test.exe" neuralRecoveryWorkerFaults claimedExecutorWorker -o "$env:GITHUB_WORKSPACE/build/artifact-recovery-faults.txt,txt"
+            $faultExit = $LASTEXITCODE
+            Get-Content "$env:GITHUB_WORKSPACE/build/artifact-recovery-faults.txt"
+            if ($faultExit -ne 0) { throw 'Synthetic OCR process recovery failed' }
+          } finally {
+            [IO.File]::WriteAllBytes($worker, $original)
+            Remove-Item Env:YACREADER_SYNTHETIC_RECOVERY_WORKER
+          }
+
+      - name: Upload local-only OCR diagnostic executable
+        uses: actions/upload-artifact@v6
+        with:
+          name: manga-local-ocr-probe-${{ github.sha }}
+          path: |
+            build/bin/local_metadata_test.exe
+            build/bin/ocr_job_store_test.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload tested installer
+        uses: actions/upload-artifact@v6
+        with:
+          name: manga-windows-x64-${{ github.sha }}
+          path: |
+            ci/win/Output/YACReader*.exe
+            ci/win/Output/SHA256.txt
+            ci/win/Output/BUILD.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload test and build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: manga-windows-diagnostics-${{ github.sha }}
+          path: |
+            build/installer.log
+            build/installed-ocr.txt
+            build/artifact-ocr.txt
+            build/native-ocr.txt
+            build/neural-ocr.txt
+            build/bin/ocr-neural/models.json
+            build/bin/ocr-neural/packages.txt
+            build/installed-cjk/
+            build/bin/ocr-fixture.png
+            build/bin/ocr-colophon-*
+            build/test-results.xml
+            build/Testing/Temporary/LastTest.log
+            build/CMakeFiles/CMakeConfigureLog.yaml
+            build/tests/local_metadata_test/local-metadata.txt
+            build/artifact-job-store.txt
+            build/artifact-recovery-faults.txt
+          retention-days: 14
