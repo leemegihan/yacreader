@@ -190,6 +190,8 @@ private slots:
     void inspectorSavedReview();
     void inspectorPreparationCancelled_data();
     void inspectorPreparationCancelled();
+    void inspectorCompletedCancellation_data();
+    void inspectorCompletedCancellation();
     void guardedMetadataSave_data();
     void guardedMetadataSave();
     void inspectorWorkerLifetime_data();
@@ -2103,6 +2105,66 @@ void LocalMetadataTest::inspectorPreparationCancelled()
     QCOMPARE(saves.count(), 0);
     QVERIFY(dialog.statusLabel->text().contains(QStringLiteral("읽기 준비를 중지")));
     QVERIFY(!dialog.statusLabel->text().contains(QStringLiteral("runtime")));
+}
+
+void LocalMetadataTest::inspectorCompletedCancellation_data()
+{
+    QTest::addColumn<bool>("stop");
+    QTest::newRow("ordinary-completion") << false;
+    QTest::newRow("stop-before-ui-delivery") << true;
+}
+
+void LocalMetadataTest::inspectorCompletedCancellation()
+{
+    QFETCH(bool, stop);
+    YACReaderArchiveInspectorDialog dialog;
+    dialog.sourcePath = QStringLiteral("C:/synthetic/selected");
+    dialog.autoSearch->setChecked(true);
+    dialog.cancellation = std::make_shared<std::atomic_bool>(false);
+    const auto flag = dialog.cancellation;
+    QSignalSpy searches(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    QSignalSpy saves(&dialog, &YACReaderArchiveInspectorDialog::metadataSaved);
+    auto output = std::make_shared<LocalOcrSession::Outcome>();
+    bool delivered = false;
+    auto *thread = dialog.createWorker(flag, [output] {
+        output->complete = true;
+        output->metadata.pageCount = 1;
+        LocalMetadata::Page page;
+        page.number = 1;
+        page.image = sampleImage();
+        page.text = QStringLiteral("Title: Completed candidate");
+        output->metadata.pages.append(page);
+        output->metadata.suggestions.append({ LocalMetadata::Suggestion::Title, QStringLiteral("Completed candidate"), QStringLiteral("Synthetic labelled title"), 1, true, 99, { { 1, true, 99 } } }); }, [&] {
+        dialog.showSavedResult(*output, 1000, 3);
+        delivered = true; }, true);
+    QVERIFY(thread);
+    dialog.setBusy(true);
+    thread->start();
+    // Do not process UI events until the worker is done and Stop has been
+    // clicked. This deterministically covers the queued-completion race.
+    QVERIFY(thread->wait(5000));
+    QVERIFY(!delivered);
+    if (stop)
+        dialog.cancelButton->click();
+    QCOMPARE(flag->load(), stop);
+    QTRY_VERIFY_WITH_TIMEOUT(delivered, 5000);
+    QVERIFY(dialog.activeWorker.isNull());
+    QCOMPARE(dialog.pageList->count(), 1);
+    QCOMPARE(dialog.candidateList->count(), 1);
+    QCOMPARE(dialog.titleEdit->text(), QStringLiteral("Completed candidate"));
+    QCOMPARE(dialog.result.pages[0].text, QStringLiteral("Title: Completed candidate"));
+    QVERIFY(dialog.ocrButton->isEnabled());
+    QVERIFY(dialog.searchButton->isEnabled());
+    QCOMPARE(searches.count(), stop ? 0 : 1);
+    QCOMPARE(saves.count(), 0);
+    QCOMPARE(dialog.automaticSearchDone, !stop);
+    if (stop) {
+        dialog.requestSearch(true);
+        QCOMPARE(searches.count(), 0);
+        dialog.requestSearch(false); // Explicit review remains available.
+        QCOMPARE(searches.count(), 1);
+        QCOMPARE(saves.count(), 0);
+    }
 }
 
 void LocalMetadataTest::guardedMetadataSave_data()

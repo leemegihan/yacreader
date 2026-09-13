@@ -611,7 +611,9 @@ void YACReaderArchiveInspectorDialog::recognizeRegion()
 
 void YACReaderArchiveInspectorDialog::requestSearch(bool automatic)
 {
-    if (automatic && (!autoSearch->isChecked() || automaticSearchDone))
+    // A completed worker can still be awaiting UI delivery when Stop is clicked.
+    // Keep its result available, but do not start a new automatic lookup.
+    if (automatic && (!autoSearch->isChecked() || automaticSearchDone || (cancellation && cancellation->load())))
         return;
     if (automatic) {
         QStringList titles;
