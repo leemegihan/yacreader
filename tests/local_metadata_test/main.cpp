@@ -188,6 +188,8 @@ private slots:
     void libraryBinding();
     void inspectorSavedReview_data();
     void inspectorSavedReview();
+    void inspectorPreparationCancelled_data();
+    void inspectorPreparationCancelled();
     void guardedMetadataSave_data();
     void guardedMetadataSave();
     void inspectorWorkerLifetime_data();
@@ -2041,6 +2043,66 @@ void LocalMetadataTest::inspectorSavedReview()
         QVERIFY(dialog.statusLabel->text().contains(QStringLiteral("원래 OCR 기록")));
     if (!output.complete)
         QCOMPARE(dialog.statusLabel->text(), output.error);
+}
+
+void LocalMetadataTest::inspectorPreparationCancelled_data()
+{
+    QTest::addColumn<bool>("reviewed");
+    QTest::newRow("preview") << false;
+    QTest::newRow("existing-review") << true;
+}
+
+void LocalMetadataTest::inspectorPreparationCancelled()
+{
+    QFETCH(bool, reviewed);
+    YACReaderArchiveInspectorDialog dialog;
+    dialog.sourcePath = QStringLiteral("C:/synthetic/selected");
+    LocalMetadata::Result previous;
+    previous.pageCount = 2;
+    for (int number : { 1, 2 }) {
+        LocalMetadata::Page page;
+        page.number = number;
+        page.image = sampleImage();
+        page.reading.elapsedMs = reviewed ? 7890 : 0;
+        page.reading.device = reviewed ? QStringLiteral("gpu:0") : QString();
+        previous.pages.append(page);
+    }
+    previous.suggestions.append({ LocalMetadata::Suggestion::Title, QStringLiteral("Previous candidate"), QStringLiteral("Synthetic evidence"), 1, true, 99, { { 1, true, 99 } } });
+    dialog.showResult(previous, reviewed);
+    dialog.pageList->setCurrentRow(1);
+    dialog.titleEdit->setText(QStringLiteral("My reviewed title"));
+    dialog.authorEdit->setText(QStringLiteral("My reviewed author"));
+    if (reviewed)
+        dialog.savedSelection = LocalOcrLibrary::Binding { };
+    dialog.savedSourceFingerprint = reviewed ? QString(64, u'a') : QString();
+    const auto fingerprint = dialog.savedSourceFingerprint;
+    dialog.savedPerEnd = 1;
+    const bool saveEnabled = dialog.saveButton->isEnabled();
+    const bool fallback = dialog.filenameFallback;
+    dialog.autoSearch->setChecked(true);
+    QSignalSpy searches(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    QSignalSpy saves(&dialog, &YACReaderArchiveInspectorDialog::metadataSaved);
+    dialog.cancellation = std::make_shared<std::atomic_bool>(true);
+    LocalOcrSession::Outcome cancelled;
+    cancelled.error = cancelled.metadata.error = QStringLiteral("OCR runtime measurement cancelled.");
+    dialog.showSavedResult(cancelled, 1000, 3);
+    QCOMPARE(dialog.pageList->count(), 2);
+    QCOMPARE(dialog.pageList->currentRow(), 1);
+    QCOMPARE(dialog.candidateList->count(), 1);
+    QCOMPARE(dialog.result.pages.size(), 2);
+    QCOMPARE(dialog.result.pages[1].image, previous.pages[1].image);
+    QCOMPARE(dialog.result.pages[1].reading.elapsedMs, previous.pages[1].reading.elapsedMs);
+    QCOMPARE(dialog.titleEdit->text(), QStringLiteral("My reviewed title"));
+    QCOMPARE(dialog.authorEdit->text(), QStringLiteral("My reviewed author"));
+    QCOMPARE(dialog.savedSelection.has_value(), reviewed);
+    QCOMPARE(dialog.savedSourceFingerprint, fingerprint);
+    QCOMPARE(dialog.savedPerEnd, 1);
+    QCOMPARE(dialog.saveButton->isEnabled(), saveEnabled);
+    QCOMPARE(dialog.filenameFallback, fallback);
+    QCOMPARE(searches.count(), 0);
+    QCOMPARE(saves.count(), 0);
+    QVERIFY(dialog.statusLabel->text().contains(QStringLiteral("읽기 준비를 중지")));
+    QVERIFY(!dialog.statusLabel->text().contains(QStringLiteral("runtime")));
 }
 
 void LocalMetadataTest::guardedMetadataSave_data()

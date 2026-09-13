@@ -435,6 +435,13 @@ void YACReaderArchiveInspectorDialog::startSaved(LocalOcrSession::Action action)
 
 void YACReaderArchiveInspectorDialog::showSavedResult(const LocalOcrSession::Outcome &output, qint64 elapsedMs, int perEnd)
 {
+    // Preparation can stop before returning any new source pages. Keep the
+    // displayed preview/review and its original save guard in that case.
+    // createWorker delivers this callback only for the current cancellation token.
+    if (!output.library && output.metadata.pages.isEmpty() && cancellation && cancellation->load()) {
+        statusLabel->setText(tr("읽기 준비를 중지했습니다. 미리보기와 입력값을 유지합니다. 다시 읽을 수 있습니다."));
+        return;
+    }
     savedSelection = output.library;
     savedSourceFingerprint = output.sourceFingerprint;
     savedPerEnd = perEnd;
