@@ -302,3 +302,11 @@ The inventory is still fully hashed; this is responsiveness/diagnostic feedback,
 not a hash cache or a claimed speed improvement. Callbacks precede the final
 stability pass. Private status traces group count-only changes into the same
 stage so frequent progress does not exhaust the bounded timeline before OCR.
+
+
+For an explicit `runtimeSnapshotDeployed` diagnostic with its private output path,
+`YACREADER_RUNTIME_READERS=1` through `16` selects the bounded hash-reader limit.
+Compare full manifests and settings fingerprints as well as wall time from the
+same runtime bytes. This option does not select OCR CPU threads, execute OCR,
+change its settings snapshot, or enable a metadata-only runtime cache. Report
+warm-cache and application-level measurements separately from hash prototypes.

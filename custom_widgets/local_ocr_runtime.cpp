@@ -10,7 +10,14 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QScopeGuard>
 #include <QSet>
+#include <QThread>
+#include <QThreadPool>
+
+#include <atomic>
+#include <mutex>
+#include <vector>
 
 namespace LocalOcrRuntime {
 namespace {
@@ -22,6 +29,9 @@ class Inventory
 {
 public:
     LocalMetadata::Cancellation cancel;
+    std::atomic_bool *stopped = nullptr;
+    std::atomic<qint64> *parallelBytes = nullptr;
+    int maximumReaders = 16;
     LocalMetadata::Progress progress;
     QElapsedTimer progressClock;
     QString stage;
@@ -56,6 +66,8 @@ public:
     {
         if (cancel && cancel->load())
             error = QStringLiteral("OCR runtime measurement cancelled.");
+        if (stopped && stopped->load())
+            return false;
         return error.isEmpty();
     }
     bool reject(const QString &message)
@@ -95,6 +107,8 @@ public:
             }
             read += block.size();
             readBytes += block.size();
+            if (parallelBytes)
+                parallelBytes->fetch_add(block.size());
             if (!report())
                 return { };
             if (read > before.size()) {
@@ -125,9 +139,15 @@ public:
         }
         return true;
     }
-    bool tree(const QString &root, QJsonArray &entries, const QString &relative = { }, int depth = 0, bool shared = false)
+    struct PendingFile {
+        QString path;
+        QString relative;
+        qint64 size;
+        QDateTime modified;
+    };
+    bool collect(const QString &root, std::vector<PendingFile> &pending, const QString &relative = { }, int depth = 0, bool shared = false)
     {
-        if (!active())
+        if (!report())
             return false;
         const QString path = relative.isEmpty() ? root : QDir(root).filePath(relative);
         const QFileInfo info(path);
@@ -137,6 +157,8 @@ public:
         observed.append({ path, true, info.size(), info.lastModified() });
         const auto children = directory.entryInfoList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDir::Name);
         for (const auto &child : children) {
+            if (!active())
+                return false;
             const QString name = child.fileName();
             if (shared && relative.isEmpty() && (name == QStringLiteral("ocr") || name == QStringLiteral("ocr-neural") || name == QStringLiteral("ocr-neural-gpu")))
                 continue;
@@ -144,18 +166,90 @@ public:
                 return reject(QStringLiteral("Linked runtime entries are not supported."));
             const QString rel = relative.isEmpty() ? name : relative + u'/' + name;
             if (child.isDir()) {
-                if (!tree(root, entries, rel, depth + 1, shared))
+                if (!collect(root, pending, rel, depth + 1, shared))
                     return false;
             } else if (child.isFile()) {
-                const auto hash = fileHash(child.absoluteFilePath());
-                if (hash.isEmpty())
-                    return false;
-                entries.append(QJsonObject { { "path", rel }, { "bytes", child.size() }, { "sha256", hash } });
+                if (++files > 100000 || child.size() < 0 || child.size() > 32LL * 1024 * 1024 * 1024 - bytes)
+                    return reject(QStringLiteral("Runtime inventory exceeds its file or byte bound."));
+                bytes += child.size();
+                pending.push_back({ child.absoluteFilePath(), rel, child.size(), child.lastModified() });
             } else {
                 return reject(QStringLiteral("Unsupported runtime filesystem entry."));
             }
         }
         return active();
+    }
+    bool tree(const QString &root, QJsonArray &entries, const QString &relative = { }, int depth = 0, bool shared = false)
+    {
+        std::vector<PendingFile> pending;
+        if (!collect(root, pending, relative, depth, shared))
+            return false;
+        if (pending.empty())
+            return active();
+        struct Result {
+            QString hash;
+            Stamp stamp;
+        };
+        std::vector<Result> results(pending.size());
+        std::atomic_size_t next { 0 };
+        std::atomic_bool stop { false };
+        std::atomic<qint64> consumed { 0 };
+        std::atomic_int completed { 0 };
+        std::mutex failureMutex;
+        QString workerError;
+        // The pool belongs to this measurement. Joining also happens on error
+        // or callback unwinding, before any referenced state is destroyed.
+        QThreadPool pool;
+        pool.setMaxThreadCount(qMin(qBound(1, maximumReaders, 16), qMax(1, QThread::idealThreadCount())));
+        const auto join = qScopeGuard([&] { stop.store(true); pool.waitForDone(); });
+        const int readerCount = qMin(pool.maxThreadCount(), int(pending.size()));
+        for (int reader = 0; reader < readerCount; ++reader) {
+            pool.start([&] {
+                while (!stop.load()) {
+                    const auto index = next.fetch_add(1);
+                    if (index >= pending.size())
+                        break;
+                    const auto &file = pending[index];
+                    Inventory leaf;
+                    leaf.cancel = cancel;
+                    leaf.stopped = &stop;
+                    leaf.parallelBytes = &consumed;
+                    const auto hash = leaf.fileHash(file.path);
+                    if (hash.isEmpty() || leaf.observed.size() != 1 || leaf.observed[0].size != file.size || leaf.observed[0].modified != file.modified) {
+                        std::lock_guard<std::mutex> lock(failureMutex);
+                        if (!stop.load()) {
+                            workerError = leaf.error.isEmpty() ? QStringLiteral("Runtime file changed during measurement.") : leaf.error;
+                            stop.store(true);
+                        }
+                        break;
+                    }
+                    results[index] = { hash, leaf.observed[0] };
+                    completed.fetch_add(1);
+                }
+            });
+        }
+        const auto initialBytes = readBytes;
+        const auto initialFiles = completedFiles;
+        do {
+            readBytes = initialBytes + consumed.load();
+            completedFiles = initialFiles + completed.load();
+            if (!report())
+                stop.store(true);
+        } while (!pool.waitForDone(50));
+        readBytes = initialBytes + consumed.load();
+        completedFiles = initialFiles + completed.load();
+        if (!active())
+            return false;
+        if (!workerError.isEmpty())
+            return reject(workerError);
+        if (completed.load() != int(pending.size()))
+            return reject(QStringLiteral("Runtime inventory did not finish."));
+        // Workers finish out of order; the manifest retains QDir traversal order.
+        for (size_t i = 0; i < pending.size(); ++i) {
+            observed.append(results[i].stamp);
+            entries.append(QJsonObject { { "path", pending[i].relative }, { "bytes", pending[i].size }, { "sha256", results[i].hash } });
+        }
+        return report();
     }
 };
 QJsonObject optionsObject(const LocalMetadata::OcrOptions &o)
@@ -165,13 +259,14 @@ QJsonObject optionsObject(const LocalMetadata::OcrOptions &o)
 }
 
 std::optional<Measurement> measure(const QString &applicationPath, const LocalMetadata::OcrOptions &options,
-                                   const LocalMetadata::Cancellation &cancel, QString *error, const LocalMetadata::Progress &progress)
+                                   const LocalMetadata::Cancellation &cancel, QString *error, const LocalMetadata::Progress &progress, int maximumReaders)
 {
     if (error)
         error->clear();
     Inventory inventory;
     inventory.cancel = cancel;
     inventory.progress = progress;
+    inventory.maximumReaders = maximumReaders;
     auto failure = [&]() -> std::optional<Measurement> {
         if (error)
             *error = inventory.error.isEmpty() ? QStringLiteral("Invalid neural runtime settings or model inventory.") : inventory.error;

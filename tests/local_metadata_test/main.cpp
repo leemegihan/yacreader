@@ -1744,6 +1744,36 @@ void LocalMetadataTest::runtimeSnapshotMeasuresFiles()
     QVERIFY2(changedAddonCpu.has_value(), qPrintable(error));
     QCOMPARE(changedAddonCpu->settingsSnapshot, originalCpu->settingsSnapshot);
     QCOMPARE(changedAddonCpu->manifests, originalCpu->manifests);
+    // Multiple nested files, empty files and shared dependencies must retain
+    // the exact serial manifest, irrespective of completion order.
+    for (int i = 0; i < 64; ++i)
+        QVERIFY(write(QStringLiteral("ocr-neural/runtime/Lib/batch%1/item%2.bin").arg(i % 4).arg(i), QByteArray(i * 1024, char(i))));
+    const auto serial = LocalOcrRuntime::measure(temporary.filePath("app.exe"), options, { }, &error, { }, 1);
+    QVERIFY2(serial.has_value(), qPrintable(error));
+    QCOMPARE(serial->manifests["cpu"].toArray().size(), 67);
+    auto *caller = QThread::currentThread();
+    for (int readers : { -1, 4, 16, 999 }) {
+        const auto parallel = LocalOcrRuntime::measure(temporary.filePath("app.exe"), options, { }, &error, [&](int, int, const QString &) { QCOMPARE(QThread::currentThread(), caller); }, readers);
+        QVERIFY2(parallel.has_value(), qPrintable(error));
+        QCOMPARE(parallel->settingsSnapshot, serial->settingsSnapshot);
+        QCOMPARE(parallel->settingsFingerprint, serial->settingsFingerprint);
+        QCOMPARE(parallel->manifests, serial->manifests);
+    }
+#ifdef Q_OS_WIN
+    // A queued file can be enumerated but not read. The measurement must join
+    // all readers and reject the partial manifest; retry works after release.
+    const auto lockedPath = temporary.filePath("ocr-neural/runtime/Lib/batch0/item0.bin");
+    HANDLE locked = CreateFileW(reinterpret_cast<LPCWSTR>(lockedPath.utf16()), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    QVERIFY(locked != INVALID_HANDLE_VALUE);
+    const auto release = qScopeGuard([&] { if (locked != INVALID_HANDLE_VALUE) CloseHandle(locked); });
+    QVERIFY(!measure());
+    QVERIFY(error.contains("unreadable"));
+    CloseHandle(locked);
+    locked = INVALID_HANDLE_VALUE;
+    const auto retried = measure();
+    QVERIFY2(retried.has_value(), qPrintable(error));
+    QCOMPARE(retried->manifests, serial->manifests);
+#endif
     QVERIFY(QFile::remove(temporary.filePath("ocr-neural/runtime/python.exe")));
     QVERIFY(!measureCpu()); // The selected CPU runtime remains mandatory.
     QVERIFY(write("ocr-neural/runtime/python.exe", "synthetic CPU interpreter"));
@@ -1770,9 +1800,13 @@ void LocalMetadataTest::runtimeSnapshotDeployed()
     LocalMetadata::OcrOptions options;
     options.neural = options.gpu = true;
     QString error;
-    const auto measurement = LocalOcrRuntime::measure(QCoreApplication::applicationFilePath(), options, { }, &error);
+    const auto requestedReaders = qEnvironmentVariable("YACREADER_RUNTIME_READERS");
+    bool validReaders = true;
+    const int readers = requestedReaders.isEmpty() ? 16 : requestedReaders.toInt(&validReaders);
+    QVERIFY(validReaders && readers >= 1 && readers <= 16);
+    const auto measurement = LocalOcrRuntime::measure(QCoreApplication::applicationFilePath(), options, { }, &error, { }, readers);
     QVERIFY2(measurement.has_value(), qPrintable(error));
-    const QJsonObject record { { "settingsSnapshot", measurement->settingsSnapshot }, { "settingsFingerprint", measurement->settingsFingerprint }, { "manifests", measurement->manifests }, { "ocrExecuted", false }, { "diagnosticApplication", true } };
+    const QJsonObject record { { "settingsSnapshot", measurement->settingsSnapshot }, { "settingsFingerprint", measurement->settingsFingerprint }, { "manifests", measurement->manifests }, { "ocrExecuted", false }, { "diagnosticApplication", true }, { "maximumReaders", readers } };
     QSaveFile file(output);
     file.setDirectWriteFallback(false);
     const auto bytes = QJsonDocument(record).toJson();
