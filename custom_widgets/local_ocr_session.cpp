@@ -119,6 +119,11 @@ Outcome run(const Request &request, Action action, const LocalMetadata::Cancella
     out.repeatedInputPages = result.repeatedInputPages;
     out.cacheReadMs = result.cacheReadMs;
     out.complete = result.stateSaved && result.batch.status == LocalMetadata::RecognitionStatus::Complete;
+    if (result.stateSaved && result.state == OcrJobs::State::Paused && result.batch.status == LocalMetadata::RecognitionStatus::Cancelled && result.batch.validPages.size() == out.metadata.pages.size()) {
+        for (int i = 0; i < result.batch.validPages.size(); ++i)
+            if (!result.batch.validPages.at(i))
+                out.pendingPages.append(out.metadata.pages.at(i).number);
+    }
     out.error = result.stateError.isEmpty() ? result.batch.error : result.stateError;
     if (!out.error.isEmpty())
         out.metadata.error = out.error;

@@ -328,6 +328,7 @@ void YACReaderArchiveInspectorDialog::inspectComic(const QString &path, qulonglo
     searchButton->setText(tr("메타데이터 대조…"));
     overwrite->setChecked(false);
     result = { };
+    pendingPages.clear();
     pageList->clear();
     candidateList->clear();
     imageLabel->clear();
@@ -445,9 +446,16 @@ void YACReaderArchiveInspectorDialog::showSavedResult(const LocalOcrSession::Out
     savedSelection = output.library;
     savedSourceFingerprint = output.sourceFingerprint;
     savedPerEnd = perEnd;
-    showResult(output.metadata, output.complete);
+    const int selectedRow = pageList->currentRow();
+    const int selectedPage = selectedRow >= 0 && selectedRow < result.pages.size() ? result.pages.at(selectedRow).number : 0;
+    showResult(output.metadata, output.complete, output.state == OcrJobs::State::Paused ? output.pendingPages : QVector<int> { });
+    for (int row = 0; row < result.pages.size(); ++row)
+        if (result.pages.at(row).number == selectedPage) {
+            pageList->setCurrentRow(row);
+            break;
+        }
     if (output.state == OcrJobs::State::Paused) {
-        statusLabel->setText(tr("정상적으로 중지했습니다. 같은 설정에서 저장 결과 열기 / 이어 읽기를 누르면 남은 페이지를 처리합니다."));
+        statusLabel->setText(tr("정상적으로 중지했습니다. 미처리 %1장 · 같은 설정에서 저장 결과 열기 / 이어 읽기를 누르면 남은 페이지를 처리합니다.").arg(pendingPages.size()));
         return;
     }
     if (!output.error.isEmpty()) {
@@ -463,15 +471,18 @@ void YACReaderArchiveInspectorDialog::showSavedResult(const LocalOcrSession::Out
         requestSearch(true);
 }
 
-void YACReaderArchiveInspectorDialog::showResult(const LocalMetadata::Result &value, bool ocrComplete)
+void YACReaderArchiveInspectorDialog::showResult(const LocalMetadata::Result &value, bool ocrComplete, const QVector<int> &pending)
 {
     result = value;
+    pendingPages = pending;
     pageList->clear();
     candidateList->clear();
     int failures = 0;
     for (const auto &page : result.pages) {
-        pageList->addItem(tr("%1 / %2 · %3%4").arg(page.number).arg(result.pageCount).arg(LocalMetadata::pageKindName(page.kind), page.error.isEmpty() && page.reading.error.isEmpty() ? QString() : tr(" (오류)")));
-        if (!page.error.isEmpty() || !page.reading.error.isEmpty())
+        const bool waiting = pendingPages.contains(page.number);
+        pageList->addItem(waiting ? tr("%1 / %2 · 미처리 · 이어 읽기 대기").arg(page.number).arg(result.pageCount)
+                                  : tr("%1 / %2 · %3%4").arg(page.number).arg(result.pageCount).arg(LocalMetadata::pageKindName(page.kind), page.error.isEmpty() && page.reading.error.isEmpty() ? QString() : tr(" (오류)")));
+        if (!waiting && (!page.error.isEmpty() || !page.reading.error.isEmpty()))
             ++failures;
     }
     for (const auto &candidate : result.suggestions) {
@@ -525,6 +536,11 @@ void YACReaderArchiveInspectorDialog::showPage(int row)
         return;
     const auto &page = result.pages.at(row);
     imageLabel->setPage(page.image);
+    if (pendingPages.contains(page.number)) {
+        pageInfo->setText(tr("미처리 페이지 · 이어 읽기 대기"));
+        pageText->setPlainText(tr("중지 요청으로 이 페이지의 읽기를 완료하지 않았습니다. 저장 결과 열기 / 이어 읽기를 누르면 남은 페이지를 처리합니다."));
+        return;
+    }
     pageInfo->setText(tr("%1 · %2 · 인식된 글자 점수 %3 (누락 영역은 평가되지 않음)%4")
                               .arg(LocalMetadata::pageKindName(page.kind), page.reading.language,
                                    page.reading.confidence < 0 ? tr("없음") : QString::number(page.reading.confidence, 'f', 0),

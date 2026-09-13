@@ -51,7 +51,7 @@ private:
     LocalMetadata::OcrOptions ocrOptions() const;
     void cancel();
     void showPage(int row);
-    void showResult(const LocalMetadata::Result &result, bool ocrComplete = false);
+    void showResult(const LocalMetadata::Result &result, bool ocrComplete = false, const QVector<int> &pending = { });
     void save();
     void setBusy(bool busy);
     void restorePreferences(const QSettings &settings);
@@ -64,6 +64,7 @@ private:
     QPointer<QThread> activeWorker;
     bool pendingPreview = false;
     LocalMetadata::Result result;
+    QVector<int> pendingPages; // Presentation only; never inferred from empty OCR text.
     bool automaticSearchDone = false;
     bool filenameFallback = false;
     std::optional<LocalOcrLibrary::Binding> savedSelection;

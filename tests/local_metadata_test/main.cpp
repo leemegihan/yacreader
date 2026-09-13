@@ -192,6 +192,8 @@ private slots:
     void inspectorPreparationCancelled();
     void inspectorCompletedCancellation_data();
     void inspectorCompletedCancellation();
+    void inspectorPausedPages_data();
+    void inspectorPausedPages();
     void guardedMetadataSave_data();
     void guardedMetadataSave();
     void inspectorWorkerLifetime_data();
@@ -2168,6 +2170,66 @@ void LocalMetadataTest::inspectorCompletedCancellation()
     }
 }
 
+void LocalMetadataTest::inspectorPausedPages_data()
+{
+    QTest::addColumn<QString>("mode");
+    QTest::newRow("paused") << QStringLiteral("paused");
+    QTest::newRow("failed") << QStringLiteral("failed");
+    QTest::newRow("completed") << QStringLiteral("completed");
+}
+
+void LocalMetadataTest::inspectorPausedPages()
+{
+    QFETCH(QString, mode);
+    YACReaderArchiveInspectorDialog dialog;
+    dialog.sourcePath = QStringLiteral("C:/synthetic/selected");
+    dialog.autoSearch->setChecked(false);
+    LocalOcrSession::Outcome output;
+    output.metadata.pageCount = 2;
+    for (int number : { 1, 2 }) {
+        LocalMetadata::Page page;
+        page.number = number;
+        page.image = sampleImage();
+        if (number == 1)
+            page.reading.device = QStringLiteral("cpu"); // A valid blank page.
+        else
+            page.error = page.reading.error = mode == "paused" ? QStringLiteral("Cancelled") : QStringLiteral("Synthetic page failure");
+        output.metadata.pages.append(page);
+    }
+    output.state = mode == "paused" ? OcrJobs::State::Paused : mode == "failed" ? OcrJobs::State::Failed
+                                                                                : OcrJobs::State::PageReview;
+    output.complete = mode == "completed";
+    output.pendingPages = { 2 }; // Ignored unless this is a cleanly paused outcome.
+    dialog.showResult(output.metadata);
+    dialog.pageList->setCurrentRow(1);
+    dialog.titleEdit->setText(QStringLiteral("Reviewed title"));
+    QSignalSpy searches(&dialog, &YACReaderArchiveInspectorDialog::titleSearchRequested);
+    QSignalSpy saves(&dialog, &YACReaderArchiveInspectorDialog::metadataSaved);
+    dialog.showSavedResult(output, 1000, 3);
+    QCOMPARE(dialog.pageList->count(), 2);
+    QCOMPARE(dialog.pageList->currentRow(), 1);
+    QCOMPARE(dialog.titleEdit->text(), QStringLiteral("Reviewed title"));
+    QVERIFY(!dialog.pageList->item(0)->text().contains(QStringLiteral("미처리")));
+    QCOMPARE(dialog.result.pages[1].reading.error, output.metadata.pages[1].reading.error);
+    if (mode == "paused") {
+        QVERIFY(dialog.pageList->item(1)->text().contains(QStringLiteral("이어 읽기 대기")));
+        QVERIFY(!dialog.pageList->item(1)->text().contains(QStringLiteral("오류")));
+        QVERIFY(dialog.pageText->toPlainText().contains(QStringLiteral("중지 요청")));
+        QVERIFY(!dialog.pageText->toPlainText().contains(QStringLiteral("Cancelled")));
+        QVERIFY(dialog.statusLabel->text().contains(QStringLiteral("미처리 1장")));
+        QVERIFY(!dialog.filenameFallback);
+    } else {
+        QVERIFY(dialog.pendingPages.isEmpty());
+        QVERIFY(dialog.pageList->item(1)->text().contains(QStringLiteral("오류")));
+        QVERIFY(dialog.pageText->toPlainText().contains(QStringLiteral("Synthetic page failure")));
+    }
+    QCOMPARE(searches.count(), 0);
+    QCOMPARE(saves.count(), 0);
+    dialog.showResult(output.metadata); // A different preview must not inherit pause labels.
+    QVERIFY(dialog.pendingPages.isEmpty());
+    QVERIFY(dialog.pageList->item(1)->text().contains(QStringLiteral("오류")));
+}
+
 void LocalMetadataTest::guardedMetadataSave_data()
 {
     QTest::addColumn<QString>("mode");
@@ -3585,6 +3647,7 @@ void LocalMetadataTest::selectedSession()
     QVERIFY(first.library.has_value());
     QVERIFY(!first.jobId.isEmpty());
     QCOMPARE(first.complete, !pauseFirst && !failFirst);
+    QCOMPARE(first.pendingPages, pauseFirst ? QVector<int> { 2 } : QVector<int> { });
     QCOMPARE(calls, 1);
     QCOMPARE(preserved(), before);
     if (pauseFirst)
@@ -3614,6 +3677,7 @@ void LocalMetadataTest::selectedSession()
     const bool success = mode == "fresh" || mode == "resume" || mode == "start-completed";
     const auto second = run(mode == "paused-start" || mode == "start-completed" ? Action::Start : Action::Continue);
     QCOMPARE(second.complete, success);
+    QVERIFY(second.pendingPages.isEmpty());
     QCOMPARE(second.error.isEmpty(), success);
     QCOMPARE(calls, mode == "resume" ? 2 : 1);
     if (success) {

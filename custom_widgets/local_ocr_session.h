@@ -25,6 +25,7 @@ struct Outcome {
     bool complete = false;
     bool restored = false;
     int cachedPages = 0;
+    QVector<int> pendingPages; // Page numbers lacking valid results after a clean pause only.
     int recoveredUnrecordedPages = 0;
     int repeatedInputPages = 0;
     qint64 cacheReadMs = 0;
