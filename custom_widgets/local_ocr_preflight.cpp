@@ -24,22 +24,22 @@ std::optional<Prepared> read(const QString &libraryRoot, qulonglong comicInfoId,
         return !flag->load();
     };
     try {
-        if (!pulse(0, QStringLiteral("Checking the selected library entry.")))
+        if (!pulse(0, QStringLiteral("선택한 라이브러리 항목 확인 중")))
             return fail(QStringLiteral("Selected OCR preparation cancelled."));
         const auto before = LocalOcrLibrary::read(libraryRoot, comicInfoId, sourcePath, error);
         if (!before)
             return std::nullopt;
-        if (!pulse(1, QStringLiteral("Measuring the stopped OCR runtime.")))
+        if (!pulse(1, QStringLiteral("OCR 실행 환경 확인 중")))
             return fail(QStringLiteral("Selected OCR preparation cancelled."));
-        const auto runtime = LocalOcrRuntime::measure(applicationPath, options, flag, error);
+        const auto runtime = LocalOcrRuntime::measure(applicationPath, options, flag, error, progress);
         if (!runtime)
             return std::nullopt;
-        if (!pulse(2, QStringLiteral("Reading selected first and last pages.")))
+        if (!pulse(2, QStringLiteral("선택한 앞뒤 페이지를 불러오는 중")))
             return fail(QStringLiteral("Selected OCR preparation cancelled."));
         const auto source = LocalOcrSource::read(before->sourcePath, perEnd, flag, error);
         if (!source)
             return std::nullopt;
-        if (!pulse(3, QStringLiteral("Rechecking the selected library entry.")))
+        if (!pulse(3, QStringLiteral("선택한 라이브러리 항목 다시 확인 중")))
             return fail(QStringLiteral("Selected OCR preparation cancelled."));
         const auto after = LocalOcrLibrary::read(before->libraryRoot, comicInfoId, before->sourcePath, error);
         if (!after)

@@ -5,6 +5,7 @@
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -21,6 +22,26 @@ class Inventory
 {
 public:
     LocalMetadata::Cancellation cancel;
+    LocalMetadata::Progress progress;
+    QElapsedTimer progressClock;
+    QString stage;
+    qint64 readBytes = 0;
+    int completedFiles = 0;
+    bool report(bool force = false)
+    {
+        if (!active())
+            return false;
+        if (progress && (force || !progressClock.isValid() || progressClock.elapsed() >= 250)) {
+            progress(0, 0, QStringLiteral("%1 · 파일 %2개 · %3 MiB 읽음").arg(stage).arg(completedFiles).arg(readBytes / (1024 * 1024)));
+            progressClock.start();
+        }
+        return active();
+    }
+    bool beginStage(const QString &text)
+    {
+        stage = text;
+        return report(true);
+    }
     QString error;
     int files = 0;
     qint64 bytes = 0;
@@ -73,6 +94,9 @@ public:
                 return { };
             }
             read += block.size();
+            readBytes += block.size();
+            if (!report())
+                return { };
             if (read > before.size()) {
                 reject(QStringLiteral("Runtime file changed during measurement."));
                 return { };
@@ -85,6 +109,9 @@ public:
             return { };
         }
         observed.append({ path, false, before.size(), modified });
+        ++completedFiles;
+        if (!report())
+            return { };
         return QString::fromLatin1(hash.result().toHex());
     }
     bool stable()
@@ -138,12 +165,13 @@ QJsonObject optionsObject(const LocalMetadata::OcrOptions &o)
 }
 
 std::optional<Measurement> measure(const QString &applicationPath, const LocalMetadata::OcrOptions &options,
-                                   const LocalMetadata::Cancellation &cancel, QString *error)
+                                   const LocalMetadata::Cancellation &cancel, QString *error, const LocalMetadata::Progress &progress)
 {
     if (error)
         error->clear();
     Inventory inventory;
     inventory.cancel = cancel;
+    inventory.progress = progress;
     auto failure = [&]() -> std::optional<Measurement> {
         if (error)
             *error = inventory.error.isEmpty() ? QStringLiteral("Invalid neural runtime settings or model inventory.") : inventory.error;
@@ -157,12 +185,14 @@ std::optional<Measurement> measure(const QString &applicationPath, const LocalMe
     const QString modelsRoot = QDir(neural).filePath(QStringLiteral("models"));
     if (!inventory.ordinary(QFileInfo(root)) || !inventory.ordinary(QFileInfo(neural)))
         return failure();
+    if (!inventory.beginStage(QStringLiteral("OCR 실행 파일 확인 중")))
+        return failure();
     const auto applicationHash = inventory.fileHash(applicationPath);
     const auto workerHash = inventory.fileHash(QDir(neural).filePath(QStringLiteral("worker.py")));
     if (applicationHash.isEmpty() || workerHash.isEmpty())
         return failure();
     QJsonArray models, shared, cpu;
-    if (!inventory.tree(modelsRoot, models) || !inventory.tree(root, shared, { }, 0, true) || !inventory.tree(QDir(neural).filePath(QStringLiteral("runtime")), cpu))
+    if (!inventory.beginStage(QStringLiteral("OCR 모델 확인 중")) || !inventory.tree(modelsRoot, models) || !inventory.beginStage(QStringLiteral("공용 실행 파일 확인 중")) || !inventory.tree(root, shared, { }, 0, true) || !inventory.beginStage(QStringLiteral("CPU 실행 환경 확인 중")) || !inventory.tree(QDir(neural).filePath(QStringLiteral("runtime")), cpu))
         return failure();
     QFile manifest(QDir(neural).filePath(QStringLiteral("models.json")));
     if (!inventory.ordinary(QFileInfo(manifest)) || !manifest.open(QIODevice::ReadOnly) || manifest.size() > 1024 * 1024)
@@ -204,14 +234,16 @@ std::optional<Measurement> measure(const QString &applicationPath, const LocalMe
     const QFileInfo gpuRoot(QDir(root).filePath(QStringLiteral("ocr-neural-gpu")));
     if (options.gpu && (gpuRoot.exists() || gpuRoot.isSymLink() || gpuRoot.isJunction())) {
         QJsonArray gpu;
-        if (!inventory.ordinary(gpuRoot) || !inventory.tree(QDir(gpuRoot.absoluteFilePath()).filePath(QStringLiteral("runtime")), gpu))
+        if (!inventory.beginStage(QStringLiteral("NVIDIA 실행 환경 확인 중")) || !inventory.ordinary(gpuRoot) || !inventory.tree(QDir(gpuRoot.absoluteFilePath()).filePath(QStringLiteral("runtime")), gpu))
             return failure();
         environment["gpu"] = runtime(QDir(gpuRoot.absoluteFilePath()).filePath(QStringLiteral("runtime")), gpu);
         manifests["gpu"] = gpu;
     }
     const QJsonObject snapshot { { "version", 1 }, { "options", optionsObject(options) }, { "environment", environment } };
     const auto fingerprint = OcrJobs::settingsFingerprint(snapshot);
-    if (!inventory.active() || !inventory.stable() || fingerprint.isEmpty())
+    // No progress callback follows the final stability pass: callbacks can
+    // cancel or mutate files, and must not invalidate an already checked stamp.
+    if (!inventory.beginStage(QStringLiteral("실행 환경 변경 여부 최종 확인 중")) || !inventory.stable() || fingerprint.isEmpty())
         return failure();
     return Measurement { snapshot, fingerprint, manifests };
 }

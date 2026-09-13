@@ -293,3 +293,12 @@ Read and reopen have separate relative clocks. The 100ms sampling can miss short
 stages and adds tracing overhead; use it to locate waits, not as a kernel timing
 or a replacement for the uninstrumented comparison. The sidecar and timelines
 are private results and must not be committed or uploaded to CI.
+
+
+Runtime inventory reports bounded progress for application, model, shared, CPU,
+optional GPU and final-stability phases without publishing filenames. File/byte
+updates occur at most every 250ms, with an immediate update on phase changes.
+The inventory is still fully hashed; this is responsiveness/diagnostic feedback,
+not a hash cache or a claimed speed improvement. Callbacks precede the final
+stability pass. Private status traces group count-only changes into the same
+stage so frequent progress does not exhaust the bounded timeline before OCR.

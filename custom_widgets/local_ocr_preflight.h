@@ -16,7 +16,8 @@ struct Prepared {
 // Read one selected work and an already stopped personal Windows runtime. No
 // queue/cache/library writes, OCR, network or enumeration of other works.
 // Library identity is checked before/after measurement and selected page capture.
-// Progress counts preparation stages, not recognized pages.
+// Progress counts preparation stages, not recognized pages. Runtime inventory
+// updates use completed=total=0 and do not advance the four preparation stages.
 // A returned snapshot is not a lock covering a later claim or metadata save.
 std::optional<Prepared> read(const QString &libraryRoot, qulonglong comicInfoId,
                              const QString &sourcePath, int perEnd, const QString &applicationPath,

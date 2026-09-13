@@ -1648,6 +1648,37 @@ void LocalMetadataTest::runtimeSnapshotMeasuresFiles()
     QVERIFY2(originalCpu.has_value(), qPrintable(error));
     QVERIFY(originalCpu->settingsSnapshot["environment"].toObject()["gpu"].isNull());
     QVERIFY(originalCpu->manifests["gpu"].isNull());
+    QStringList stages;
+    const auto reported = LocalOcrRuntime::measure(temporary.filePath("app.exe"), cpuOptions, { }, &error,
+                                                   [&](int completed, int total, const QString &stage) {
+                                                       QCOMPARE(completed, 0);
+                                                       QCOMPARE(total, 0);
+                                                       QVERIFY(!stage.contains(temporary.path()));
+                                                       stages.append(stage);
+                                                   });
+    QVERIFY2(reported.has_value(), qPrintable(error));
+    QCOMPARE(reported->settingsSnapshot, originalCpu->settingsSnapshot);
+    QCOMPARE(reported->manifests, originalCpu->manifests);
+    QVERIFY(stages.size() >= 5);
+    QVERIFY(stages.last().contains(QStringLiteral("최종 확인")));
+    const auto stopFromProgress = std::make_shared<std::atomic_bool>(false);
+    QVERIFY(!LocalOcrRuntime::measure(temporary.filePath("app.exe"), cpuOptions, stopFromProgress, &error,
+                                      [&](int, int, const QString &stage) {
+                                          if (stage.contains(QStringLiteral("CPU 실행 환경")))
+                                              stopFromProgress->store(true);
+                                      }));
+    QVERIFY(error.contains("cancelled"));
+    bool changedAtFinalStage = false;
+    QVERIFY(!LocalOcrRuntime::measure(temporary.filePath("app.exe"), cpuOptions, { }, &error,
+                                      [&](int, int, const QString &stage) {
+                                          if (stage.contains(QStringLiteral("최종 확인"))) {
+                                              changedAtFinalStage = true;
+                                              QVERIFY(write("Qt6Core.dll", "changed during progress callback"));
+                                          }
+                                      }));
+    QVERIFY(changedAtFinalStage);
+    QVERIFY(error.contains("changed"));
+    QVERIFY(write("Qt6Core.dll", "synthetic shared dependency"));
     const auto original = measure();
     QVERIFY2(original.has_value(), qPrintable(error));
     QVERIFY(error.isEmpty());
@@ -2325,9 +2356,11 @@ void LocalMetadataTest::privateSelectedInspector()
     bool traceSaved = true;
     const auto captureStage = [&] {
         const auto stage = dialog.statusLabel->text();
-        if (!traceSaved || (!timeline->isEmpty() && timeline->last().toObject()["stage"].toString() == stage))
+        // Count-only updates must not fill the bounded trace before OCR starts.
+        const auto stageKey = stage.section(QStringLiteral(" · 파일 "), 0, 0);
+        if (!traceSaved || (!timeline->isEmpty() && timeline->last().toObject()["stageKey"].toString() == stageKey))
             return;
-        const QJsonObject sample { { "atMs", elapsed.elapsed() }, { "stage", stage } };
+        const QJsonObject sample { { "atMs", elapsed.elapsed() }, { "stage", stage }, { "stageKey", stageKey } };
         if (timeline->size() < 128)
             timeline->append(sample);
         else
@@ -3532,6 +3565,7 @@ void LocalMetadataTest::selectedPreflight()
     QVERIFY(!expectedFiles.isEmpty());
     bool untouched = true;
     bool callbackOk = true;
+    bool inventoryProgress = false;
     QVector<int> stages;
     const auto cancel = std::make_shared<std::atomic_bool>(mode == QStringLiteral("cancel-before"));
     OcrOptions options;
@@ -3539,6 +3573,11 @@ void LocalMetadataTest::selectedPreflight()
     options.gpu = true;
     const auto progress = [&](int step, int total, const QString &) {
         untouched = untouched && snapshot() == expectedFiles;
+        if (total == 0) {
+            inventoryProgress = true;
+            callbackOk = callbackOk && step == 0;
+            return; // Indeterminate inventory updates do not advance preparation.
+        }
         callbackOk = callbackOk && total == 4;
         stages.append(step);
         if (step == 1 && mode == QStringLiteral("row-change"))
@@ -3565,6 +3604,7 @@ void LocalMetadataTest::selectedPreflight()
     QCOMPARE(snapshot(), expectedFiles);
     QVERIFY(!QFile::exists(temporary.filePath("ocr-jobs.sqlite")));
     if (prepared) {
+        QVERIFY(inventoryProgress);
         QCOMPARE(stages, QVector<int>({ 0, 1, 2, 3 }));
         QCOMPARE(prepared->spec.libraryGeneration, prepared->library.generation);
         QCOMPARE(prepared->spec.comicId, QStringLiteral("1"));

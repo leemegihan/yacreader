@@ -14,6 +14,6 @@ struct Measurement {
 // Read-only neural-runtime inventory for the personal Windows package. No OCR,
 // network, library DB or automatic resume. Keep returned paths/manifests private.
 std::optional<Measurement> measure(const QString &applicationPath, const LocalMetadata::OcrOptions &options,
-                                   const LocalMetadata::Cancellation &cancel, QString *error);
+                                   const LocalMetadata::Cancellation &cancel, QString *error, const LocalMetadata::Progress &progress = { });
 }
 #endif
